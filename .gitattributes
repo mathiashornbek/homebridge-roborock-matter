@@ -1,0 +1,13 @@
+# Normalize line endings to LF in the repository and on checkout for all
+# platforms. Prevents Windows (core.autocrlf=true) from checking files out as
+# CRLF, which otherwise makes `npm run lint` (Prettier, endOfLine: lf) fail
+# locally even though the committed files are LF and pass in CI.
+* text=auto eol=lf
+
+# Leave common binary assets untouched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary

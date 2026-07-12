@@ -1,0 +1,16 @@
+{
+  "serial": "RCOEHP52901640",
+  "model": "roborock.vacuum.sc05",
+  "expectedMapKey": "8b843fa941befe34",
+  "payloadBase64": "dJvBLyjxxSb0cQ1J8sw07L79P8tQ5pBshSuy77vNc3GnbZaRcIwTcEpaETDI2ehx8XpNGYqy5ac1irT3svbeTOiRtj31RhErHEKGm1NSAQBOwHHDKR8aLcXVUT0wewNM9Vd5H1C0L3uaxwHPW1Pp9A==",
+  "expectedRooms": [
+    {
+      "roomId": 42,
+      "roomName": "Køkken"
+    },
+    {
+      "roomId": 7,
+      "roomName": "Stue"
+    }
+  ]
+}

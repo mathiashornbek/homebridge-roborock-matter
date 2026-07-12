@@ -1,0 +1,257 @@
+<link rel="stylesheet" href="styles.css" />
+
+<main class="container">
+  <header>
+    <h1>Roborock Vacuum</h1>
+    <p class="subtitle">
+      Configure account access, discovery filters, and connection diagnostics.
+    </p>
+  </header>
+
+  <section class="panel">
+    <div class="section-header">
+      <div>
+        <h2>Account</h2>
+        <p class="help">
+          The plugin can start with either a saved encrypted token or a password
+          fallback.
+        </p>
+      </div>
+      <span id="auth-status" class="status-pill warn">Checking config</span>
+    </div>
+
+    <div class="settings-grid">
+      <label class="field">
+        <span>Email</span>
+        <input id="email" type="email" placeholder="name@example.com" />
+        <small>Roborock account email used for login and discovery.</small>
+      </label>
+
+      <label id="password-row" class="field">
+        <span>Password</span>
+        <input id="password" type="password" placeholder="Password" />
+        <small
+          >Used to create a token or as a fallback if no token exists.</small
+        >
+      </label>
+
+      <label class="field">
+        <span>Region</span>
+        <select id="base-url">
+          <option value="https://usiot.roborock.com">
+            US (usiot.roborock.com)
+          </option>
+          <option value="https://euiot.roborock.com">
+            EU (euiot.roborock.com)
+          </option>
+          <option value="https://cniot.roborock.com">
+            CN (cniot.roborock.com)
+          </option>
+          <option value="https://api.roborock.com">
+            Asia (api.roborock.com)
+          </option>
+        </select>
+        <small>Choose the region used by your Roborock app account.</small>
+      </label>
+
+      <label class="field">
+        <span>Skip Devices</span>
+        <input
+          id="skip-devices"
+          type="text"
+          placeholder="Serial number or DUID, comma-separated"
+        />
+        <small
+          >Optional. Use values shown in Diagnostics to ignore devices.</small
+        >
+      </label>
+
+      <label class="field">
+        <span>Transient Warning Interval</span>
+        <input
+          id="transient-warning-throttle-hours"
+          type="number"
+          min="0"
+          step="0.25"
+          placeholder="6"
+        />
+        <small
+          >Hours between repeated timeout warnings per vacuum. Use 0 to show
+          these only when debug logging is enabled.</small
+        >
+      </label>
+    </div>
+
+    <label class="checkbox">
+      <input id="enable-matter-charging-docked" type="checkbox" />
+      <span>
+        Show Charging/Docked on the Apple Home tile
+        <small
+          >Reports real Matter Charging and Docked states instead of Ready
+          while on the dock. Requires a recent iOS/tvOS; turn off and restart
+          the bridge if the tile misbehaves.</small
+        >
+      </span>
+    </label>
+    <label class="field">
+      <span>Charged Battery Threshold (%)</span>
+      <input
+        id="matter-charged-battery-threshold"
+        type="number"
+        min="1"
+        max="100"
+        step="1"
+        placeholder="100"
+      />
+      <small
+        >The tile shows Charging while docked below this battery percentage,
+        and Docked at or above it. Lower it (e.g. 90) if a worn battery makes
+        the robot report fully charged early.</small
+      >
+    </label>
+    <p class="help matter-setup-note">
+      After saving and restarting the Roborock bridge, use the Matter Pairing
+      section below. Apple Home may need both the bridge QR code and the
+      vacuum's 11-digit setup code.
+    </p>
+
+    <details id="advanced-settings" class="advanced-settings">
+      <summary>Advanced troubleshooting</summary>
+      <p class="help">
+        Use these when collecting logs or working around local connection
+        timeouts.
+      </p>
+
+      <label class="checkbox">
+        <input id="debug-mode" type="checkbox" />
+        <span>
+          Enable debug logging
+          <small
+            >Writes verbose API, discovery, and transport details to the
+            Homebridge log.</small
+          >
+        </span>
+      </label>
+
+      <label class="checkbox">
+        <input id="prefer-cloud-for-matter-commands" type="checkbox" />
+        <span>
+          Prefer Roborock cloud for Matter commands
+          <small
+            >Use cloud transport for Matter vacuum commands when available. This
+            can avoid local LAN command timeouts on some models.</small
+          >
+        </span>
+      </label>
+
+      <label class="checkbox">
+        <input id="cloud-only-mode" type="checkbox" />
+        <span>
+          Use Roborock cloud only
+          <small
+            >Disables local LAN discovery and local TCP commands for this
+            plugin. Restart the Roborock child bridge after changing this
+            setting.</small
+          >
+        </span>
+      </label>
+    </details>
+
+    <div class="actions">
+      <button id="save-settings" class="secondary">Save Settings</button>
+      <button id="login" class="primary">Password Login</button>
+      <button id="logout" class="secondary hidden">Logout</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <div>
+        <h2>Devices</h2>
+        <p class="help">
+          Choose which robots this plugin manages. Unchecked robots are added
+          to Skip Devices: they are not polled, not published to Matter, and cost no resources. Restart the Roborock bridge after
+          changing.
+        </p>
+      </div>
+      <button id="refresh-devices" class="secondary">Refresh</button>
+    </div>
+    <div id="devices-empty" class="help">
+      Devices have not been loaded yet. Run a successful plugin startup, then
+      refresh this section.
+    </div>
+    <div id="devices-list" class="device-list"></div>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <div>
+        <h2>Matter Pairing</h2>
+        <p class="help">
+          Pair the Roborock child/daughter bridge first, then add the external
+          vacuum accessory if Apple Home asks for it.
+        </p>
+      </div>
+      <button id="refresh-matter-pairing" class="secondary">Refresh</button>
+    </div>
+    <div id="matter-pairing-summary" class="diagnostics-summary muted">
+      Matter pairing codes have not been loaded yet.
+    </div>
+    <div id="matter-pairing-empty" class="help">
+      Enable Matter for the Roborock child/daughter bridge, enable the Matter
+      vacuum setting above, save, restart the bridge, then refresh this section.
+    </div>
+    <div id="matter-pairing-list" class="pairing-list"></div>
+  </section>
+
+  <section class="panel hidden" id="two-factor-section">
+    <h2>Two-Factor Authentication</h2>
+    <p class="help">
+      Send a Roborock verification email, then enter the code to save an
+      encrypted token.
+    </p>
+    <label id="code-row" class="field">
+      <span>Verification Code</span>
+      <input id="two-factor-code" type="text" placeholder="6-digit code" />
+      <small
+        >Codes usually expire quickly; request a fresh one if verification
+        fails.</small
+      >
+    </label>
+    <div class="actions">
+      <button id="send-2fa" class="primary">Send Email</button>
+      <button id="verify-2fa" class="secondary">Verify Code</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <div>
+        <h2>Diagnostics</h2>
+        <p class="help">
+          Read the latest cached Roborock HomeData and local transport state.
+        </p>
+      </div>
+      <div class="diagnostics-actions">
+        <button id="test-local" class="primary">Test Local Connection</button>
+        <button id="copy-diagnostics" class="secondary">
+          Copy Diagnostic Report
+        </button>
+        <button id="refresh-diagnostics" class="secondary">Refresh</button>
+      </div>
+    </div>
+    <div id="diagnostics-summary" class="diagnostics-summary muted">
+      No diagnostics loaded yet.
+    </div>
+    <div id="diagnostics-empty" class="help">
+      Run a successful plugin startup, then refresh to inspect the latest cached
+      HomeData.
+    </div>
+    <div id="local-test-results" class="local-test-results hidden"></div>
+    <div id="diagnostics-list" class="diagnostics-list"></div>
+  </section>
+</main>
+
+<div id="toast-container" class="toast-container"></div>
+
+<script src="index.js"></script>

@@ -1,0 +1,611 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap");
+
+:root {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --panel-soft: #f6f8fa;
+  --input: #ffffff;
+  --text: #17242f;
+  --heading: #0c1a24;
+  --muted: #5a6b7b;
+  --primary: #0e7a6a;
+  --primary-strong: #0b6357;
+  --primary-text: #ffffff;
+  --secondary: #eef2f5;
+  --border: #d9e0e7;
+  --shadow: 0 6px 18px rgba(15, 32, 44, 0.07);
+  --warning: #9a5b00;
+  --danger: #b42323;
+  --link: #0e7a6a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  background: linear-gradient(
+      180deg,
+      rgba(14, 122, 106, 0.06),
+      transparent 260px
+    ),
+    var(--bg);
+  color: var(--text);
+}
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 24px 24px;
+  display: grid;
+  gap: 18px;
+}
+
+/* Explicit heading colors: Homebridge UI injects its own theme stylesheet
+   into custom-UI iframes, so headings must not rely on inheritance or they
+   can end up dark-on-dark / light-on-light. */
+header h1 {
+  font-size: 2.15rem;
+  line-height: 1.1;
+  margin: 0 0 8px;
+  color: var(--heading);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+
+.panel h2 {
+  margin: 0 0 6px;
+  font-size: 1.18rem;
+  line-height: 1.25;
+  color: var(--heading);
+}
+
+.panel h3 {
+  color: var(--heading);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.help {
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.help a {
+  color: var(--link);
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.field small,
+.checkbox small {
+  color: var(--muted);
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+select,
+input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input);
+  color: var(--text);
+  font-size: 1rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+select:focus,
+input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(14, 122, 106, 0.16);
+}
+
+input::placeholder {
+  color: #8a97a5;
+}
+
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 18px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.checkbox input {
+  width: auto;
+  margin: 4px 0 0;
+  accent-color: var(--primary);
+}
+
+.matter-setup-note {
+  margin: 8px 0 0 28px;
+  color: var(--warning);
+  max-width: 680px;
+}
+
+.advanced-settings {
+  margin-top: 20px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.advanced-settings summary {
+  cursor: pointer;
+  color: var(--heading);
+  font-weight: 600;
+}
+
+.advanced-settings .help {
+  margin-top: 8px;
+}
+
+.advanced-settings .checkbox {
+  margin-top: 16px;
+}
+
+.hidden {
+  display: none;
+}
+
+.readonly input,
+.readonly select {
+  background: var(--secondary);
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.diagnostics-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+button {
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(14, 122, 106, 0.14);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.primary {
+  background: var(--primary);
+  color: var(--primary-text);
+}
+
+.primary:hover {
+  background: var(--primary-strong);
+}
+
+.secondary {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.secondary:hover {
+  background: var(--secondary);
+}
+
+.toast-container {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 9999;
+}
+
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow);
+  min-width: 220px;
+  color: var(--text);
+  animation: slide-in 0.2s ease-out;
+}
+
+.toast.success {
+  border-left-color: #16a34a;
+}
+
+.toast.error {
+  border-left-color: #dc2626;
+}
+
+.toast.warning {
+  border-left-color: #d97706;
+}
+
+.diagnostics-summary {
+  margin: 18px 0 14px;
+}
+
+.local-test-results {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.local-test-results.hidden {
+  display: none;
+}
+
+.local-test-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.local-test-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--heading);
+}
+
+.diagnostics-list {
+  display: grid;
+  gap: 14px;
+}
+
+.pairing-list {
+  display: grid;
+  gap: 14px;
+}
+
+.device-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.device-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.device-row:hover {
+  border-color: var(--primary);
+  background: #f1f7f5;
+}
+
+.device-row input {
+  width: auto;
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+
+.device-row .device-text {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+
+.device-row .device-title {
+  font-weight: 600;
+  color: var(--heading);
+}
+
+.device-row small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.device-row .pill {
+  margin-left: auto;
+  align-self: center;
+}
+
+.diagnostic-device,
+.local-test-card,
+.pairing-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--panel-soft);
+}
+
+.local-test-card.good {
+  border-color: rgba(22, 163, 74, 0.45);
+}
+
+.local-test-card.warn {
+  border-color: rgba(217, 119, 6, 0.45);
+}
+
+.device-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.device-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--heading);
+}
+
+.connection-hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0 0 14px;
+}
+
+.pairing-content {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.qr-wrap {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.qr-image,
+.qr-placeholder {
+  width: 180px;
+  height: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+}
+
+.qr-placeholder {
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  text-align: center;
+}
+
+.pairing-details {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 16px;
+}
+
+.pairing-details dt {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+
+.pairing-details dd {
+  margin: 0;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.setup-code {
+  color: var(--heading);
+  font-family: "Consolas", "Menlo", monospace;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.pairing-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.compact {
+  padding: 9px 12px;
+  font-size: 0.84rem;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.pill.good {
+  background: #e6f6ec;
+  border-color: #b5e3c5;
+  color: #14683a;
+}
+
+.pill.warn {
+  background: #fdf3df;
+  border-color: #f0d9a8;
+  color: #8a5a00;
+}
+
+.status-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 7px 11px;
+  white-space: nowrap;
+  background: var(--panel);
+}
+
+.status-pill.good {
+  background: #e4f5ef;
+  border-color: #a9dfcd;
+  color: #0c6b52;
+}
+
+.status-pill.warn {
+  background: #fdf3df;
+  border-color: #edd39c;
+  color: #8a5a00;
+}
+
+.diagnostic-device dl,
+.local-test-card dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 16px;
+}
+
+.diagnostic-device dt,
+.local-test-card dt {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+
+.diagnostic-device dd,
+.local-test-card dd {
+  margin: 0;
+  word-break: break-word;
+  color: var(--text);
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  header h1 {
+    font-size: 1.85rem;
+  }
+
+  .container {
+    padding: 22px 16px;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section-header,
+  .device-header,
+  .local-test-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pairing-content {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnostics-actions {
+    justify-content: stretch;
+  }
+
+  .diagnostics-actions button {
+    flex: 1 1 100%;
+  }
+
+  .device-row .pill {
+    margin-left: 0;
+  }
+}

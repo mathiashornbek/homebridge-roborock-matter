@@ -1,0 +1,118 @@
+{
+  "pluginAlias": "RoborockVacuumPlatform",
+  "pluginType": "platform",
+  "singular": true,
+  "customUi": true,
+  "customUiPath": "./homebridge-ui",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "email": {
+        "title": "Email",
+        "type": "string",
+        "format": "email",
+        "description": "Email address for the Roborock account that owns or has access to the vacuum."
+      },
+      "password": {
+        "title": "Password",
+        "type": "string",
+        "format": "password",
+        "placeholder": "Password",
+        "description": "Roborock account password. Used for password login or as a fallback when no encrypted token is available."
+      },
+      "encryptedToken": {
+        "title": "Encrypted Token",
+        "type": "string",
+        "description": "Encrypted Roborock session data. This is created and managed by the plugin UI after a successful login.",
+        "readOnly": true
+      },
+      "skipDevices": {
+        "title": "Skip Devices",
+        "type": "string",
+        "description": "Comma-separated Roborock serial numbers or DUIDs to ignore during discovery."
+      },
+      "baseURL": {
+        "title": "Region",
+        "type": "string",
+        "default": "https://usiot.roborock.com",
+        "enum": [
+          "https://usiot.roborock.com",
+          "https://euiot.roborock.com",
+          "https://cniot.roborock.com",
+          "https://api.roborock.com"
+        ],
+        "enumNames": [
+          "US (usiot.roborock.com)",
+          "EU (euiot.roborock.com)",
+          "CN (cniot.roborock.com)",
+          "Asia (api.roborock.com)"
+        ],
+        "description": "Roborock cloud region endpoint. Choose the region used by your Roborock account."
+      },
+      "debugMode": {
+        "title": "Debug Mode",
+        "description": "Write verbose Roborock API, discovery, and transport diagnostics to the Homebridge log.",
+        "type": "boolean",
+        "default": false
+      },
+      "transientWarningThrottleHours": {
+        "title": "Transient Warning Interval",
+        "description": "Hours between repeated transient timeout warnings for each vacuum. Use 0 to hide these recurring warnings unless debug logging is enabled.",
+        "type": "number",
+        "default": 6,
+        "minimum": 0
+      },
+      "enableMatterServiceArea": {
+        "title": "Enable Matter Room/Map Selection",
+        "description": "Adds Matter Service Area room and map selection to the Matter vacuum for clients that support it. Disable this if a Matter controller gets stuck showing the vacuum as Updating.",
+        "type": "boolean",
+        "default": true
+      },
+      "enableMatterPowerSource": {
+        "title": "Enable Matter Battery",
+        "description": "Adds the Matter battery/power-source cluster to the Matter vacuum. Disable this if a Matter controller gets stuck showing the vacuum as Updating.",
+        "type": "boolean",
+        "default": true
+      },
+      "enableMatterCleanMode": {
+        "title": "Enable Matter Cleaning Mode Selection",
+        "description": "Adds Matter vacuum/mop cleaning mode selection to the Matter vacuum. Disable this if a Matter controller shows the vacuum as No Response after pairing.",
+        "type": "boolean",
+        "default": true
+      },
+      "enableMatterExtendedOperationalStates": {
+        "title": "Enable Matter Returning Status",
+        "description": "Opt in to the extended Matter Returning status while the vacuum is heading back to the dock. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready for Apple Home compatibility.",
+        "type": "boolean",
+        "default": false
+      },
+      "enableMatterChargingDockedStates": {
+        "title": "Enable Matter Charging/Docked Status",
+        "description": "Report real Charging and Docked states so the Apple Home tile shows Charging/Docked instead of Ready. Requires a recent iOS/tvOS; if the tile shows odd status text or pairing misbehaves after enabling, turn this off again and restart the Roborock bridge.",
+        "type": "boolean",
+        "default": false
+      },
+      "matterChargedBatteryThreshold": {
+        "title": "Charged Battery Threshold (%)",
+        "description": "Battery percentage at which a docked robot switches from Charging to Docked on the Apple Home tile. Default 100. Lower it (e.g. 90) if a worn battery makes the robot report fully charged early.",
+        "type": "number",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 100
+      },
+      "cloudOnlyMode": {
+        "title": "Use Roborock Cloud Only",
+        "description": "Disables local LAN discovery and local TCP commands for this plugin, routing commands and status polling through Roborock cloud when available. Useful when local LAN connections appear connected but consistently time out. Restart the Roborock child bridge after changing this setting.",
+        "type": "boolean",
+        "default": false
+      },
+      "preferCloudForMatterCommands": {
+        "title": "Prefer Roborock Cloud for Matter Commands",
+        "description": "Sends Matter vacuum commands through the Roborock cloud when cloud transport is connected. This can avoid local LAN command timeouts on some models, such as S8, while keeping the legacy HomeKit accessories unchanged.",
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "required": ["email"]
+  }
+}
