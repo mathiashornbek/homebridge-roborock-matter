@@ -36,6 +36,13 @@ const ROBOROCK_FAN_POWER_OFF = 105;
 const ROBOROCK_FAN_POWER_BALANCED = 102;
 const ROBOROCK_WATER_BOX_OFF = 200;
 const ROBOROCK_WATER_BOX_MILD = 201;
+// Matter Service Area OperationalStatusEnum (progress list entries).
+const SERVICE_AREA_PROGRESS = {
+    PENDING: 0,
+    OPERATING: 1,
+    SKIPPED: 2,
+    COMPLETED: 3,
+};
 const RVC_OPERATIONAL_STATE = {
     STOPPED: 0,
     RUNNING: 1,
@@ -148,6 +155,10 @@ class RoborockMatterVacuumAccessory {
         this.lastServiceAreaSummary = "";
         this.liveStatusUpdatedAt = 0;
         this.initialPublishLogged = false;
+        this.lastLoggedBatteryHalfPercent = null;
+        this.powerSourceResyncDone = false;
+        this.serviceAreaCurrentArea = null;
+        this.serviceAreaProgress = [];
         this.selectedCleanMode = CLEAN_MODE_VACUUM;
         this.selectedCleanModeNeedsApply = false;
         this.lastVacuumFanPower = null;
@@ -285,13 +296,18 @@ class RoborockMatterVacuumAccessory {
             return;
         }
         const clusters = this.buildClusters();
-        const updated = await this.updateMatterState(clusters, "Roborock state refresh");
+        const updated = await this.publishRoborockSnapshot(clusters, "Roborock state refresh");
         if (updated) {
-            if (!this.initialPublishLogged) {
+            const power = clusters.powerSource;
+            const halfPercent = power === null || power === void 0 ? void 0 : power.batPercentRemaining;
+            const batteryChanged = typeof halfPercent === "number" &&
+                halfPercent !== this.lastLoggedBatteryHalfPercent;
+            if (!this.initialPublishLogged || batteryChanged) {
                 this.initialPublishLogged = true;
-                const power = clusters.powerSource;
+                if (typeof halfPercent === "number") {
+                    this.lastLoggedBatteryHalfPercent = halfPercent;
+                }
                 const opState = clusters.rvcOperationalState;
-                const halfPercent = power === null || power === void 0 ? void 0 : power.batPercentRemaining;
                 this.platform.log.info(`Matter publish for ${(_b = (_a = this.accessory.context) === null || _a === void 0 ? void 0 : _a.duid) !== null && _b !== void 0 ? _b : this.accessory.UUID}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${(_c = opState === null || opState === void 0 ? void 0 : opState.operationalState) !== null && _c !== void 0 ? _c : "n/a"}.`);
             }
             this.ensureMatterStateHeartbeat();
@@ -384,6 +400,7 @@ class RoborockMatterVacuumAccessory {
                         operationalState: RVC_OPERATIONAL_STATE.RUNNING,
                     },
                 };
+                this.beginServiceAreaProgress(areasToClean.map((area) => area.areaId));
                 this.setAndScheduleOptimisticState(state, "selected-area start");
                 this.dispatchRoborockMatterCommand("service area clean", async () => {
                     await this.applySelectedCleanModeIfNeeded();
@@ -399,6 +416,7 @@ class RoborockMatterVacuumAccessory {
                     operationalState: RVC_OPERATIONAL_STATE.RUNNING,
                 },
             };
+            this.clearServiceAreaProgress();
             this.setAndScheduleOptimisticState(state, "start");
             this.dispatchRoborockMatterCommand("start", async () => {
                 await this.applySelectedCleanModeIfNeeded();
@@ -602,6 +620,41 @@ class RoborockMatterVacuumAccessory {
             throw error;
         }
     }
+    /**
+     * Publish a full Roborock cluster snapshot, performing a one-time battery
+     * resync per boot first. Matter controllers filter attribute reports by
+     * cluster data version, and matter.js suppresses no-op writes — so a
+     * battery that sits at the same value forever never generates a new report
+     * for a controller whose cache missed one (observed in the field as Apple
+     * Home stuck on a pairing-day percentage across server restarts).
+     * Publishing the battery attributes as briefly unknown and then with their
+     * real values forces two genuine store changes, bumping the data version
+     * so every subscribed controller receives a fresh report — no hub restart
+     * or re-pairing required.
+     */
+    async publishRoborockSnapshot(clusters, reason) {
+        var _a, _b;
+        const power = clusters.powerSource;
+        const resyncEligible = !this.powerSourceResyncDone &&
+            power !== undefined &&
+            typeof power.batPercentRemaining === "number";
+        if (resyncEligible) {
+            await this.updateMatterState({
+                powerSource: {
+                    ...power,
+                    batPercentRemaining: null,
+                    batChargeState: 0,
+                    batTimeToFullCharge: null,
+                },
+            }, "Battery resync nudge");
+        }
+        const updated = await this.updateMatterState(clusters, reason);
+        if (updated && resyncEligible) {
+            this.powerSourceResyncDone = true;
+            this.platform.log.info(`Battery resync for ${(_b = (_a = this.accessory.context) === null || _a === void 0 ? void 0 : _a.duid) !== null && _b !== void 0 ? _b : this.accessory.UUID}: forced a fresh Matter attribute report (battery=${power.batPercentRemaining / 2}%).`);
+        }
+        return updated;
+    }
     async updateMatterStateFromMessage(data) {
         if (!this.registered) {
             return;
@@ -651,7 +704,10 @@ class RoborockMatterVacuumAccessory {
             // separate suppression of the live values is needed.
             this.reconcileOptimisticStateWithLive(this.getOperationalState(state, chargeStatus), state, chargeStatus);
         }
-        const updated = await this.updateMatterState(this.buildClusters(), "live state");
+        if (state !== null) {
+            this.completeServiceAreaProgressIfDone(this.getOperationalState(state, chargeStatus));
+        }
+        const updated = await this.publishRoborockSnapshot(this.buildClusters(), "live state");
         if (updated) {
             this.ensureMatterStateHeartbeat();
         }
@@ -939,7 +995,43 @@ class RoborockMatterVacuumAccessory {
     hasServiceAreasToExpose() {
         return this.getMatterServiceAreas().length > 0;
     }
+    beginServiceAreaProgress(areaIds) {
+        if (areaIds.length === 0) {
+            this.clearServiceAreaProgress();
+            return;
+        }
+        // We know which rooms were requested; the robot does not report which
+        // one it is inside, so the first requested area is shown as operating
+        // and the rest as pending until the run completes.
+        this.serviceAreaCurrentArea = areaIds[0];
+        this.serviceAreaProgress = areaIds.map((areaId, index) => ({
+            areaId,
+            status: index === 0
+                ? SERVICE_AREA_PROGRESS.OPERATING
+                : SERVICE_AREA_PROGRESS.PENDING,
+        }));
+    }
+    clearServiceAreaProgress() {
+        this.serviceAreaCurrentArea = null;
+        this.serviceAreaProgress = [];
+    }
+    completeServiceAreaProgressIfDone(operationalState) {
+        if (this.serviceAreaProgress.length === 0) {
+            return;
+        }
+        if (this.isInCleaningRunMode(operationalState)) {
+            return;
+        }
+        // The run ended (docked, charging, stopped): everything requested is
+        // reported as completed and no area is current anymore.
+        this.serviceAreaCurrentArea = null;
+        this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
+            areaId: entry.areaId,
+            status: SERVICE_AREA_PROGRESS.COMPLETED,
+        }));
+    }
     buildServiceAreaCluster() {
+        var _a;
         const areas = this.getMatterServiceAreas();
         const supportedMaps = this.getMatterServiceAreaMaps(areas);
         const includeMapNamesInAreaLabels = supportedMaps.length > 1;
@@ -950,6 +1042,16 @@ class RoborockMatterVacuumAccessory {
         }
         this.logMatterServiceAreaSummary(areas, supportedMaps);
         const state = {
+            // Live cleaning progress. The attributes are ALWAYS present (empty
+            // list / null when idle): Homebridge derives Matter cluster features
+            // from which attributes are provided at registration (see homebridge
+            // #3914 for the PowerSource equivalent), so omitting progress here
+            // would leave the Service Area progress feature unannounced at
+            // commissioning — controllers that render a progress pill (Apple
+            // Home) then sit on a generic "Preparing"/"heading to the room"
+            // label for the entire run.
+            progress: this.serviceAreaProgress.map((entry) => ({ ...entry })),
+            estimatedEndTime: null,
             supportedAreas: areas.map((area) => ({
                 areaId: area.areaId,
                 mapId: area.mapId,
@@ -963,7 +1065,7 @@ class RoborockMatterVacuumAccessory {
                 },
             })),
             selectedAreas,
-            currentArea: this.getCurrentServiceArea(selectedAreas),
+            currentArea: (_a = this.serviceAreaCurrentArea) !== null && _a !== void 0 ? _a : this.getCurrentServiceArea(selectedAreas),
         };
         if (supportedMaps.length > 0) {
             state.supportedMaps = supportedMaps;
@@ -1683,7 +1785,7 @@ class RoborockMatterVacuumAccessory {
         this.returnToDockRetryPending = true;
         const retryTimer = scheduleTimer(() => {
             this.returnToDockRetryPending = false;
-            void this.refreshMatterStatusBeforeRetry("return to dock retry")
+            void this.refreshMatterStatusBeforeRetry()
                 .then(() => {
                 if (!this.shouldRetryReturnToDock()) {
                     this.platform.log.debug(`Skipping Matter return to dock retry for ${this.getVacuumName()} because Roborock no longer reports active cleaning.`);
@@ -1714,7 +1816,7 @@ class RoborockMatterVacuumAccessory {
         }, MATTER_RETURN_TO_DOCK_RETRY_DELAY_MS);
         unrefTimer(retryTimer);
     }
-    async refreshMatterStatusBeforeRetry(reason) {
+    async refreshMatterStatusBeforeRetry() {
         const refreshStatus = this.api.getStatus;
         if (typeof refreshStatus !== "function") {
             return;

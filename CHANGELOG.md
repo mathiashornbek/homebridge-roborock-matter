@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.1.3
+
+- **Service Area progress feature is now announced at commissioning.** Homebridge derives Matter cluster features from which attributes are present when the accessory registers (the same mechanism as its own PowerSource Rechargeable fix, homebridge#3914). The `progress` list was previously only included while a room clean was running — never at registration — so the progress feature was likely never announced to controllers, leaving Apple Home unable to render "cleaning in <room>" and stuck on "heading to the room"/"Preparing" instead. `progress` (empty when idle) and `estimatedEndTime` (null; the robots provide no ETA data) are now always present in the cluster state. NOTE: Matter locks cluster features at commissioning, so this improvement requires re-pairing the robot once.
+- **Battery investigation concluded (evidence in README):** the full chain robot → plugin → Homebridge → matter.js store is verified correct end-to-end (store values match the Roborock app in real time), while Apple Home renders the percentage from pairing time. The charge state on the same cluster updates live; the percentage attribute has the Matter "changes omitted" reporting quality, so value changes are not pushed to subscribed controllers by design and Apple never re-reads it. No plugin-side write can force this attribute to report; the resync nudge from 2.1.1 remains as a best-effort priming aid. Verified paths to a fresh value: re-establishing the controller subscription (hub restart) or re-pairing.
+- Code cleanup: removed unused parameters; the codebase now compiles clean with noUnusedLocals + noUnusedParameters.
+- Full suite: 214 passing.
+
+## 2.1.2
+
+- **Apple Home's status pill now shows real cleaning progress instead of a permanent "Preparing".** The Service Area cluster previously exposed rooms but never populated the progress attributes, so controllers that render a progress pill had nothing to show for the entire run. Room cleans started from Apple Home now publish `currentArea` (the room being cleaned — Apple displays its name) and a per-area `progress` list: the requested room is marked operating, additional requested rooms pending, and everything flips to completed when the robot returns to the charger. Honest limitations: with multiple rooms selected the first is shown as current (the robot does not report which room it is inside), and full-home cleans have no room to name.
+- **Battery publish diagnostics on every change:** the "Matter publish for <duid>: battery=…%" info line now also logs whenever the published battery value changes (not only on the first publish after boot), making the exact value handed to the Matter layer permanently visible in normal logs.
+- The end-to-end simulation now runs with a realistic stale cloud snapshot (pairing-day battery in HomeData) and proves the live channel wins in every publish, plus a full room-clean progress scenario (start → operating → completed).
+- Full suite: 214 passing.
+
+## 2.1.1
+
+- **Fixed Apple Home showing a frozen, hours-old battery percentage even though the plugin publishes the correct value.** Root cause: Matter controllers filter attribute reports by cluster data version, and matter.js suppresses no-op attribute writes — so a battery that sits at the same value forever never generates a new report for a controller whose cache missed one (observed in the field as a Q7 stuck on its pairing-day percentage across full server restarts, while frequently-changing attributes like the operational state kept updating fine). The plugin now performs a one-time battery resync per boot: the battery attributes are published as briefly unknown and then with their real values, forcing two genuine store changes that bump the cluster data version so every subscribed controller receives a fresh report — no hub restart or re-pairing required. The resync covers both publish paths (live messages and periodic refreshes), runs exactly once per boot, and logs an info line ("Battery resync for <duid>: ... battery=100%") for verification.
+- Full suite: 211 passing, including nudge-ordering assertions in the three-robot end-to-end simulation.
+
 ## 2.1.0 (first public fork release as homebridge-roborock-matter)
 
 This is the first release under the fork name **homebridge-roborock-matter**, maintained by Mathias Hornbek. It is a Matter-only fork of `homebridge-roborock-vacuum2` by Joshua Appleman (originally adapted from ioBroker.roborock by copystring), published under the MIT license with all original copyright preserved.
