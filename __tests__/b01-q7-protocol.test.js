@@ -443,6 +443,7 @@ describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
       canVacuum: true,
       canMop: true,
       canControlFanPower: true,
+      canMaxPlusFanPower: true,
       canControlWater: false,
     });
   });

@@ -48,6 +48,10 @@ type MatterCleanModeCapabilities = {
   canVacuum?: boolean;
   canMop?: boolean;
   canControlFanPower?: boolean;
+  // Robots with a verified fifth suction level (B01/Q7 wind 5 = v1 fan
+  // power 108). Classic models stay off until a reliable capability signal
+  // exists — model guessing is exactly what this fork is moving away from.
+  canMaxPlusFanPower?: boolean;
   canControlWater?: boolean;
 };
 
@@ -163,11 +167,17 @@ const CLEAN_MODE_VACUUM_QUIET = 3;
 const CLEAN_MODE_VACUUM_BALANCED = 4;
 const CLEAN_MODE_VACUUM_TURBO = 5;
 const CLEAN_MODE_VACUUM_MAX = 6;
+// Max+ (fifth suction level, v1 fan power 108) — only announced for robots
+// whose protocol verifiably defines it (capabilities.canMaxPlusFanPower).
+const CLEAN_MODE_VACUUM_MAX_PLUS = 7;
 
 // Matter ModeBase common mode tags (Quiet/Max) — combined with the RVC
 // Vacuum tag so controllers can render semantic labels where supported.
 const RVC_CLEAN_MODE_TAG_QUIET = 2;
 const RVC_CLEAN_MODE_TAG_MAX = 7;
+// RVC Clean Mode cluster tag: DeepClean — the closest semantic match for
+// Roborock's Max+ boost level.
+const RVC_CLEAN_MODE_TAG_DEEP_CLEAN = 16384;
 
 const FAN_POWER_CLEAN_MODES: ReadonlyArray<{
   mode: number;
@@ -200,6 +210,13 @@ const FAN_POWER_CLEAN_MODES: ReadonlyArray<{
     extraTags: [RVC_CLEAN_MODE_TAG_MAX],
   },
 ];
+
+const MAX_PLUS_FAN_POWER_CLEAN_MODE: (typeof FAN_POWER_CLEAN_MODES)[number] = {
+  mode: CLEAN_MODE_VACUUM_MAX_PLUS,
+  label: "Max+ Vacuum",
+  fanPower: 108,
+  extraTags: [RVC_CLEAN_MODE_TAG_DEEP_CLEAN],
+};
 
 const RVC_RUN_MODE_TAG_IDLE = 16384;
 const RVC_RUN_MODE_TAG_CLEANING = 16385;
@@ -1126,12 +1143,12 @@ export default class RoborockMatterVacuumAccessory {
 
     // Live map-position room tracking: reflect the physically detected room
     // in currentArea/progress before the snapshot below is built.
-    this.applyLiveServiceAreaRoom(
-      this.getOperationalState(
-        this.getNumberStatus("state"),
-        this.getNumberStatus("charge_status")
-      )
+    const liveOperationalState = this.getOperationalState(
+      this.getNumberStatus("state"),
+      this.getNumberStatus("charge_status")
     );
+    this.applyLiveServiceAreaRoom(liveOperationalState);
+    this.driveLiveRoomTracking(liveOperationalState);
 
     const updated = await this.publishRoborockSnapshot(
       this.buildClusters(),
@@ -1266,7 +1283,11 @@ export default class RoborockMatterVacuumAccessory {
       this.isFanPowerCleanModesEnabled() &&
       capabilities.canControlFanPower === true
     ) {
-      for (const powerMode of FAN_POWER_CLEAN_MODES) {
+      const powerModes =
+        capabilities.canMaxPlusFanPower === true
+          ? [...FAN_POWER_CLEAN_MODES, MAX_PLUS_FAN_POWER_CLEAN_MODE]
+          : FAN_POWER_CLEAN_MODES;
+      for (const powerMode of powerModes) {
         supportedModes.push({
           label: powerMode.label,
           mode: powerMode.mode,
@@ -1288,6 +1309,9 @@ export default class RoborockMatterVacuumAccessory {
   private getFanPowerCleanMode(
     cleanMode: number
   ): (typeof FAN_POWER_CLEAN_MODES)[number] | null {
+    if (cleanMode === MAX_PLUS_FAN_POWER_CLEAN_MODE.mode) {
+      return MAX_PLUS_FAN_POWER_CLEAN_MODE;
+    }
     return (
       FAN_POWER_CLEAN_MODES.find((powerMode) => powerMode.mode === cleanMode) ??
       null
@@ -1683,6 +1707,38 @@ export default class RoborockMatterVacuumAccessory {
    * honestly returns to pending). Stale all-completed lists from a finished
    * run are never mutated.
    */
+  /**
+   * Ask the API layer to refresh the live room while a cleaning run is
+   * active (it throttles and single-flights internally; B01 robots are
+   * additionally driven by their own status loop), and clear the cached
+   * room once the run is over so stale rooms never leak into the next one.
+   */
+  private driveLiveRoomTracking(operationalState: number): void {
+    if (!this.isServiceAreaEnabled()) {
+      return;
+    }
+    const apiWithLiveRoom = this.api as {
+      refreshLiveRoomForDevice?: (
+        duid: string,
+        context: { v1State: number | null }
+      ) => Promise<unknown>;
+      clearLiveRoomForDevice?: (duid: string) => void;
+    };
+
+    if (this.isInCleaningRunMode(operationalState)) {
+      if (typeof apiWithLiveRoom.refreshLiveRoomForDevice === "function") {
+        void apiWithLiveRoom.refreshLiveRoomForDevice
+          .call(this.api, this.getDuid(), {
+            v1State: this.getNumberStatus("state"),
+          })
+          .catch(() => undefined);
+      }
+    } else if (typeof apiWithLiveRoom.clearLiveRoomForDevice === "function") {
+      // Run over (docked/charging/stopped/error): drop the cached room.
+      apiWithLiveRoom.clearLiveRoomForDevice.call(this.api, this.getDuid());
+    }
+  }
+
   private applyLiveServiceAreaRoom(operationalState: number): void {
     if (!this.isServiceAreaEnabled()) {
       return;
@@ -1691,11 +1747,15 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
 
-    const getLiveRoom = (
-      this.api as {
-        getB01LiveRoomForDevice?: (duid: string) => unknown;
-      }
-    ).getB01LiveRoomForDevice;
+    const apiWithLiveRoom = this.api as {
+      getLiveRoomForDevice?: (duid: string) => unknown;
+      getB01LiveRoomForDevice?: (duid: string) => unknown;
+    };
+    // Protocol-agnostic getter (B01 + classic v1); the B01-specific getter
+    // remains as a fallback for older API surfaces.
+    const getLiveRoom =
+      apiWithLiveRoom.getLiveRoomForDevice ??
+      apiWithLiveRoom.getB01LiveRoomForDevice;
     if (typeof getLiveRoom !== "function") {
       return;
     }

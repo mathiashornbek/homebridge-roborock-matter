@@ -5,6 +5,7 @@ function createAccessory({
   enableFanPowerCleanModes = false,
   canMop = true,
   canControlFanPower = true,
+  canMaxPlusFanPower = false,
   canControlWater = false,
 } = {}) {
   const platform = {
@@ -28,6 +29,7 @@ function createAccessory({
         canVacuum: true,
         canMop,
         canControlFanPower,
+        canMaxPlusFanPower,
         canControlWater,
       }),
     },
@@ -107,6 +109,29 @@ describe("opt-in fan-power clean modes", () => {
     expect(settings.waterBoxMode).toBe(
       instance.getRoborockCleanModeSettings(0).waterBoxMode
     );
+  });
+
+  test("Max+ appears only for robots with a verified fifth suction level (B01/Q7)", () => {
+    const b01 = createAccessory({
+      enableFanPowerCleanModes: true,
+      canMaxPlusFanPower: true,
+    });
+    const b01Modes = b01.instance.buildCleanModeCluster().supportedModes;
+    const maxPlus = b01Modes.find((mode) => mode.mode === 7);
+    expect(maxPlus.label).toBe("Max+ Vacuum");
+    // RVC Vacuum tag + DeepClean tag (closest semantic match for the boost).
+    expect(maxPlus.modeTags).toEqual([{ value: 16385 }, { value: 16384 }]);
+    expect(b01.instance.getRoborockCleanModeSettings(7)).toEqual({
+      cleanMode: 0,
+      fanPower: 108,
+    });
+    expect(b01.instance.getCleanModeLabel(7)).toBe("Max+ Vacuum");
+
+    // Classic robots without the capability never see mode 7.
+    const classic = createAccessory({ enableFanPowerCleanModes: true });
+    expect(
+      classic.instance.buildCleanModeCluster().supportedModes.map((m) => m.mode)
+    ).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
 
   test("labels used in logs match the announced mode labels", () => {

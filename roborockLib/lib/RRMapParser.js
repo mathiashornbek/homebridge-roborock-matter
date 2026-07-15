@@ -456,4 +456,64 @@ class RRMapParser {
   }
 }
 
+/**
+ * Resolve which room segment the robot is physically inside from a parsed
+ * classic RRMap: the ROBOT_POSITION (millimeters) is converted to the
+ * IMAGE block's pixel grid (50 mm per pixel, offset by the image position)
+ * and looked up in the segment pixel list, whose entries encode
+ * `pixelIndex | (segmentId << 21)`.
+ *
+ * Returns the segment id, or null when the position/geometry is missing or
+ * the robot stands on a pixel with no segment assignment (e.g. docked in an
+ * unsegmented corridor).
+ * @param {Record<string, any>} parsedMap result of RRMapParser.parsedata()
+ * @returns {number | null}
+ */
+RRMapParser.resolveLiveSegmentId = function resolveLiveSegmentId(parsedMap) {
+  const image = parsedMap?.IMAGE;
+  const position = parsedMap?.ROBOT_POSITION?.position;
+  if (
+    !image ||
+    !Array.isArray(position) ||
+    !Number.isFinite(position[0]) ||
+    !Number.isFinite(position[1])
+  ) {
+    return null;
+  }
+
+  const width = image.dimensions?.width;
+  const height = image.dimensions?.height;
+  const left = image.position?.left;
+  const top = image.position?.top;
+  const segmentPixels = image.pixels?.segments;
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isInteger(left) ||
+    !Number.isInteger(top) ||
+    !Array.isArray(segmentPixels) ||
+    segmentPixels.length === 0
+  ) {
+    return null;
+  }
+
+  const pixelX = Math.floor(position[0] / 50) - left;
+  const pixelY = Math.floor(position[1] / 50) - top;
+  if (pixelX < 0 || pixelY < 0 || pixelX >= width || pixelY >= height) {
+    return null;
+  }
+
+  const pixelIndex = pixelY * width + pixelX;
+  // Entries encode pixelIndex in the low 21 bits and the segment id above
+  // them (see the IMAGE block parser: `i | (segmentId << 21)`).
+  for (const entry of segmentPixels) {
+    if ((entry & 0x1fffff) === pixelIndex) {
+      return entry >>> 21;
+    }
+  }
+  return null;
+};
+
 module.exports = RRMapParser;

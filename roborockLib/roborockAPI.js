@@ -14,6 +14,7 @@ const roborock_mqtt_connector =
 const rrMessage = require("./lib/message").message;
 const vacuum_class = require("./lib/vacuum").vacuum;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
+const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
 const roborockCrypto = require("./lib/roborockCrypto");
@@ -1911,6 +1912,9 @@ class Roborock {
         canVacuum: true,
         canMop: true,
         canControlFanPower: true,
+        // The B01 wire protocol defines five wind levels; level 5 is the
+        // Max+ boost (v1 fan power 108 via the adapter translation).
+        canMaxPlusFanPower: true,
         canControlWater: false,
       };
     }
@@ -3828,6 +3832,169 @@ class Roborock {
       );
       liveState.current = null;
     }
+  }
+
+  /**
+   * Protocol-agnostic live-room entry points. B01/Q7 robots use the SCMap
+   * channel (triggered internally by the B01 status loop as well); classic
+   * v1 robots fetch the RRMap via the secure get_map_v1 request. Both share
+   * the same cache contract: {segmentId, roomName, at} where segmentId
+   * matches getRoomMappingsForDevice.
+   * @param {string} duid
+   * @param {{v1State?: number}} [context] latest known v1 state, used to
+   *   avoid pointless map fetches and to re-broadcast on room changes.
+   */
+  async refreshLiveRoomForDevice(duid, context = {}) {
+    if (this.config.enableLiveRoomTracking === false) {
+      return null;
+    }
+    if (
+      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
+    ) {
+      return this.refreshB01LiveRoom(duid);
+    }
+    return this.refreshClassicLiveRoom(duid, context);
+  }
+
+  /**
+   * @param {string} duid
+   * @returns {{segmentId: number, roomName: string, at: number} | null}
+   */
+  getLiveRoomForDevice(duid) {
+    if (
+      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
+    ) {
+      return this.getB01LiveRoomForDevice(duid);
+    }
+    return this._classicLiveRoomState?.get(duid)?.current || null;
+  }
+
+  /** @param {string} duid */
+  clearLiveRoomForDevice(duid) {
+    this.clearB01LiveRoom(duid);
+    const liveState = this._classicLiveRoomState?.get(duid);
+    if (liveState?.current) {
+      this.log.debug(
+        `Cleared live room for ${duid} (${liveState.current.roomName}).`
+      );
+      liveState.current = null;
+    }
+  }
+
+  /**
+   * Classic v1 live room: fetch the RRMap via the secure get_map_v1 request
+   * (protocol 301 response: AES/gzip handled by the transport layer),
+   * parse it, and resolve the robot's position against the segment pixel
+   * grid. Same attempt throttle, single-flight guard and change
+   * re-broadcast semantics as the B01 path.
+   * @param {string} duid
+   * @param {{v1State?: number}} [context]
+   */
+  async refreshClassicLiveRoom(duid, context = {}) {
+    if (this.config.enableLiveRoomTracking === false) {
+      return null;
+    }
+    // Only fetch while the robot is actively moving through rooms; a paused
+    // or docked robot cannot change rooms, and map payloads are heavy.
+    if (
+      Number.isInteger(context.v1State) &&
+      !B01_LIVE_ROOM_FETCH_V1_STATES.has(context.v1State)
+    ) {
+      return this._classicLiveRoomState?.get(duid)?.current || null;
+    }
+
+    if (!this._classicLiveRoomState) {
+      this._classicLiveRoomState = new Map();
+    }
+    let liveState = this._classicLiveRoomState.get(duid);
+    if (!liveState) {
+      liveState = {
+        lastAttemptAt: 0,
+        inflight: null,
+        consecutiveFailures: 0,
+        current: null,
+        lastV1State: null,
+      };
+      this._classicLiveRoomState.set(duid, liveState);
+    }
+    if (Number.isInteger(context.v1State)) {
+      liveState.lastV1State = context.v1State;
+    }
+
+    if (liveState.inflight) {
+      return liveState.inflight;
+    }
+    if (Date.now() - liveState.lastAttemptAt < B01_LIVE_ROOM_MIN_FETCH_GAP_MS) {
+      return liveState.current;
+    }
+    liveState.lastAttemptAt = Date.now();
+
+    liveState.inflight = (async () => {
+      try {
+        const mapBuffer = await this.messageQueueHandler.sendRequest(
+          duid,
+          "get_map_v1",
+          [],
+          true
+        );
+        if (!Buffer.isBuffer(mapBuffer)) {
+          this.log.debug(
+            `Live-room map fetch for ${duid} returned a non-map response (${JSON.stringify(mapBuffer)?.slice(0, 80)}); keeping the previous room.`
+          );
+          return liveState.current;
+        }
+
+        const parser = this.vacuums[duid]?.mapParser || new RRMapParser(this);
+        const parsedMap = await parser.parsedata(mapBuffer);
+        const segmentId = RRMapParser.resolveLiveSegmentId(parsedMap);
+        liveState.consecutiveFailures = 0;
+
+        if (segmentId === null) {
+          this.log.debug(
+            `Live room for ${duid}: robot position has no segment assignment (or position/segments missing from the map).`
+          );
+          return liveState.current;
+        }
+
+        const room = this.getRoomMappingsForDevice(duid).find(
+          (candidate) => Number(candidate.segmentId) === segmentId
+        );
+        const roomName = room?.name || `Room ${segmentId}`;
+        const previous = liveState.current;
+        liveState.current = { segmentId, roomName, at: Date.now() };
+
+        if (!previous || previous.segmentId !== segmentId) {
+          this.log.info(
+            `Live room for ${duid}: ${roomName} (${segmentId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}.`
+          );
+          if (this.deviceNotify && Number.isInteger(liveState.lastV1State)) {
+            this.deviceNotify("CloudMessage", {
+              duid,
+              payload: [{ state: liveState.lastV1State }],
+            });
+          }
+        }
+
+        return liveState.current;
+      } catch (error) {
+        liveState.consecutiveFailures += 1;
+        const message = error?.message || String(error);
+        if (liveState.consecutiveFailures % 5 === 0) {
+          this.log.warn(
+            `Live-room map fetch has failed ${liveState.consecutiveFailures} times in a row for ${duid}. Last error: ${message}`
+          );
+        } else {
+          this.log.debug(
+            `Live-room map fetch attempt failed for ${duid}: ${message}`
+          );
+        }
+        return liveState.current;
+      } finally {
+        liveState.inflight = null;
+      }
+    })();
+
+    return liveState.inflight;
   }
 
   getProductData(productId) {

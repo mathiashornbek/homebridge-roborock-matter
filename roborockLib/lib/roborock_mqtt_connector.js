@@ -106,64 +106,85 @@ class roborock_mqtt_connector {
       if (typeof result != "undefined") {
         client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
           if (err) {
-            this.adapter.catchError(
-              `Failed to subscribe to Roborock MQTT Server! Error: ${err}, granted: ${JSON.stringify(granted)}`,
-              `client.on("connect")`
+            this.logConnectionIssue(
+              `Failed to subscribe to the Roborock MQTT server: ${err} (granted: ${JSON.stringify(granted)}).`
             );
           }
         });
         clearTimeout(timeout);
 
         this.connected = true;
+        if (this._connectionIssueActive) {
+          this._connectionIssueActive = false;
+          this._connectionIssueLog?.clear();
+          this.adapter.log.info(
+            `Roborock MQTT connection recovered after the reported outage.`
+          );
+        }
       }
       this.adapter.log.debug(
         `MQTT connection connected ${JSON.stringify(result)}.`
       );
     });
 
-    await client.on("error", (result) => {
-      this.adapter.catchError(
-        `MQTT connection error: ${result}`,
-        `client.on("error")`
-      );
-
+    // Connection-state events are account-level transport telemetry, not
+    // per-robot command failures: log them as clear, throttled warnings
+    // instead of routing them through catchError (which used to produce the
+    // misleading `Failed to execute client.on("error") on robot undefined`
+    // spam twice per reconnect attempt during network outages).
+    await client.on("error", (error) => {
       this.connected = false;
+      this.logConnectionIssue(
+        `Roborock MQTT connection error: ${error?.message || error}. The client keeps reconnecting automatically.`
+      );
     });
 
     await client.on("close", () => {
-      this.adapter.log.info(`MQTT connection close.`);
-
-      this.connected = false;
-    });
-
-    await client.on("reconnect", (error) => {
-      if (error) {
-        this.adapter.catchError(
-          `Failed to reconnect to MQTT server.`,
-          `mqtt client reconnect`
-        );
-      } else {
-        client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
-          if (err) {
-            this.adapter.catchError(
-              `Failed to subscribe to Roborock MQTT Server! Error: ${err}, granted: ${JSON.stringify(granted)}`,
-              `client.on("reconnect")`
-            );
-          }
-        });
-        clearTimeout(timeout);
+      if (this.connected) {
+        this.adapter.log.info(`MQTT connection closed; reconnecting.`);
       }
-      this.adapter.log.info(`MQTT connection reconnect.`);
-    });
-
-    await client.on("offline", (result) => {
-      this.adapter.catchError(
-        `MQTT connection offline: ${result}`,
-        `client.on("offline")`
-      );
-
       this.connected = false;
     });
+
+    await client.on("reconnect", () => {
+      client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
+        if (err) {
+          this.logConnectionIssue(
+            `Failed to subscribe to the Roborock MQTT server after reconnect: ${err} (granted: ${JSON.stringify(granted)}).`
+          );
+        }
+      });
+      clearTimeout(timeout);
+      this.adapter.log.debug(`MQTT connection reconnect attempt.`);
+    });
+
+    await client.on("offline", () => {
+      this.connected = false;
+      this.logConnectionIssue(
+        `Roborock MQTT connection is offline. The client keeps reconnecting automatically.`
+      );
+    });
+  }
+
+  /**
+   * Warn about a connection problem at most once per 5 minutes per message,
+   * and remember that an outage is in progress so the next successful
+   * connect logs a single recovery line instead of silence.
+   * @param {string} message
+   */
+  logConnectionIssue(message) {
+    if (!this._connectionIssueLog) {
+      this._connectionIssueLog = new Map();
+    }
+    this._connectionIssueActive = true;
+    const now = Date.now();
+    const lastAt = this._connectionIssueLog.get(message) || 0;
+    if (now - lastAt >= 5 * 60 * 1000) {
+      this._connectionIssueLog.set(message, now);
+      this.adapter.log.warn(message);
+    } else {
+      this.adapter.log.debug(message);
+    }
   }
 
   getKnownDeviceDuids() {

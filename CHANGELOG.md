@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.7.0
+
+Live room tracking for the whole fleet, a fifth suction level for the Q7, and quieter transport logs.
+
+- **New: live room tracking for classic S/Q-series robots.** The flagship feature no longer stops at B01/Q7: classic robots now fetch their RRMap via the secure `get_map_v1` request (the protocol 301 decrypt/gunzip transport already existed), and the robot's millimeter position is resolved against the map's per-pixel room segments (`pixelIndex | segmentId << 21` grid). Same design as the B01 path: ~20 s attempt throttle, single-flight, fetches only while actively cleaning (never while paused or docked), previous room retained while crossing unsegmented floor, and a change re-broadcast so Apple Home updates within seconds. The Service Area layer — honest per-room progress included — is shared and unchanged.
+- **New: Max+ suction mode for the Q7** (fifth wind level, v1 fan power 108) in the opt-in fan-power clean modes, tagged Vacuum + DeepClean. Only announced for robots whose protocol verifiably defines the level (B01/Q7); classic models stay at four levels until a reliable capability signal exists — model guessing is what this fork moves away from.
+- **Fixed misleading MQTT outage spam.** Connection-state events were routed through the per-robot command error path, producing `Failed to execute client.on("error") on robot undefined (unknown model)` twice per reconnect attempt, unthrottled, for as long as an outage lasted (observed during a real nighttime DNS outage). Connection issues now log one clear warning per distinct message per 5 minutes, downgrade to debug in between, and a single recovery line is logged when the connection comes back.
+- Battery upstream report (`docs/matter-battery-issue-draft.md`) finalized for filing against homebridge/homebridge, now including the resync-nudge finding and a reproduction section.
+- Full suite: 254 passing (6 new classic live-room tests exercising the real RRMap parser end to end, plus Max+ coverage).
+
 ## 2.6.0
 
 - **New: opt-in suction-level cleaning modes.** With `enableFanPowerCleanModes` (default off), the Matter cleaning mode list gains **Quiet / Balanced / Turbo / Max Vacuum** variants with proper Matter mode tags (Vacuum + Quiet/Max), so suction can be chosen directly from Apple Home's mode picker. Selecting a variant pins the robot's fan power (v1 codes 101-104; the B01/Q7 adapter translates to wind levels 1-4) while behaving as a vacuum-family mode everywhere else (water box handling, mop rules). Off by default because Matter fixes an accessory's mode list at commissioning: toggling the option requires removing and re-pairing the robot once — this ships as a deliberate opt-in rather than a forced re-pair for everyone.
