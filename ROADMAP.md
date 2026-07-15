@@ -32,7 +32,8 @@
 - Extended live room tracking to classic S/Q-series robots via the RRMap segment grid — the flagship feature now covers the whole fleet (2.7.0).
 - Rebuilt the README and the custom settings UI: every Apple Home feature toggle is now visible in a dedicated section with re-pair markers on capability-changing options (2.6.0, 2.9.0).
 - Filed the frozen-battery-percentage report upstream as homebridge/homebridge#3958 with the full evidence chain; a Homebridge maintainer verified the corrected Matter 1.4 Q-quality analysis the same day (2026-07-15).
-- **Achieved Verified by Homebridge status** after full review by the Homebridge team, with the Donate button enabled (2.9.3, 2026-07-15).
+- **Achieved Verified by Homebridge status** after full review by the Homebridge team, with the Donate button enabled (2.9.3, 2026-07-15). The plugin icon was added to the official Homebridge icons registry by the team the same evening, and the plugin is listed on the Homebridge Matter Plugins wiki.
+- Startup-cost cleanup: removed two redundant RSA-2048 key generations at boot (one unused, one now lazy for the rare photo path) plus dead HomeKit-era helpers (2.9.4).
 - Deep performance pass on the live-room hot paths: classic map lookup went from ~23 ms + ~6.7 MB allocations to ~1 µs with zero allocations; room-cache disk writes and hot debug stringify eliminated when idle (2.9.1).
 
 ## In Progress
