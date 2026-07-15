@@ -74,6 +74,11 @@ jobs:
 
       - name: Publish to npm
         if: steps.npm.outputs.published != 'true'
+        # Auth: uses the NPM_TOKEN repository secret when configured; with an
+        # npm Trusted Publisher set up for this repo/workflow instead, npm >=
+        # 11.5 authenticates via OIDC and the (then empty) token is ignored.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance=false
 
       - name: Set release tag
