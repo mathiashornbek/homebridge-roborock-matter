@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.4.1
+
+- Added the standard `name` property to the config schema (Homebridge verification requirement) so the platform name is editable in the Homebridge UI.
+- No functional changes.
+
 ## 2.4.0
 
 - **New: live room tracking for B01/Q7-series robots.** While the robot is actively cleaning, the plugin now fetches the robot's live position from the encrypted SCMap channel (`currentPose`, ~20s cadence, only during active cleaning states) and ray-casts it against the per-room boundary outlines (`roomChain`) to determine which room the robot is physically inside. The detected room is published as the Matter Service Area `currentArea`, so Apple Home's status pill can show "cleaning in \<room\>" with the actual room — including runs started from the robot button or the Roborock app, and full-home cleans, which previously had no room to name. This closes the gap noted in 2.3.1 ("deriving the live room from the robot's map position, the way the vendor app does").
