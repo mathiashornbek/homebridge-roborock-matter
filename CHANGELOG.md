@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.6
+
+- **Friendlier plugin description and README.** The npm description shown in the Homebridge UI now leads with what the plugin does for you ("sign in with your Roborock account — start cleans, pick rooms, set suction power, and see live which room the robot is cleaning") instead of protocol terminology. The README's intro, feature matrix and live-room section were rewritten in plain language, with the technical depth preserved in collapsible under-the-hood sections. No functional changes.
+
 ## 2.9.5
 
 - **One synchronous disk write per received robot message eliminated.** The per-device diagnostics states (last cloud/local message, transport history) were flushed to disk with a blocking `fs.writeFileSync` on EVERY message a robot pushed — every few seconds per robot while cleaning. They are served from memory (the settings UI never reads the file); the on-disk copy only needs to survive restarts. Disk flushes for these two states are now debounced to at most once per minute, with a guaranteed flush on shutdown. Result: event-loop stalls removed from the message hot path, and meaningfully less SD-card wear on Raspberry Pi installs. Critical states (credentials, HomeData, room caches) still persist immediately.

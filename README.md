@@ -27,29 +27,29 @@
 
 ---
 
-Log in with your **Roborock app account** — no token extraction, no rooted apps, no packet sniffing — and every robot appears in Apple Home as a first-class **Matter Robotic Vacuum Cleaner**: start, pause, dock, pick rooms, choose cleaning modes, and watch the status pill name the room the robot is _actually inside_, live.
+Sign in with the same account you already use in the Roborock app — that's the whole setup. Every robot then appears in Apple Home as a real vacuum: start and stop cleans, send it to specific rooms, pick the suction power, check the battery — and watch the Home app tell you **which room it's cleaning right now**. No token extraction, no network tricks, no command line.
 
 ## Why this plugin
 
-- 🗣️ **The only plugin that speaks 2025 Roborock.** The B01/Q7-series (`roborock.vacuum.sc05`, Q7 M5 / M5+) exists solely in the Roborock app ecosystem — a new RPC dialect with an encrypted protobuf map channel that miio-based plugins cannot talk to at all. Fully implemented here: commands, status, battery, suction levels, room cleaning, and the map channel.
-- 📍 **Live room tracking — on every robot.** While the robot works, its position is read from the map channel (encrypted SCMap on B01/Q7, classic RRMap on S/Q-series), matched against your room geometry, and published as the current Matter Service Area. Apple Home shows _"Cleaning — Kitchen"_ — including runs started from the robot's button or the Roborock app. No other Homebridge plugin does this.
-- 🧭 **Matter-only, by design.** No legacy fan tiles, no helper-switch clutter. One robot, one native accessory, on Homebridge 2's built-in Matter bridge — including room/map selection sourced from your Roborock account's named rooms.
-- 🔌 **Cloud + local, automatically.** Commands prefer a direct local TCP connection to the robot and fall back to the Roborock cloud transparently, with per-device connection diagnostics in the settings UI when you want to see exactly what happened.
-- 🛡️ **Hardened and boring where it counts.** 260 automated tests, CI on Node 22/24 against Homebridge 1.11 and 2.x, zero known vulnerabilities, no analytics, no post-install scripts, and a startup that retries with backoff instead of ever crash-looping Homebridge. **Verified by Homebridge** after review by the Homebridge team.
+- 🥇 **The only plugin that works with the newest Roborocks.** The 2025 Q7 series (Q7 M5 / M5+) speaks a brand-new protocol that no other Homebridge plugin understands. Fully supported here — alongside the classic S- and Q-series models.
+- 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
+- 🧭 **One robot, one tile.** Your vacuum shows up as a single, native accessory in Apple Home — no clutter of fake fans and helper switches. Rooms appear with the names you gave them in the Roborock app.
+- ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 263 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
-|                                      |                                                                                                                                       |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| 🤖 **Native Matter RVC**             | Start / stop / pause / return-to-dock, run modes, operational state, error reporting                                                  |
-| 🚪 **Room cleaning from Apple Home** | Matter Service Area selection with your real room names, multi-map homes included                                                     |
-| 📍 **Live room tracking**            | The room the robot is physically inside, updated every ~20 s while cleaning ([details](#live-room-tracking))                          |
-| 📊 **Honest cleaning progress**      | Per-room pending → operating → completed, only claiming rooms the robot was actually detected in                                      |
-| 🌀 **Cleaning modes**                | Vacuum / Mop / Vacuum + Mop, capability-gated per robot — plus optional Quiet / Balanced / Turbo / Max suction modes (and Max+ on Q7) |
-| 🔋 **Battery & charging**            | Live percentage and charge state via Matter PowerSource ([one Apple-side caveat](#battery-percentage-in-apple-home))                  |
-| 🧠 **Self-adapting model support**   | Unknown models get capability-derived polling; requests a robot reports as unsupported are disabled automatically                     |
-| 🩺 **Built-in diagnostics**          | Connection state, transport history, live LAN probe, and a redacted report generator for bug reports                                  |
-| 🔐 **2FA-friendly login**            | Roborock account two-factor authentication handled entirely in the settings UI                                                        |
+|                                     |                                                                                                                                  |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 🤖 **Full control from Apple Home** | Start, stop, pause and send the robot home to its dock — from the Home app, Siri, or automations                                 |
+| 🚪 **Clean specific rooms**         | Pick rooms right in Apple Home, with the names you gave them in the Roborock app — multi-floor homes included                    |
+| 📍 **Live room tracking**           | See which room the robot is cleaning right now, updated as it moves ([details](#live-room-tracking))                             |
+| 📊 **Honest cleaning progress**     | Each room goes pending → cleaning → done — and a room only counts as done when the robot was actually there                      |
+| 🌀 **Cleaning & suction modes**     | Vacuum / Mop / Vacuum + Mop on models that support it — plus optional Quiet / Balanced / Turbo / Max suction levels (Max+ on Q7) |
+| 🔋 **Battery & charging**           | Battery level and charging state on the accessory ([one Apple-side caveat](#battery-percentage-in-apple-home))                   |
+| 🧠 **New models just work**         | Brand-new Roborock models get sensible defaults automatically, and the plugin adapts to what each robot actually supports        |
+| 🩺 **Built-in diagnostics**         | Connection status, a one-click connection test, and a ready-to-share report if you ever need help                                |
+| 🔐 **Easy, safe login**             | Sign in with your Roborock account right in the settings — two-factor supported, session stored encrypted                        |
 
 ## Quick start
 
@@ -66,13 +66,16 @@ For B01/Q7 robots, room selection appears once the map has been fetched (watch f
 
 ## Live room tracking
 
-While a robot is actively cleaning, the plugin fetches its live position from the map channel (throttled to ~20 s, active runs only, nothing while docked or paused) and publishes the room it is inside as the Matter Service Area `currentArea`. Both robot generations are covered: **B01/Q7** robots via the encrypted SCMap protobuf (position ray-cast against per-room boundary outlines), **classic S/Q-series** robots via the RRMap segment grid (position resolved against per-pixel room segments):
+While your robot cleans, the plugin follows its position on the map and tells Apple Home which room it's in — _"Cleaning — Kitchen"_, just like the Roborock app shows it. It updates as the robot moves, works for whole-home cleans, and even for cleans you start from the robot's button.
 
-- Apple Home's status pill names the room the robot is **physically inside** — the way the vendor app does it.
-- Works for full-home cleans and for runs started from the robot's button or the Roborock app, which previously had no room to show at all.
-- Progress stays honest: a room is only marked _completed_ once the robot was actually detected inside it and has moved on. The plugin never invents data the robot didn't report.
+Progress stays honest: a room is only shown as _completed_ once the robot was actually seen inside it. The plugin never invents data the robot didn't report. Enabled by default; turn it off with `enableLiveRoomTracking: false`.
 
-Enabled by default; opt out with `enableLiveRoomTracking: false`.
+<details>
+<summary>How it works under the hood</summary>
+
+While a robot is actively cleaning, the plugin fetches its live position from the map channel (throttled to ~20 s, active runs only, nothing while docked or paused) and publishes the room it is inside as the Matter Service Area `currentArea`. Both robot generations are covered: **B01/Q7** robots via the encrypted SCMap protobuf (position ray-cast against per-room boundary outlines), **classic S/Q-series** robots via the RRMap segment grid (position resolved against per-pixel room segments — a single-byte lookup on the raw map buffer, ~1 µs per check).
+
+</details>
 
 ## Suction modes (optional)
 
@@ -122,7 +125,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 256 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 263 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 
