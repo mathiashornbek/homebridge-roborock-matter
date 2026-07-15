@@ -158,6 +158,14 @@ class RoborockMatterVacuumAccessory {
         this.lastLoggedBatteryHalfPercent = null;
         this.powerSourceResyncDone = false;
         this.serviceAreaCurrentArea = null;
+        // Per-cluster JSON of the last CONFIRMED publish. Used to skip republishing
+        // identical cluster payloads on every poll/heartbeat. Safe against the
+        // historical "Updating..." desync (see updateMatterState comment) because
+        // (a) all publishes are serialized through matterPublishChain, (b) entries
+        // are recorded only after the individual cluster write succeeded and are
+        // dropped on failure, and (c) the heartbeat performs a forced full publish
+        // every cycle, self-healing any residual divergence within a minute.
+        this.lastPublishedClusterJson = new Map();
         this.serviceAreaProgress = [];
         this.selectedCleanMode = CLEAN_MODE_VACUUM;
         this.selectedCleanModeNeedsApply = false;
@@ -178,6 +186,7 @@ class RoborockMatterVacuumAccessory {
         this.liveStatus = new Map();
         this.registered = isRegistered;
         this.updateMetadata(device);
+        this.restoreServiceAreaProgress();
     }
     get api() {
         return this.platform.roborockAPI;
@@ -214,6 +223,8 @@ class RoborockMatterVacuumAccessory {
     }
     markRegistered() {
         this.registered = true;
+        // Fresh registration: nothing is published on the new node yet.
+        this.lastPublishedClusterJson.clear();
     }
     /**
      * Stops all background work for this accessory. Called on Homebridge
@@ -262,7 +273,13 @@ class RoborockMatterVacuumAccessory {
         else {
             delete this.accessory.firmwareRevision;
         }
-        this.accessory.context = { ...(this.accessory.context || {}), duid };
+        // Mutate the context instead of replacing it: Homebridge (and our own
+        // persistence helpers) hold a reference to this object, so swapping it
+        // out would silently orphan previously persisted state.
+        if (!this.accessory.context) {
+            this.accessory.context = {};
+        }
+        this.accessory.context.duid = duid;
         this.accessory.clusters = this.buildClusters();
         this.accessory.handlers = this.buildHandlers();
         this.accessory.getState = async (cluster, attribute) => {
@@ -416,7 +433,7 @@ class RoborockMatterVacuumAccessory {
                     operationalState: RVC_OPERATIONAL_STATE.RUNNING,
                 },
             };
-            this.clearServiceAreaProgress();
+            this.beginFullCleanServiceAreaProgress();
             this.setAndScheduleOptimisticState(state, "start");
             this.dispatchRoborockMatterCommand("start", async () => {
                 await this.applySelectedCleanModeIfNeeded();
@@ -586,8 +603,12 @@ class RoborockMatterVacuumAccessory {
             await Promise.all(clusterEntries.map(async ([cluster, attributes]) => {
                 try {
                     await matter.updateAccessoryState(this.accessory.UUID, cluster, attributes);
+                    this.lastPublishedClusterJson.set(cluster, JSON.stringify(attributes));
                 }
                 catch (error) {
+                    // Drop the record so the cluster is retried on the next snapshot
+                    // even if its payload is unchanged.
+                    this.lastPublishedClusterJson.delete(cluster);
                     failures.push(error);
                     this.platform.log.debug(`Matter publish for cluster ${cluster} on ${this.accessory.UUID} failed: ${error instanceof Error ? error.message : String(error)}`);
                 }
@@ -632,8 +653,27 @@ class RoborockMatterVacuumAccessory {
      * so every subscribed controller receives a fresh report — no hub restart
      * or re-pairing required.
      */
-    async publishRoborockSnapshot(clusters, reason) {
+    async publishRoborockSnapshot(clusters, reason, options = {}) {
         var _a, _b;
+        // Skip clusters whose payload is byte-identical to the last confirmed
+        // publish: every 15s poll and every heartbeat otherwise re-submits 4-6
+        // unchanged clusters per robot through the Homebridge/matter.js stack.
+        // The heartbeat passes force=true, keeping a periodic full write as the
+        // self-healing safety net.
+        if (options.force !== true) {
+            const changed = {};
+            for (const [cluster, attributes] of Object.entries(clusters)) {
+                if (JSON.stringify(attributes) !==
+                    this.lastPublishedClusterJson.get(cluster)) {
+                    changed[cluster] = attributes;
+                }
+            }
+            if (Object.keys(changed).length === 0) {
+                // Everything already published: a no-op is a successful publish.
+                return true;
+            }
+            clusters = changed;
+        }
         const power = clusters.powerSource;
         const resyncEligible = !this.powerSourceResyncDone &&
             power !== undefined &&
@@ -995,6 +1035,30 @@ class RoborockMatterVacuumAccessory {
     hasServiceAreasToExpose() {
         return this.getMatterServiceAreas().length > 0;
     }
+    persistServiceAreaProgress() {
+        // Best-effort: Homebridge persists accessory context periodically and on
+        // shutdown, so a restart mid-clean restores the room display instead of
+        // silently dropping back to a generic label.
+        this.accessory.context.serviceAreaProgressState = {
+            currentArea: this.serviceAreaCurrentArea,
+            progress: this.serviceAreaProgress.map((entry) => ({ ...entry })),
+        };
+    }
+    restoreServiceAreaProgress() {
+        var _a;
+        const persisted = (_a = this.accessory.context) === null || _a === void 0 ? void 0 : _a.serviceAreaProgressState;
+        if (!persisted || !Array.isArray(persisted.progress)) {
+            return;
+        }
+        this.serviceAreaCurrentArea =
+            typeof persisted.currentArea === "number" ? persisted.currentArea : null;
+        this.serviceAreaProgress = persisted.progress
+            .filter((entry) => typeof entry === "object" &&
+            entry !== null &&
+            typeof entry.areaId === "number" &&
+            typeof entry.status === "number")
+            .map((entry) => ({ ...entry }));
+    }
     beginServiceAreaProgress(areaIds) {
         if (areaIds.length === 0) {
             this.clearServiceAreaProgress();
@@ -1010,10 +1074,33 @@ class RoborockMatterVacuumAccessory {
                 ? SERVICE_AREA_PROGRESS.OPERATING
                 : SERVICE_AREA_PROGRESS.PENDING,
         }));
+        this.persistServiceAreaProgress();
+    }
+    /**
+     * A full-home clean operates on every supported area. We cannot know which
+     * room the robot is physically inside (the robots do not report it), so no
+     * area is marked operating and currentArea stays null — but publishing the
+     * run's scope as pending -> completed gives controllers real progress data
+     * instead of an empty list, which Apple Home otherwise renders as a
+     * permanent "Preparing".
+     */
+    beginFullCleanServiceAreaProgress() {
+        const areaIds = this.getMatterServiceAreas().map((area) => area.areaId);
+        if (areaIds.length === 0) {
+            this.clearServiceAreaProgress();
+            return;
+        }
+        this.serviceAreaCurrentArea = null;
+        this.serviceAreaProgress = areaIds.map((areaId) => ({
+            areaId,
+            status: SERVICE_AREA_PROGRESS.PENDING,
+        }));
+        this.persistServiceAreaProgress();
     }
     clearServiceAreaProgress() {
         this.serviceAreaCurrentArea = null;
         this.serviceAreaProgress = [];
+        this.persistServiceAreaProgress();
     }
     completeServiceAreaProgressIfDone(operationalState) {
         if (this.serviceAreaProgress.length === 0) {
@@ -1029,6 +1116,7 @@ class RoborockMatterVacuumAccessory {
             areaId: entry.areaId,
             status: SERVICE_AREA_PROGRESS.COMPLETED,
         }));
+        this.persistServiceAreaProgress();
     }
     buildServiceAreaCluster() {
         var _a;
@@ -1698,7 +1786,10 @@ class RoborockMatterVacuumAccessory {
         if (options.clearOptimistic === true) {
             this.clearOptimisticState();
         }
-        const updated = await this.updateMatterState(this.buildClusters(), reason);
+        // Forced: identify commands and the heartbeat must always reach the
+        // Matter layer — the heartbeat's forced full write is also the diff
+        // mechanism's self-healing safety net.
+        const updated = await this.publishRoborockSnapshot(this.buildClusters(), reason, { force: true });
         if (updated) {
             this.ensureMatterStateHeartbeat();
         }

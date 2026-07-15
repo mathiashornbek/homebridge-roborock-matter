@@ -1,0 +1,80 @@
+name: "CI"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, next]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: "Check lint rules"
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [current]
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+
+  build:
+    name: "Typescript build"
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [current]
+        homebridge-version: ["^1.11.4", "^2.0.0-beta.0"]
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm install --no-save homebridge@${{ matrix.homebridge-version }}
+      - run: npm run build
+
+  tests:
+    name: "Run tests"
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        # Run the tests for the previous and current LTS version + the current version
+        node-version: [lts/-1, lts/*, current]
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm test -- --coverage
+        env:
+          CI: true
+      - name: Upload coverage to Codecov
+        run: |
+          if [ -z "$CODECOV_TOKEN" ]; then
+            echo "CODECOV_TOKEN is not configured; skipping coverage upload."
+            exit 0
+          fi
+          npx codecov@3.7.0
+        env:
+          CI: true
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

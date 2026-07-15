@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.3.1
+
+- **Full-home cleans now publish the run's scope as Service Area progress.** Previously a full clean cleared the progress list entirely, leaving controllers with no per-run data — which Apple Home renders as a permanent "Preparing" pill for the whole run. Every supported area is now reported as pending at start and completed when the robot returns to the charger. No area is claimed as current and currentArea stays null: the robots do not report which room they are physically inside, and the plugin does not invent one. Whether Apple's pill label improves with real scope data is up to Apple's renderer — this ships the honest maximum of what the robots expose. (Deriving the live room from the robot's map position, the way the vendor app does, remains a possible future feature.)
+- Full suite: 217 passing.
+
+## 2.3.0
+
+Performance release: snappier state in Apple Home while robots are working, and a much quieter idle load.
+
+- **Adaptive B01 poll cadence.** The dedicated B01/Q7 status loop still ticks every 15s, but the cloud-protecting attempt throttle is now state-aware: ~12s effective cadence while the robot is actively working (cleaning, spot/zone/segment runs, returning, docking, mop washing) and the conservative ~45s at rest. Phase transitions — started from the robot button or the Roborock app included — now reach Apple Home within seconds instead of up to ~45s, while a docked fleet keeps the gentle cloud footprint.
+- **Confirmed-publish diffing.** Cluster payloads byte-identical to the last CONFIRMED publish are no longer re-submitted on every poll and live message (previously 4-6 unchanged clusters per robot per cycle through the Homebridge/matter.js stack, around the clock). Three safety layers prevent the historical "Updating..." store-desync that made upstream remove its old change tracking: all publishes remain serialized, tracking entries are recorded per cluster only after the individual write succeeded (and dropped on failure so retries always go through), and the 60s heartbeat now performs a FORCED full publish as a self-healing safety net. Behavior on failure paths, registration, and the battery resync nudge is unchanged.
+- Test suite updated to the new contracts and extended with an adaptive-cadence test; the optimistic-state protection test is now stricter (any docked/charging leak during the start window fails it). Full suite: 216 passing.
+
+## 2.2.1
+
+- **Removed: the HomeKit battery companion accessories introduced in 2.2.0.** This fork stays Matter-only; a HAP side-channel is not the right answer. Any companions created by 2.2.0 are no longer registered by the plugin and can be removed from the Homebridge cache via the Homebridge UI (Settings -> Remove single cached accessory) if they linger.
+- Retained from 2.2.0: Service Area progress persistence across restarts, the accessory-context mutation fix, the README documentation of the controller-side battery reporting limitation, and the ready-to-file upstream report in `docs/matter-battery-issue-draft.md` — filing that issue with Homebridge is the correct, Matter-native path to a permanent battery fix.
+- Full suite: 215 passing.
+
+## 2.2.0
+
+- **New: HomeKit battery companion accessories (enabled by default).** The Matter battery percentage freezes in Apple Home because the attribute carries the Matter spec "changes omitted" reporting quality — changes are never pushed to subscribed controllers, matter.js implements this faithfully, and Apple never re-reads (matter.js' own controller compensates by always reading such attributes; Apple's does not). Since no bridge-side write can force the attribute to report, the plugin now publishes a small HomeKit Battery accessory per vacuum through the regular Homebridge child bridge, mirroring the exact values of every Matter publish: live percentage, charging state, and a low-battery flag at 20%. Pair the plugin's child bridge with Apple Home to see them; opt out with `disableBatteryCompanion` in the plugin config (removes existing companions cleanly).
+- **New: Service Area progress survives restarts.** The active room and per-area progress are persisted in the accessory context and restored on startup, so a Homebridge restart mid-clean no longer drops Apple Home back to a generic label.
+- **Fixed a context-replacement bug:** metadata updates replaced the accessory `context` object instead of mutating it, which could orphan persisted state held by Homebridge under the old reference. Found by the new persistence test.
+- Documentation: README section on the Apple Home battery limitation with the full evidence chain, and `docs/matter-battery-issue-draft.md` — a ready-to-file upstream report for Homebridge/matter.js.
+- Full suite: 217 passing, including companion mirroring in the three-robot end-to-end simulation.
+
 ## 2.1.3
 
 - **Service Area progress feature is now announced at commissioning.** Homebridge derives Matter cluster features from which attributes are present when the accessory registers (the same mechanism as its own PowerSource Rechargeable fix, homebridge#3914). The `progress` list was previously only included while a room clean was running — never at registration — so the progress feature was likely never announced to controllers, leaving Apple Home unable to render "cleaning in <room>" and stuck on "heading to the room"/"Preparing" instead. `progress` (empty when idle) and `estimatedEndTime` (null; the robots provide no ETA data) are now always present in the cluster state. NOTE: Matter locks cluster features at commissioning, so this improvement requires re-pairing the robot once.

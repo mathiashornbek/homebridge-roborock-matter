@@ -1,0 +1,126 @@
+name: "Publish to npm"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: "npm-publish-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: "Publish package"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      # Pinned to the 11.x line: recent enough for OIDC trusted publishing,
+      # but avoids npm 12.0.0's broken provenance module (throws
+      # "Cannot find module 'sigstore'" even with --provenance=false).
+      - name: Upgrade npm
+        run: npm install -g "npm@^11"
+
+      - name: Show Node and npm versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test -- --runInBand
+        env:
+          CI: true
+
+      - name: Build package
+        run: npm run build
+
+      - name: Read package metadata
+        id: package
+        shell: bash
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm for existing version
+        id: npm
+        shell: bash
+        run: |
+          if npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${{ steps.package.outputs.version }} is already published. Skipping npm publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.npm.outputs.published != 'true'
+        run: npm publish --provenance=false
+
+      - name: Set release tag
+        id: release
+        shell: bash
+        run: |
+          TAG="v${{ steps.package.outputs.version }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from changelog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.package.outputs.version }}"
+          awk -v version="$VERSION" '
+            $0 == "## " version { capture=1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md | sed '/^[[:space:]]*$/N;/^\n$/D' > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="${{ steps.release.outputs.tag }}" \
+              -f target_commitish="$GITHUB_SHA" \
+              --jq .body > release-notes.md
+          fi
+
+          if [ ! -s release-notes.md ]; then
+            printf 'Release %s\n' "${{ steps.release.outputs.tag }}" > release-notes.md
+          fi
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.release.outputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "${{ steps.release.outputs.tag }}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "${{ steps.release.outputs.tag }}" \
+              --notes-file release-notes.md
+          else
+            gh release create "${{ steps.release.outputs.tag }}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "${{ steps.release.outputs.tag }}" \
+              --notes-file release-notes.md
+          fi

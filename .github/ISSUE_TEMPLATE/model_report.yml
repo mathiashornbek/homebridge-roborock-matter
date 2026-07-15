@@ -1,0 +1,32 @@
+name: Model support report
+description: Report a Roborock model that is unknown, partially supported, or behaving differently.
+title: "[Model]: "
+labels: ["model-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The best model reports include the redacted diagnostic report from the plugin settings UI. Please do not paste raw HomeData, tokens, local keys, or passwords.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostic report
+      description: Paste the output from Copy Diagnostic Report.
+      placeholder: Paste redacted diagnostic report here.
+    validations:
+      required: true
+  - type: input
+    id: marketed-model
+    attributes:
+      label: Marketing model name
+      description: The model name shown in the Roborock app or on the product box.
+      placeholder: Q5 Max+, Qrevo Plus, Saros 10...
+    validations:
+      required: false
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What is not working?
+      description: Describe unsupported attributes, missing controls, bad model names, or command failures.
+    validations:
+      required: true

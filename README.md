@@ -10,6 +10,27 @@ A **Matter-only** Homebridge plugin that publishes your Roborock robot vacuums �
 - **B01/Q7-series protocol support.** The 2025 Q-series robots speak a different RPC dialect that upstream does not implement. This fork adds a full B01 adapter — commands (start/stop/pause/dock/locate/segment cleaning), status, battery, charging state, mop/vacuum mode switching, and room selection via the encrypted B01 map channel — implemented against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference and verified with fixture-driven tests.
 - **Robustness hardening.** Startup guards, self-healing status polling with a dedicated B01 loop, per-cluster Matter publish isolation, interval-lifecycle fixes, and a light, accessible settings UI with per-device enable/disable.
 
+## Battery percentage in Apple Home — known controller-side limitation
+
+The Matter PowerSource attribute `batPercentRemaining` carries the spec
+reporting quality **"changes omitted"**: value changes are not pushed to
+subscribed controllers, by design. matter.js implements this faithfully on
+the device side, and its own controller documents the consequence ("Always
+read attributes that do not report changes via subscriptions"). Apple Home
+performs no such re-reads, so the vacuum tile's battery percentage freezes
+at whatever it was when the accessory was paired — while the charging state
+on the very same cluster updates live.
+
+This was verified end-to-end in the field: the plugin's publishes, the
+Homebridge API, and the persisted matter.js store all carry the live value
+in real time while Apple keeps rendering the pairing-day percentage. The
+plugin performs a one-time battery resync per boot so controllers that
+re-prime their subscriptions pick up a fresh value; beyond that, no
+device-side write can force a changes-omitted attribute to report. Known
+refresh paths today: re-establishing the controller subscription (Matter
+hub restart) and re-pairing. The permanent fix belongs in the controller
+ecosystem — `docs/matter-battery-issue-draft.md` contains a ready-to-file
+upstream report with the complete evidence chain.
 ## Requirements
 
 - Homebridge 2 with Matter enabled on the Roborock child/daughter bridge.

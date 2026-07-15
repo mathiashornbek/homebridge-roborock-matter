@@ -21,6 +21,11 @@ const messageQueueHandler =
 const roborockCrypto = require("./lib/roborockCrypto");
 const b01Q7Adapter = require("./lib/b01Q7Adapter");
 
+// v1 states in which the robot is actively doing something and state
+// transitions are imminent (cleaning, returning, spot/zone/segment runs,
+// docking, mop washing). Drives the adaptive B01 poll cadence.
+const B01_ACTIVE_V1_STATES = new Set([5, 6, 7, 11, 15, 16, 17, 18, 23, 26]);
+
 const PERSISTED_STATE_IDS = new Set([
   "UserData",
   "clientID",
@@ -3300,7 +3305,12 @@ class Roborock {
 
     // Throttle on ATTEMPTS, not successes: a robot or cloud that stops
     // answering must not turn the 1-second poll tick into a retry storm.
-    const minimumGapMs = options.force ? 1500 : 45000;
+    // Adaptive cadence: while the robot is actively working (cleaning,
+    // returning, docking) every 15s loop tick is allowed through so state
+    // transitions reach Matter controllers within seconds; at rest the
+    // conservative 45s cloud cadence applies.
+    const isActive = B01_ACTIVE_V1_STATES.has(refreshState.lastKnownV1State);
+    const minimumGapMs = options.force ? 1500 : isActive ? 12000 : 45000;
     if (Date.now() - refreshState.lastAttemptAt < minimumGapMs) {
       return null;
     }
@@ -3314,6 +3324,7 @@ class Roborock {
           []
         );
         const v1Status = b01Q7Adapter.mapStatusToV1(data);
+        refreshState.lastKnownV1State = v1Status.state;
 
         if (refreshState.consecutiveFailures > 0) {
           this.log.info(
@@ -3400,7 +3411,7 @@ class Roborock {
     }
 
     this.log.info(
-      "Starting the dedicated B01/Q7 status loop (15s tick, ~45s effective cloud cadence)."
+      "Starting the dedicated B01/Q7 status loop (15s tick; ~12s effective cadence while active, ~45s at rest)."
     );
     const pollAllB01 = (options) => {
       for (const duid of this.initializedVacuumDuids) {

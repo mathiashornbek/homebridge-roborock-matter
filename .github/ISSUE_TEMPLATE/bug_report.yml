@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a problem with login, discovery, transport, or HomeKit behavior.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the plugin. If possible, open the plugin settings UI, click **Copy Diagnostic Report**, and paste the redacted report below.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostic report
+      description: Paste the output from Copy Diagnostic Report. Do not paste raw tokens, local keys, passwords, or unredacted logs.
+      placeholder: Paste redacted diagnostic report here.
+    validations:
+      required: false
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+      placeholder: The plugin shows cloud fallback even though the vacuum is awake...
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: 1.4.17
+    validations:
+      required: false
+  - type: input
+    id: homebridge-version
+    attributes:
+      label: Homebridge version
+      placeholder: 1.11.x or 2.0.0-beta.x
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste only the relevant redacted lines. Turn debug logging off again after collecting logs.
+      render: text
+    validations:
+      required: false

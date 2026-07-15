@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a HomeKit, Roborock, diagnostics, or admin UI improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What should the plugin do?
+      description: Describe the user-facing outcome you want.
+      placeholder: I would like a HomeKit switch that sends the vacuum back to the dock...
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this useful?
+      description: Explain the workflow or pain point this would improve.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional context
+      description: Add screenshots, HomeKit behavior, Roborock app behavior, or related links if useful.
+    validations:
+      required: false
