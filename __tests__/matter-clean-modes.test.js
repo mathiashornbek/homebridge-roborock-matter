@@ -134,6 +134,43 @@ describe("opt-in fan-power clean modes", () => {
     ).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
 
+  test("currentMode follows the robot's live fan power (app-side changes reflected)", () => {
+    const { instance } = createAccessory({
+      enableFanPowerCleanModes: true,
+      canMaxPlusFanPower: true,
+    });
+
+    // Robot reports Turbo (103) — e.g. changed in the Roborock app.
+    instance.rememberLiveStatus("fan_power", 103);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(5);
+
+    // Max+ (108) resolves to the Q7-only variant.
+    instance.rememberLiveStatus("fan_power", 108);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(7);
+
+    // A pending Matter selection wins until it has been applied.
+    instance.selectedCleanMode = 6;
+    instance.selectedCleanModeNeedsApply = true;
+    expect(instance.buildCleanModeCluster().currentMode).toBe(6);
+    instance.selectedCleanModeNeedsApply = false;
+    expect(instance.buildCleanModeCluster().currentMode).toBe(7);
+
+    // Mop-family selections are never overridden by fan power.
+    instance.selectedCleanMode = 1;
+    expect(instance.buildCleanModeCluster().currentMode).toBe(1);
+
+    // Unknown fan power falls back to the selection.
+    instance.selectedCleanMode = 0;
+    instance.rememberLiveStatus("fan_power", 106);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+  });
+
+  test("live fan power derivation is inert while the feature is disabled", () => {
+    const { instance } = createAccessory();
+    instance.rememberLiveStatus("fan_power", 103);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+  });
+
   test("labels used in logs match the announced mode labels", () => {
     const { instance } = createAccessory({ enableFanPowerCleanModes: true });
     expect(instance.getCleanModeLabel(3)).toBe("Quiet Vacuum");

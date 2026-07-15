@@ -950,9 +950,30 @@ class RoborockMatterVacuumAccessory {
         return ((_a = FAN_POWER_CLEAN_MODES.find((powerMode) => powerMode.mode === cleanMode)) !== null && _a !== void 0 ? _a : null);
     }
     getCurrentCleanMode() {
-        return this.isSupportedCleanMode(this.selectedCleanMode)
+        const selected = this.isSupportedCleanMode(this.selectedCleanMode)
             ? this.selectedCleanMode
             : CLEAN_MODE_VACUUM;
+        // Live derivation while suction-level modes are announced: report the
+        // variant matching the robot's ACTUAL fan power, so suction changed in
+        // the Roborock app is reflected in Apple Home's mode picker. A pending
+        // Matter selection wins until it has been applied, and mop-family
+        // selections are never overridden (their identity is the clean type,
+        // not the fan level).
+        if (this.isFanPowerCleanModesEnabled() &&
+            !this.selectedCleanModeNeedsApply &&
+            selected !== CLEAN_MODE_MOP &&
+            selected !== CLEAN_MODE_VACUUM_AND_MOP) {
+            const liveFanPower = this.getNumberStatus("fan_power");
+            if (liveFanPower !== null) {
+                const liveMode = liveFanPower === MAX_PLUS_FAN_POWER_CLEAN_MODE.fanPower
+                    ? MAX_PLUS_FAN_POWER_CLEAN_MODE
+                    : FAN_POWER_CLEAN_MODES.find((powerMode) => powerMode.fanPower === liveFanPower);
+                if (liveMode && this.isSupportedCleanMode(liveMode.mode)) {
+                    return liveMode.mode;
+                }
+            }
+        }
+        return selected;
     }
     isSupportedCleanMode(mode) {
         return this.getSupportedCleanModes().some((supportedMode) => supportedMode.mode === mode);

@@ -27,7 +27,7 @@ Log in with your **Roborock app account** — no token extraction, no rooted app
 - 📍 **Live room tracking — on every robot.** While the robot works, its position is read from the map channel (encrypted SCMap on B01/Q7, classic RRMap on S/Q-series), matched against your room geometry, and published as the current Matter Service Area. Apple Home shows _"Cleaning — Kitchen"_ — including runs started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **Matter-only, by design.** No legacy fan tiles, no helper-switch clutter. One robot, one native accessory, on Homebridge 2's built-in Matter bridge — including room/map selection sourced from your Roborock account's named rooms.
 - 🔌 **Cloud + local, automatically.** Commands prefer a direct local TCP connection to the robot and fall back to the Roborock cloud transparently, with per-device connection diagnostics in the settings UI when you want to see exactly what happened.
-- 🛡️ **Hardened and boring where it counts.** 254 automated tests, CI on Node 22/24 against Homebridge 1.11 and 2.x, zero known vulnerabilities, no analytics, no post-install scripts, and a startup that retries with backoff instead of ever crash-looping Homebridge — verified against the Homebridge plugin-verification harness.
+- 🛡️ **Hardened and boring where it counts.** 256 automated tests, CI on Node 22/24 against Homebridge 1.11 and 2.x, zero known vulnerabilities, no analytics, no post-install scripts, and a startup that retries with backoff instead of ever crash-looping Homebridge — verified against the Homebridge plugin-verification harness.
 
 ## Features
 
@@ -108,7 +108,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 254 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 256 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Attribution
 

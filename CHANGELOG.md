@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.0
+
+- **Suction changes made in the Roborock app now show up in Apple Home.** With suction-level modes enabled, the announced current clean mode is derived live from the robot's actual fan power (approach adopted from `homebridge-roborock-matter-vacuum` by Jake Gold, MIT): change the suction anywhere and the Matter mode picker follows. A pending Apple Home selection always wins until the robot has confirmed it, and mop-family selections are never overridden by fan-power readings.
+- Reviewed `homebridge-roborock-matter-vacuum`'s battery handling against this plugin's: its PowerSource payload is a subset of ours with the same publish mechanism, so it contains no additional fix for the Apple-side frozen-percentage limitation (see README); the upstream report in `docs/matter-battery-issue-draft.md` remains the correct path.
+- Full suite: 256 passing.
+
 ## 2.7.0
 
 Live room tracking for the whole fleet, a fifth suction level for the Q7, and quieter transport logs.
