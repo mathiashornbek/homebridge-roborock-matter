@@ -171,8 +171,13 @@ const CLEAN_MODE_VACUUM_MAX = 6;
 // whose protocol verifiably defines it (capabilities.canMaxPlusFanPower).
 const CLEAN_MODE_VACUUM_MAX_PLUS = 7;
 
-// Matter ModeBase common mode tags (Quiet/Max) — combined with the RVC
-// Vacuum tag so controllers can render semantic labels where supported.
+// Matter ModeBase common mode tags — combined with the RVC Vacuum tag.
+// IMPORTANT: Apple Home ignores mode labels and renders its own localized
+// names from these tags (verified in the field: a mode with only the
+// Vacuum tag renders as plain "Vacuum"/"Støvsug"), so every suction level
+// carries a distinct intensity tag: Auto, Quick, Quiet, Max.
+const RVC_CLEAN_MODE_TAG_AUTO = 0;
+const RVC_CLEAN_MODE_TAG_QUICK = 1;
 const RVC_CLEAN_MODE_TAG_QUIET = 2;
 const RVC_CLEAN_MODE_TAG_MAX = 7;
 // RVC Clean Mode cluster tag: DeepClean — the closest semantic match for
@@ -195,13 +200,13 @@ const FAN_POWER_CLEAN_MODES: ReadonlyArray<{
     mode: CLEAN_MODE_VACUUM_BALANCED,
     label: "Balanced Vacuum",
     fanPower: 102,
-    extraTags: [],
+    extraTags: [RVC_CLEAN_MODE_TAG_AUTO],
   },
   {
     mode: CLEAN_MODE_VACUUM_TURBO,
     label: "Turbo Vacuum",
     fanPower: 103,
-    extraTags: [],
+    extraTags: [RVC_CLEAN_MODE_TAG_QUICK],
   },
   {
     mode: CLEAN_MODE_VACUUM_MAX,

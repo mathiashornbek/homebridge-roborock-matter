@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.1
+
+- **Suction modes now render with proper localized names in Apple Home.** Field observation: Apple ignores Matter mode labels and renders its own localized names from the mode TAGS (a variant with only the Vacuum tag displays as plain "Vacuum"). Balanced and Turbo therefore now carry distinct intensity tags (Auto and Quick), matching Quiet and Max — in Apple Home the five levels render as Quiet / Automatic / Quick / Max (+ Deep Clean for Max+ on Q7). Remember: enabling `enableFanPowerCleanModes` requires one remove/re-pair of the robot, since Matter fixes the mode list at commissioning.
+
 ## 2.8.0
 
 - **Suction changes made in the Roborock app now show up in Apple Home.** With suction-level modes enabled, the announced current clean mode is derived live from the robot's actual fan power (approach adopted from `homebridge-roborock-matter-vacuum` by Jake Gold, MIT): change the suction anywhere and the Matter mode picker follows. A pending Apple Home selection always wins until the robot has confirmed it, and mop-family selections are never overridden by fan-power readings.

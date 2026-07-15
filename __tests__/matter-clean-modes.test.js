@@ -62,8 +62,12 @@ describe("opt-in fan-power clean modes", () => {
     expect(byMode.get(6).label).toBe("Max Vacuum");
     // Every variant carries the RVC Vacuum tag; Quiet/Max add the matching
     // ModeBase common tag.
+    // Every variant carries a DISTINCT intensity tag: Apple Home renders
+    // localized names from tags (not labels), so tag-less modes would all
+    // display as plain "Vacuum".
     expect(byMode.get(3).modeTags).toEqual([{ value: 16385 }, { value: 2 }]);
-    expect(byMode.get(4).modeTags).toEqual([{ value: 16385 }]);
+    expect(byMode.get(4).modeTags).toEqual([{ value: 16385 }, { value: 0 }]);
+    expect(byMode.get(5).modeTags).toEqual([{ value: 16385 }, { value: 1 }]);
     expect(byMode.get(6).modeTags).toEqual([{ value: 16385 }, { value: 7 }]);
     // Labels are unique (Matter conformance).
     const labels = modes.map((mode) => mode.label);
