@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.7
+
+- Positioning sharpened across the npm description and README: the entire Roborock lineup is supported (classic S/Q/Saros series through the 2025 Q7 series that no other plugin can control, with automatic adoption of future models), presented as the most complete Roborock plugin for Apple Home. No functional changes.
+
 ## 2.9.6
 
 - **Friendlier plugin description and README.** The npm description shown in the Homebridge UI now leads with what the plugin does for you ("sign in with your Roborock account — start cleans, pick rooms, set suction power, and see live which room the robot is cleaning") instead of protocol terminology. The README's intro, feature matrix and live-room section were rewritten in plain language, with the technical depth preserved in collapsible under-the-hood sections. No functional changes.

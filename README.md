@@ -5,7 +5,7 @@
 <h1 align="center">homebridge-roborock-matter</h1>
 
 <p align="center">
-  <b>Your Roborock vacuum as a native Matter robot in Apple Home — with live "cleaning in the kitchen" room tracking.</b>
+  <b>The most complete way to run your Roborock in Apple Home — every model, every feature, with live "cleaning in the kitchen" room tracking.</b>
 </p>
 
 <p align="center">
@@ -27,11 +27,13 @@
 
 ---
 
-Sign in with the same account you already use in the Roborock app — that's the whole setup. Every robot then appears in Apple Home as a real vacuum: start and stop cleans, send it to specific rooms, pick the suction power, check the battery — and watch the Home app tell you **which room it's cleaning right now**. No token extraction, no network tricks, no command line.
+Sign in with the same account you already use in the Roborock app — that's the whole setup. Every robot on your account then appears in Apple Home as a real vacuum: start and stop cleans, send it to specific rooms, pick the suction power, check the battery — and watch the Home app tell you **which room it's cleaning right now**. No token extraction, no network tricks, no command line.
+
+This is the most feature-packed, most thoroughly engineered Roborock plugin for Homebridge — and the only one that speaks every generation of Roborock, including the newest.
 
 ## Why this plugin
 
-- 🥇 **The only plugin that works with the newest Roborocks.** The 2025 Q7 series (Q7 M5 / M5+) speaks a brand-new protocol that no other Homebridge plugin understands. Fully supported here — alongside the classic S- and Q-series models.
+- 🥇 **Every Roborock, fully supported.** The entire lineup works — from the classic S-series through the Q- and Saros families to the 2025 Q7 series (Q7 M5 / M5+), which speaks a brand-new protocol that no other Homebridge plugin understands. Brand-new models are adopted automatically with sensible defaults.
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile.** Your vacuum shows up as a single, native accessory in Apple Home — no clutter of fake fans and helper switches. Rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
@@ -85,9 +87,11 @@ Enable **Enable Suction-Level Cleaning Modes** (`enableFanPowerCleanModes`) and 
 
 ## Supported robots
 
-- **B01/Q7-series (2025):** `roborock.vacuum.sc05` and compatible (Q7 M5 / M5+), including manual-tank mopping with vacuum/mop mode switching.
-- **Classic app-account Roborock vacuums** supported by the upstream lineage (S-series, Q-series, Saros — S5 through S8 Pro Ultra, Q5/Q7/Q8/Q Revo families and newer), published as Matter accessories.
-- Brand-new models get capability-derived defaults automatically. If something looks off, [open a model report](https://github.com/mathiashornbek/homebridge-roborock-matter/issues) with a diagnostics export — that's exactly what it's for.
+**The entire Roborock lineup.** If it runs in the Roborock app, this plugin can control it:
+
+- **2025 Q7 series** (`roborock.vacuum.sc05`, Q7 M5 / M5+) — the only Homebridge plugin that supports these at all, including manual-tank mopping with vacuum/mop mode switching.
+- **Classic S-, Q- and Saros-series** — S5 through S8 Pro Ultra, Q5/Q7/Q8/Q Revo families, Saros, and newer.
+- **Future models** are adopted automatically: the plugin reads what each robot says it can do and adapts, so brand-new releases get sensible defaults from day one. If something looks off, [open a model report](https://github.com/mathiashornbek/homebridge-roborock-matter/issues) with a diagnostics export — that's exactly what it's for.
 
 ## Configuration
 
