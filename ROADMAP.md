@@ -25,21 +25,26 @@
 - Investigated the Apple Home Matter RVC "Updating…" tile, captured the upstream evidence, and later verified that a clean reset/re-pair can render the full RVC endpoint correctly (homebridge/homebridge#3951); see `docs/matter-rvc-updating-homebridge-report.md`.
 - Added an `AGENTS.md` handoff guide for AI coding agents.
 - Added live room tracking for B01/Q7: the robot's map position is resolved against room outlines while cleaning and published as the current Matter Service Area, with honest scope-aware progress transitions (2.4.0).
+- Hardened startup so a rejected login or unreachable Roborock cloud can never crash Homebridge: credential errors stop with clear guidance, network errors retry with backoff (2.4.2).
+- Removed node-forge (RSA keys now via Node's OpenSSL CSPRNG), removed the dead ioBroker-era package/image downloader and jszip, and moved the custom UI server to native ESM loading — eliminating the Socket.dev "uses eval", "obfuscated code", and ZIP-handling alerts at the source (2.5.0).
+- Added self-healing capability detection: poll requests a robot answers as unsupported are disabled automatically per device, unknown models get capability-derived poll profiles, and model lookup mismatches log actionable guidance (2.5.0).
 
 ## In Progress
 
-- Monitor homebridge/homebridge#3951 for recurrence after Apple Home/controller refresh cycles; close if the clean reset/re-pair result stays stable.
-- Await reporter retests on issues #4 and #12 after the 1.4.59/1.4.60 fixes.
-- Improve scene and room controls so HomeKit exposes room cleaning shortcuts with cleaner names and fewer invalid characteristic warnings.
-- Add clearer model lookup mismatch and unsupported attribute logs.
+- Monitor homebridge/homebridge#3951 (Matter RVC "Updating…") — still open upstream but no recurrence reported since 2026-06-24; the clean reset/re-pair result has stayed stable so far.
+- Await the reporter retest on upstream issue applemanj#4 (S8 local timeouts) after the 1.4.60 fix. Upstream issue applemanj#12 (pause/dock) was confirmed fixed and closed on 2026-07-08.
+- Continue reducing the remaining known-model poll maps toward capability-based logic (the default path for unknown models is capability-derived as of 2.5.0; the dedicated known-model profiles are kept as verified behavior).
 
 ## Worth Doing Next
 
-- Evaluate supported fan or cleaning modes where the HomeKit service model allows it.
-- Continue validating Matter room/service-area selection and clean-mode behavior across Apple Home and other controllers.
-- Improve support for recently reported models such as Saros 10, Q5 Max+, QX Revo Plus, and Q10 S5+.
-- Reduce brittle model-specific switches by moving feature detection toward schema/capability-based logic.
-- Review GitHub Issues regularly for new model reports, diagnostics exports, and feature requests.
+- Evaluate exposing fan-power levels as additional Matter RVC Clean Modes (Quiet/Balanced/Turbo/Max mode tags). Deliberately deferred: Matter locks the mode set at commissioning, so shipping it casually forces every user through a re-pair — it should land once, well-designed, in a planned minor release.
+- Continue validating Matter room/service-area selection, live room tracking, and clean-mode behavior across Apple Home and other controllers.
+- Field-validate the capability-derived defaults on newly released models (Saros 10, Q5 Max+, QX Revo Plus, Q10 S5+) as model reports come in; unsupported requests are now detected and disabled automatically per device.
+- Review GitHub Issues regularly for new model reports, diagnostics exports, and feature requests (automated monitoring of issues, Socket.dev alerts, and homebridge#3951 is set up on the maintainer side).
+
+## Superseded by the Matter-only design
+
+- ~~Improve scene and room controls so HomeKit exposes room cleaning shortcuts~~ — this fork removed all HomeKit (HAP) accessories by design; room cleaning is exposed natively through Matter Service Area selection, which Apple Home renders with correct room names and no invalid-characteristic warnings.
 
 ## Worth Evaluating Carefully
 

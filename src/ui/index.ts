@@ -972,22 +972,9 @@ class RoborockUiServer {
   }
 }
 
-// IMPORTANT: Use Function constructor to create a dynamic import that TypeScript won't transform
-//
-// Background: @homebridge/plugin-ui-utils v2+ is a pure ES module that cannot be loaded with require()
-// in Node.js 18+. Normally we would use `await import('@homebridge/plugin-ui-utils')`, but because
-// this project uses TypeScript with "module": "commonjs" in tsconfig.json, TypeScript transforms
-// dynamic imports into require() calls in the compiled output, which defeats the purpose.
-//
-// Solution: Using the Function constructor prevents TypeScript from transforming the import statement.
-// The Function constructor is evaluated at runtime, so TypeScript cannot statically analyze or transform it.
-// This is the recommended workaround for ES module/CommonJS interop when using TypeScript with CommonJS output.
-//
-// Security note: This is safe because the module specifier is a hardcoded string literal, not user input.
-(async () => {
-  const dynamicImport = new Function("specifier", "return import(specifier)");
-  const { HomebridgePluginUiServer } = await dynamicImport(
-    "@homebridge/plugin-ui-utils"
-  );
-  new RoborockUiServer(HomebridgePluginUiServer);
-})();
+// This module deliberately has no side effects. @homebridge/plugin-ui-utils
+// v2+ is a pure ES module that cannot be require()d from CommonJS output, so
+// the ESM entry point homebridge-ui/server.js (its directory is marked
+// "type": "module") performs the native `import` of plugin-ui-utils and then
+// instantiates the exported class below. No dynamic-code-evaluation shims.
+export { RoborockUiServer };

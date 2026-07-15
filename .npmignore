@@ -33,6 +33,15 @@ ROADMAP.md
 # Runtime data
 roborockLib/data/
 
+# Development/reverse-engineering tooling — never ship in the npm package
+roborockLib/lib/sniffing/
+roborockLib/lib/map/
+__tests__/
+
+# Editor/repo metadata
+.gitattributes
+*.code-workspace
+
 # Local artifacts
 .claude/
 AGENTS.md

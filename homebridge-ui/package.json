@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Marks the custom UI server directory as ESM so server.js can natively import the pure-ESM @homebridge/plugin-ui-utils without dynamic-code-evaluation shims."
+}

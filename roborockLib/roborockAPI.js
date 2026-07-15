@@ -13,8 +13,6 @@ const roborock_mqtt_connector =
   require("./lib/roborock_mqtt_connector").roborock_mqtt_connector;
 const rrMessage = require("./lib/message").message;
 const vacuum_class = require("./lib/vacuum").vacuum;
-const roborockPackageHelper =
-  require("./lib/roborockPackageHelper").roborockPackageHelper;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
@@ -110,8 +108,6 @@ class Roborock {
     this.nonce = crypto.randomBytes(16);
     this.messageQueue = new Map();
 
-    this.roborockPackageHelper = new roborockPackageHelper(this);
-
     this.localConnector = new rrLocalConnector(this);
     this.rr_mqtt_connector = new roborock_mqtt_connector(this);
     this.message = new rrMessage(this);
@@ -129,6 +125,11 @@ class Roborock {
     this.deviceNotify = null;
     this.serviceAreaRoomMapRefreshAttempts = new Map();
     this.matterUnsupportedSettingCommands = new Set();
+    // Poll commands a robot has answered with "unsupported"/"unknown method":
+    // remembered per device (until restart) so exotic models stop generating
+    // repeated warnings for requests they will never answer.
+    this.unsupportedPollCommands = new Set();
+    this.loggedPollProfiles = new Set();
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -2176,6 +2177,37 @@ class Roborock {
     return message.includes("request") && message.includes("timed out after");
   }
 
+  /**
+   * Self-healing capability detection for periodic poll commands: once a
+   * robot definitively answers a request with an "unsupported"-class error,
+   * the command is skipped for that device until the next restart (firmware
+   * updates get a fresh probe). Timeouts and transport errors never count.
+   * @param {string} duid @param {string} parameter
+   */
+  isPollCommandUnsupported(duid, parameter) {
+    return this.unsupportedPollCommands.has(`${duid}:${parameter}`);
+  }
+
+  /**
+   * @param {string} duid @param {string} parameter @param {unknown} error
+   * @returns {boolean} true when the error was an unsupported-class answer
+   * and has been remembered (the caller can stop treating it as a failure).
+   */
+  rememberUnsupportedPollCommand(duid, parameter, error) {
+    if (!this.shouldRememberUnsupportedMatterCommand(error)) {
+      return false;
+    }
+    const key = `${duid}:${parameter}`;
+    if (!this.unsupportedPollCommands.has(key)) {
+      this.unsupportedPollCommands.add(key);
+      const model = this.getProductAttribute(duid, "model") || duid;
+      this.log.info(
+        `${model} answered '${parameter}' with an unsupported-method error; skipping that request for this device until the next restart.`
+      );
+    }
+    return true;
+  }
+
   startMainUpdateInterval(duid, online) {
     if (!this.hasInitializedVacuum(duid)) {
       return;
@@ -2371,14 +2403,33 @@ class Roborock {
           await vacuum.getParameter(duid, "get_smart_wash_params");
           await vacuum.getParameter(duid, "app_get_dryer_setting");
           break;
-        default:
-          await vacuum.getParameter(duid, "get_carpet_mode");
-          await vacuum.getParameter(duid, "get_carpet_clean_mode");
+        default: {
+          // No dedicated poll profile for this model: derive it from the
+          // robot's own capability bitmask when available instead of blindly
+          // probing, and say so once — clearer than silent guessing for
+          // newly released models (Saros 10, Q5 Max+, QX Revo Plus, ...).
+          const featureList =
+            this.vacuums[duid]?.features?.getFeatureList?.() || null;
+          const carpetSupported = featureList
+            ? Boolean(featureList.isCarpetSupported)
+            : true;
+          const profileKey = `${duid}:${robotModel}`;
+          if (!this.loggedPollProfiles.has(profileKey)) {
+            this.loggedPollProfiles.add(profileKey);
+            this.log.info(
+              `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=yes). Requests the robot reports as unsupported are disabled automatically. If states look wrong for this model, please open a model report issue on GitHub.`
+            );
+          }
+          if (carpetSupported) {
+            await vacuum.getParameter(duid, "get_carpet_mode");
+            await vacuum.getParameter(duid, "get_carpet_clean_mode");
+          }
           await vacuum.getParameter(duid, "get_water_box_custom_mode");
+        }
       }
     } else {
       this.log.warn(
-        `Unsupported model '${robotModel || "unknown"}'. Skipping minimum data update for ${duid}.`
+        `Model lookup mismatch for ${duid}: HomeData reports '${robotModel || "unknown"}', which does not look like a Roborock vacuum model string. Skipping the periodic data update for this device. If this is a real vacuum, please open a model report issue on GitHub with a diagnostics export from the plugin settings.`
       );
     }
   }

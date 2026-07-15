@@ -279,6 +279,9 @@ class vacuum {
   }
 
   async getParameter(duid, parameter, attribute, options = {}) {
+    if (this.adapter.isPollCommandUnsupported?.(duid, parameter)) {
+      return;
+    }
     let mode;
 
     try {
@@ -809,6 +812,11 @@ class vacuum {
         }
       }
     } catch (error) {
+      if (
+        this.adapter.rememberUnsupportedPollCommand?.(duid, parameter, error)
+      ) {
+        return;
+      }
       this.adapter.catchError(error, parameter, duid, this.robotModel);
     }
   }

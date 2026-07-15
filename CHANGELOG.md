@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.5.0
+
+Supply-chain, robustness and capability-detection release. Every Socket.dev alert with a code-level source is eliminated at the source, and the plugin now adapts itself to unknown robot models instead of guessing silently.
+
+- **Custom UI server moved to native ESM loading — no more dynamic code evaluation.** The `homebridge-ui` directory is now marked `"type": "module"`, so `server.js` imports the pure-ESM `@homebridge/plugin-ui-utils` natively and instantiates the exported (side-effect-free) server class from the compiled output. The `new Function("return import(...)")` interop shim is gone, and with it the Socket.dev "uses eval" alert.
+- **Removed the dead ioBroker-era package/image downloader** (`roborockPackageHelper`) and its `jszip` dependency (12 packages out of the tree). The helper was never called by this fork, wrote to relative paths, and was the source of Socket.dev's AI-detected ZIP-slip/path-traversal alert. Deleting it removes the entire alert surface rather than patching around it.
+- **Self-healing capability detection.** Any periodic poll request a robot definitively answers with an unsupported-method error is now remembered per device and skipped until the next restart (firmware updates get a fresh probe) — exotic and brand-new models stop generating repeated warnings for requests they will never answer. Timeouts and transport errors never count as unsupported.
+- **Capability-derived poll profiles for unknown models.** Models without a dedicated poll profile (e.g. newly released Saros 10 / Q5 Max+ / QX Revo Plus-class devices) now derive their polls from the robot's own capability bitmask where available (carpet support), announce the chosen profile once in the log, and point to the model-report issue template. Known models keep their verified profiles unchanged.
+- **Clearer model lookup mismatch logs:** a device whose HomeData model string does not look like a Roborock vacuum now logs exactly what was reported and how to file a useful report, instead of a generic "unsupported model" line.
+- **Leaner npm package:** the mitmproxy sniffing script, the ioBroker map viewer, test files, and editor metadata no longer ship in the tarball.
+- ROADMAP refreshed against live upstream status: applemanj#12 (pause/dock) confirmed fixed and closed upstream; applemanj#4 (S8 local timeouts) still awaiting reporter retest; homebridge#3951 stable with no recurrence since June. The legacy "HomeKit scene/room controls" item is superseded by the Matter-only design.
+- Full suite: 241 passing (6 new capability-detection tests). Verified end to end under Homebridge 1.8.3 and 2.1.2-beta.3, including the plugin-verification harness's crash scenarios (invalid credentials, unreachable cloud).
+
 ## 2.4.2
 
 Robustness and supply-chain release (Homebridge verification runtime checks + Socket.dev scan).
