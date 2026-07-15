@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.2
+
+Security and dependency hygiene release (prompted by the Socket.dev scan of 2.3.1).
+
+- **All 10 known vulnerabilities in the production dependency tree resolved** (5 high, 5 moderate — including ws memory disclosure/DoS via mqtt and the qs DoS via express) through lockfile upgrades.
+- **Nine unused dependencies removed entirely:** abstract-things, tinkerhub-discovery, yargs, chalk, deep-equal, rxjs, semver, debug, and express — all inherited from the upstream project's pre-Matter (miio) era and referenced by zero files in this fork. Removing express also eliminates the whole qs/body-parser/path-to-regexp advisory chain at the root instead of patching around it. Verified by full-tree usage analysis, the complete test suite, strict type checking, and a runtime load check.
+- npm audit (production): 0 vulnerabilities. Smaller install footprint, cleaner supply-chain surface.
+
 ## 2.3.1
 
 - **Full-home cleans now publish the run's scope as Service Area progress.** Previously a full clean cleared the progress list entirely, leaving controllers with no per-run data — which Apple Home renders as a permanent "Preparing" pill for the whole run. Every supported area is now reported as pending at start and completed when the robot returns to the charger. No area is claimed as current and currentArea stays null: the robots do not report which room they are physically inside, and the plugin does not invent one. Whether Apple's pill label improves with real scope data is up to Apple's renderer — this ships the honest maximum of what the robots expose. (Deriving the live room from the robot's map position, the way the vendor app does, remains a possible future feature.)
