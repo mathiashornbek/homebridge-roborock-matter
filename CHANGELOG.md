@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.5
+
+- **One synchronous disk write per received robot message eliminated.** The per-device diagnostics states (last cloud/local message, transport history) were flushed to disk with a blocking `fs.writeFileSync` on EVERY message a robot pushed — every few seconds per robot while cleaning. They are served from memory (the settings UI never reads the file); the on-disk copy only needs to survive restarts. Disk flushes for these two states are now debounced to at most once per minute, with a guaranteed flush on shutdown. Result: event-loop stalls removed from the message hot path, and meaningfully less SD-card wear on Raspberry Pi installs. Critical states (credentials, HomeData, room caches) still persist immediately.
+- Full suite: 263 passing (3 new persistence-debounce tests).
+
 ## 2.9.4
 
 Startup-cost cleanup release (also refreshes the npm README with the Donate button and the prominent Verified badge).

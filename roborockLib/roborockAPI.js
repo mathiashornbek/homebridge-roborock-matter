@@ -42,6 +42,15 @@ const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
 // slower cadence than the ~12s active status polls.
 const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 20000;
 
+// Persisted states whose disk flush is debounced (see setStateAsync): they
+// change on every received robot message, are served from memory, and only
+// need the on-disk copy for restart survival.
+const DEBOUNCED_PERSIST_IDS = new Set([
+  "TransportDiagnostics",
+  "RoborockDiagnostics",
+]);
+const PERSIST_FLUSH_DEBOUNCE_MS = 60000;
+
 const PERSISTED_STATE_IDS = new Set([
   "UserData",
   "clientID",
@@ -279,6 +288,19 @@ class Roborock {
   async setStateAsync(id, state) {
     try {
       if (PERSISTED_STATE_IDS.has(id)) {
+        // Chatty diagnostic states update on every received robot message
+        // (every few seconds while cleaning). They are read from memory by
+        // the settings UI; the on-disk copy only needs to survive restarts.
+        // Debouncing their disk flush to once per minute turns one
+        // SYNCHRONOUS write per robot message into at most one per minute
+        // — a real win for event-loop latency and SD-card wear on
+        // Raspberry Pi installs. Critical states (credentials, HomeData,
+        // room caches) still persist immediately.
+        if (DEBOUNCED_PERSIST_IDS.has(id)) {
+          this.states[id] = state;
+          this.schedulePersistFlush(id);
+          return;
+        }
         const persistPath = this.getPersistPath(id);
         fs.mkdirSync(path.dirname(persistPath), { recursive: true });
         fs.writeFileSync(persistPath, JSON.stringify(state, null, 2, "utf8"));
@@ -1528,11 +1550,65 @@ class Roborock {
 
   async stopService() {
     try {
+      this.flushPendingPersistedStates();
       await this.clearTimersAndIntervals();
       this.bInited = false;
     } catch (e) {
       this.catchError(e.stack);
     }
+  }
+
+  /**
+   * Schedule a debounced disk flush for a chatty persisted state. The
+   * in-memory copy is already current; the trailing flush (unref'd so it
+   * never keeps the process alive) writes the LATEST value at most once
+   * per PERSIST_FLUSH_DEBOUNCE_MS.
+   * @param {string} id
+   */
+  schedulePersistFlush(id) {
+    if (!this._pendingPersistFlushes) {
+      this._pendingPersistFlushes = new Map();
+    }
+    if (this._pendingPersistFlushes.has(id)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this._pendingPersistFlushes.delete(id);
+      this.persistStateToDisk(id);
+    }, PERSIST_FLUSH_DEBOUNCE_MS);
+    if (typeof timer?.unref === "function") {
+      timer.unref();
+    }
+    this._pendingPersistFlushes.set(id, timer);
+  }
+
+  /** Write the current in-memory value of a persisted state to disk now. */
+  persistStateToDisk(id) {
+    try {
+      const state = this.states[id];
+      if (state === undefined) {
+        return;
+      }
+      const persistPath = this.getPersistPath(id);
+      fs.mkdirSync(path.dirname(persistPath), { recursive: true });
+      fs.writeFileSync(persistPath, JSON.stringify(state, null, 2));
+    } catch (error) {
+      this.log.debug(
+        `Debounced persist of '${id}' failed: ${error?.message || error}`
+      );
+    }
+  }
+
+  /** Flush all pending debounced persists immediately (shutdown path). */
+  flushPendingPersistedStates() {
+    if (!this._pendingPersistFlushes) {
+      return;
+    }
+    for (const [id, timer] of this._pendingPersistFlushes) {
+      clearTimeout(timer);
+      this.persistStateToDisk(id);
+    }
+    this._pendingPersistFlushes.clear();
   }
 
   async getUserData(loginApi) {
