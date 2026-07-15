@@ -92,6 +92,12 @@
         "type": "boolean",
         "default": true
       },
+      "enableFanPowerCleanModes": {
+        "title": "Enable Suction-Level Cleaning Modes",
+        "description": "Adds Quiet / Balanced / Turbo / Max vacuum modes to the Matter cleaning mode list, so suction can be chosen directly from Apple Home. IMPORTANT: Matter fixes the mode list when the robot is paired, so after enabling or disabling this you must remove the robot from Apple Home and re-pair it once. Requires Matter Cleaning Mode Selection.",
+        "type": "boolean",
+        "default": false
+      },
       "enableMatterExtendedOperationalStates": {
         "title": "Enable Matter Returning Status",
         "description": "Opt in to the extended Matter Returning status while the vacuum is heading back to the dock. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready for Apple Home compatibility.",

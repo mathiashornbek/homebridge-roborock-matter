@@ -28,6 +28,7 @@ jest.config.js
 
 # Docs
 images/
+assets/
 ROADMAP.md
 
 # Runtime data

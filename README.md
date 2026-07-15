@@ -1,68 +1,121 @@
-# homebridge-roborock-matter
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mathiashornbek/homebridge-roborock-matter/main/assets/icon.png" width="140" alt="homebridge-roborock-matter icon">
+</p>
 
-A **Matter-only** Homebridge plugin that publishes your Roborock robot vacuums — including the 2025 **B01/Q7-series** (`roborock.vacuum.sc05`, Q7 M5 / M5+) — as native **Matter** accessories for Apple Home.
+<h1 align="center">homebridge-roborock-matter</h1>
 
-> This is a fork of [`homebridge-roborock-vacuum2`](https://github.com/applemanj/homebridge-roborock-vacuum2) by Joshua Appleman, itself adapted from [ioBroker.roborock](https://github.com/copystring/ioBroker.roborock) by copystring. See [Attribution](#attribution) and [LICENSE](./LICENSE). All original copyright is preserved.
+<p align="center">
+  <b>Your Roborock vacuum as a native Matter robot in Apple Home — with live "cleaning in the kitchen" room tracking.</b>
+</p>
 
-## What makes this fork different
+<p align="center">
+  <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/v/homebridge-roborock-matter?label=npm&color=cb3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/dt/homebridge-roborock-matter?label=downloads&color=8a5cf5" alt="npm downloads"></a>
+  <a href="https://github.com/mathiashornbek/homebridge-roborock-matter/actions"><img src="https://img.shields.io/github/actions/workflow/status/mathiashornbek/homebridge-roborock-matter/nodejs.yml?label=CI" alt="CI status"></a>
+  <img src="https://img.shields.io/badge/node-22%20%7C%2024-brightgreen" alt="Node 22/24">
+  <img src="https://img.shields.io/badge/homebridge-1.11%20%7C%202.x-purple" alt="Homebridge 1.11/2.x">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
 
-- **Matter-only.** All HomeKit (HAP) accessories — the fan tile, helper switches, scene and schedule switches — have been removed. Each robot appears exactly once in Apple Home as a native Matter robot vacuum. Legacy HomeKit accessories are unregistered automatically on first start.
-- **B01/Q7-series protocol support.** The 2025 Q-series robots speak a different RPC dialect that upstream does not implement. This fork adds a full B01 adapter — commands (start/stop/pause/dock/locate/segment cleaning), status, battery, charging state, mop/vacuum mode switching, and room selection via the encrypted B01 map channel — implemented against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference and verified with fixture-driven tests.
-- **Live room tracking (B01/Q7).** While the robot is actively cleaning, the plugin periodically reads the robot's position from the encrypted map channel, resolves which room outline contains it, and publishes that room as the current Matter Service Area — so Apple Home can show "cleaning in \<room\>" with the room the robot is physically inside, the way the vendor app does. Room progress stays honest: only rooms the robot was actually detected in are marked completed when it moves on. Opt out with the **Enable Live Room Tracking** setting.
-- **Robustness hardening.** Startup guards, self-healing status polling with a dedicated B01 loop, per-cluster Matter publish isolation, interval-lifecycle fixes, and a light, accessible settings UI with per-device enable/disable.
+---
 
-## Battery percentage in Apple Home — known controller-side limitation
+Log in with your **Roborock app account** — no token extraction, no rooted apps, no packet sniffing — and every robot appears in Apple Home as a first-class **Matter Robotic Vacuum Cleaner**: start, pause, dock, pick rooms, choose cleaning modes, and watch the status pill name the room the robot is _actually inside_, live.
 
-The Matter PowerSource attribute `batPercentRemaining` carries the spec
-reporting quality **"changes omitted"**: value changes are not pushed to
-subscribed controllers, by design. matter.js implements this faithfully on
-the device side, and its own controller documents the consequence ("Always
-read attributes that do not report changes via subscriptions"). Apple Home
-performs no such re-reads, so the vacuum tile's battery percentage freezes
-at whatever it was when the accessory was paired — while the charging state
-on the very same cluster updates live.
+## Why this plugin
 
-This was verified end-to-end in the field: the plugin's publishes, the
-Homebridge API, and the persisted matter.js store all carry the live value
-in real time while Apple keeps rendering the pairing-day percentage. The
-plugin performs a one-time battery resync per boot so controllers that
-re-prime their subscriptions pick up a fresh value; beyond that, no
-device-side write can force a changes-omitted attribute to report. Known
-refresh paths today: re-establishing the controller subscription (Matter
-hub restart) and re-pairing. The permanent fix belongs in the controller
-ecosystem — `docs/matter-battery-issue-draft.md` contains a ready-to-file
-upstream report with the complete evidence chain.
+- 🗣️ **The only plugin that speaks 2025 Roborock.** The B01/Q7-series (`roborock.vacuum.sc05`, Q7 M5 / M5+) exists solely in the Roborock app ecosystem — a new RPC dialect with an encrypted protobuf map channel that miio-based plugins cannot talk to at all. Fully implemented here: commands, status, battery, suction levels, room cleaning, and the map channel.
+- 📍 **Live room tracking.** While the robot works, its position is read from the encrypted map, matched against your room outlines, and published as the current Matter Service Area. Apple Home shows _"Cleaning — Kitchen"_ — including runs started from the robot's button or the Roborock app. No other Homebridge plugin does this.
+- 🧭 **Matter-only, by design.** No legacy fan tiles, no helper-switch clutter. One robot, one native accessory, on Homebridge 2's built-in Matter bridge — including room/map selection sourced from your Roborock account's named rooms.
+- 🔌 **Cloud + local, automatically.** Commands prefer a direct local TCP connection to the robot and fall back to the Roborock cloud transparently, with per-device connection diagnostics in the settings UI when you want to see exactly what happened.
+- 🛡️ **Hardened and boring where it counts.** 247 automated tests, CI on Node 22/24 against Homebridge 1.11 and 2.x, zero known vulnerabilities, no analytics, no post-install scripts, and a startup that retries with backoff instead of ever crash-looping Homebridge — verified against the Homebridge plugin-verification harness.
 
-## Requirements
+## Features
 
-- Homebridge 2 with Matter enabled on the Roborock child/daughter bridge.
-- A Matter controller (a HomePod or Apple TV acting as a home hub) to add the accessories to Apple Home.
+|                                      |                                                                                                                      |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| 🤖 **Native Matter RVC**             | Start / stop / pause / return-to-dock, run modes, operational state, error reporting                                 |
+| 🚪 **Room cleaning from Apple Home** | Matter Service Area selection with your real room names, multi-map homes included                                    |
+| 📍 **Live room tracking**            | The room the robot is physically inside, updated every ~20 s while cleaning ([details](#live-room-tracking))         |
+| 📊 **Honest cleaning progress**      | Per-room pending → operating → completed, only claiming rooms the robot was actually detected in                     |
+| 🌀 **Cleaning modes**                | Vacuum / Mop / Vacuum + Mop, capability-gated per robot — plus optional Quiet / Balanced / Turbo / Max suction modes |
+| 🔋 **Battery & charging**            | Live percentage and charge state via Matter PowerSource ([one Apple-side caveat](#battery-percentage-in-apple-home)) |
+| 🧠 **Self-adapting model support**   | Unknown models get capability-derived polling; requests a robot reports as unsupported are disabled automatically    |
+| 🩺 **Built-in diagnostics**          | Connection state, transport history, live LAN probe, and a redacted report generator for bug reports                 |
+| 🔐 **2FA-friendly login**            | Roborock account two-factor authentication handled entirely in the settings UI                                       |
+
+## Quick start
+
+1. Install through the Homebridge UI (search for **`homebridge-roborock-matter`**) or:
+
+   ```bash
+   npm install -g homebridge-roborock-matter
+   ```
+
+2. Open the plugin settings, sign in with your **Roborock app account** (2FA supported), and pick which robots to manage.
+3. Enable **Matter** for the plugin's child bridge, restart Homebridge, and add each robot to Apple Home with the pairing code from the **Matter Pairing** section of the settings.
+
+For B01/Q7 robots, room selection appears once the map has been fetched (watch for a `B01 rooms for ...` log line). Robots paired _before_ rooms were available need one remove/re-pair in Apple Home — Matter fixes an accessory's capabilities at commissioning time.
+
+## Live room tracking
+
+While a robot is actively cleaning, the plugin fetches its live position from Roborock's encrypted SCMap channel (throttled to ~20 s, active runs only, nothing while docked), ray-casts it against the per-room boundary outlines, and publishes the result as the Matter Service Area `currentArea`:
+
+- Apple Home's status pill names the room the robot is **physically inside** — the way the vendor app does it.
+- Works for full-home cleans and for runs started from the robot's button or the Roborock app, which previously had no room to show at all.
+- Progress stays honest: a room is only marked _completed_ once the robot was actually detected inside it and has moved on. The plugin never invents data the robot didn't report.
+
+Enabled by default; opt out with `enableLiveRoomTracking: false`.
 
 ## Supported robots
 
-- Classic protocol Roborock vacuums supported by the upstream plugin (published as Matter).
-- **B01/Q7-series** (`roborock.vacuum.sc05` and compatible), including manual-tank mopping (vacuum/mop mode switch; no water-level status, by design).
+- **B01/Q7-series (2025):** `roborock.vacuum.sc05` and compatible (Q7 M5 / M5+), including manual-tank mopping with vacuum/mop mode switching.
+- **Classic app-account Roborock vacuums** supported by the upstream lineage (S-series, Q-series, Saros — S5 through S8 Pro Ultra, Q5/Q7/Q8/Q Revo families and newer), published as Matter accessories.
+- Brand-new models get capability-derived defaults automatically. If something looks off, [open a model report](https://github.com/mathiashornbek/homebridge-roborock-matter/issues) with a diagnostics export — that's exactly what it's for.
 
-## Setup
+## Configuration
 
-1. Install the plugin in Homebridge.
-2. Enter your Roborock app account credentials in the plugin settings.
-3. Enable Matter for the Roborock child bridge, restart, and add each robot to Apple Home using the codes shown in the **Matter Pairing** section of the plugin settings.
-4. Use the **Devices** section to choose which robots the plugin manages.
+Everything is configurable from the Homebridge UI. The essentials:
 
-For B01/Q7 robots, room selection appears after the plugin has fetched the map (watch for a `B01 rooms for ...` log line); robots paired before rooms were available must be removed from Apple Home and re-paired once, as Matter fixes the cluster set at commissioning.
+| Option                          | Default | What it does                                                                                                                                                 |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `email` / password              | —       | Your Roborock app account (2FA handled in the UI; the session token is stored encrypted)                                                                     |
+| `skipDevices`                   | —       | Comma-separated device IDs the plugin should ignore                                                                                                          |
+| `enableMatterServiceArea`       | `true`  | Room/map selection in Apple Home                                                                                                                             |
+| `enableLiveRoomTracking`        | `true`  | Live current-room from the robot's map position while cleaning                                                                                               |
+| `enableMatterCleanMode`         | `true`  | Vacuum / Mop / Vacuum + Mop mode selection                                                                                                                   |
+| `enableFanPowerCleanModes`      | `false` | Adds Quiet / Balanced / Turbo / Max suction modes to the Matter mode list. **Re-pair the robot once after toggling** — Matter locks the mode list at pairing |
+| `enableMatterPowerSource`       | `true`  | Battery cluster                                                                                                                                              |
+| `cloudOnlyMode`                 | `false` | Skip local TCP entirely and use the cloud for everything                                                                                                     |
+| `transientWarningThrottleHours` | `6`     | How often recurring transient-timeout warnings may repeat (0 = only in debug)                                                                                |
+
+## Battery percentage in Apple Home
+
+Apple Home renders the battery percentage from pairing time and never re-reads it — the Matter attribute carries the spec's "changes omitted" reporting quality, so value changes are not pushed to controllers _by design_ (charging state on the very same cluster updates live). This is a controller-side limitation verified end-to-end, not a plugin bug.
+
+<details>
+<summary>The full evidence chain and workarounds</summary>
+
+The complete path — robot → plugin → Homebridge → matter.js store — was verified to carry the live value in real time while Apple kept rendering the pairing-day percentage. matter.js's own controller documents the consequence ("always read attributes that do not report changes via subscriptions"); Apple's controller performs no such re-reads. The plugin performs a one-time battery resync each boot so controllers that re-prime their subscriptions pick up a fresh value. Known refresh paths: restarting the Matter hub (HomePod/Apple TV) or re-pairing. A ready-to-file upstream report with the full evidence lives in [`docs/matter-battery-issue-draft.md`](./docs/matter-battery-issue-draft.md).
+
+</details>
+
+## Troubleshooting
+
+- **Diagnostics first:** the plugin settings include per-device connection state, the last cloud/local transport used, a live **Test Local Connection** probe, and a **redacted diagnostics report** you can paste straight into a GitHub issue.
+- **Robot shows "Updating…" in Apple Home:** remove the robot from Apple Home and pair it again — a stale controller cache from an earlier pairing is the usual cause (tracked upstream in homebridge/homebridge#3951).
+- **Rooms missing for a Q7/B01 robot:** wait for the `B01 rooms for ...` log line, then re-pair once so the Service Area cluster is announced with room data.
+- **Startup without network:** the plugin retries the Roborock cloud with increasing backoff (up to 10 attempts) and never crash-loops Homebridge; wrong credentials stop cleanly with a clear log message.
+
+## Contributing
+
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 247 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Attribution
 
-This project builds directly on the work of others, preserved under the MIT license:
+A Matter-only fork of [`homebridge-roborock-vacuum2`](https://github.com/applemanj/homebridge-roborock-vacuum2) by **Joshua Appleman**, itself adapted from [ioBroker.roborock](https://github.com/copystring/ioBroker.roborock) by **copystring**, with original work by **Nico Hartung**. B01/Q7 protocol work is implemented against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference. All original copyright is preserved under the [MIT license](./LICENSE).
 
-- **Nico Hartung** — original author of the upstream lineage.
-- **Joshua Appleman** — author of [`homebridge-roborock-vacuum2`](https://github.com/applemanj/homebridge-roborock-vacuum2), the base for this fork.
-- **copystring** — [ioBroker.roborock](https://github.com/copystring/ioBroker.roborock), the source of much of the Roborock protocol implementation.
-- **The python-roborock project** — the reference implementation used to build B01/Q7 support.
+---
 
-This fork is maintained by **Mathias Hornbek**. It is an independent, community-maintained fork and is not affiliated with or endorsed by Roborock or Apple.
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
+<p align="center">
+  <sub>Not affiliated with or endorsed by Roborock, Apple, or the Connectivity Standards Alliance. Roborock is a trademark of Beijing Roborock Technology Co., Ltd.</sub>
+</p>

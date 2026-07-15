@@ -12,6 +12,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableLiveRoomTracking?: boolean;
   enableMatterPowerSource?: boolean;
   enableMatterCleanMode?: boolean;
+  enableFanPowerCleanModes?: boolean;
   enableMatterExtendedOperationalStates?: boolean;
   enableMatterChargingDockedStates?: boolean;
   matterChargedBatteryThreshold?: number;

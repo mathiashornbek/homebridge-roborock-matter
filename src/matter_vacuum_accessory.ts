@@ -154,6 +154,53 @@ const CLEAN_MODE_VACUUM = 0;
 const CLEAN_MODE_MOP = 1;
 const CLEAN_MODE_VACUUM_AND_MOP = 2;
 
+// Opt-in fan-power clean modes (enableFanPowerCleanModes, default off since
+// Matter locks the announced mode set at commissioning — enabling requires
+// one re-pair). Mode ids are stable and appended after the base modes.
+// Fan power values are Roborock v1 codes (101-104); the B01/Q7 adapter
+// translates them to its wind levels 1-4 transparently.
+const CLEAN_MODE_VACUUM_QUIET = 3;
+const CLEAN_MODE_VACUUM_BALANCED = 4;
+const CLEAN_MODE_VACUUM_TURBO = 5;
+const CLEAN_MODE_VACUUM_MAX = 6;
+
+// Matter ModeBase common mode tags (Quiet/Max) — combined with the RVC
+// Vacuum tag so controllers can render semantic labels where supported.
+const RVC_CLEAN_MODE_TAG_QUIET = 2;
+const RVC_CLEAN_MODE_TAG_MAX = 7;
+
+const FAN_POWER_CLEAN_MODES: ReadonlyArray<{
+  mode: number;
+  label: string;
+  fanPower: number;
+  extraTags: number[];
+}> = [
+  {
+    mode: CLEAN_MODE_VACUUM_QUIET,
+    label: "Quiet Vacuum",
+    fanPower: 101,
+    extraTags: [RVC_CLEAN_MODE_TAG_QUIET],
+  },
+  {
+    mode: CLEAN_MODE_VACUUM_BALANCED,
+    label: "Balanced Vacuum",
+    fanPower: 102,
+    extraTags: [],
+  },
+  {
+    mode: CLEAN_MODE_VACUUM_TURBO,
+    label: "Turbo Vacuum",
+    fanPower: 103,
+    extraTags: [],
+  },
+  {
+    mode: CLEAN_MODE_VACUUM_MAX,
+    label: "Max Vacuum",
+    fanPower: 104,
+    extraTags: [RVC_CLEAN_MODE_TAG_MAX],
+  },
+];
+
 const RVC_RUN_MODE_TAG_IDLE = 16384;
 const RVC_RUN_MODE_TAG_CLEANING = 16385;
 const RVC_CLEAN_MODE_TAG_VACUUM = 16385;
@@ -1191,7 +1238,8 @@ export default class RoborockMatterVacuumAccessory {
       },
     ];
 
-    if (this.getMatterCleanModeCapabilities().canMop) {
+    const capabilities = this.getMatterCleanModeCapabilities();
+    if (capabilities.canMop) {
       supportedModes.push(
         {
           label: "Mop",
@@ -1211,7 +1259,39 @@ export default class RoborockMatterVacuumAccessory {
       );
     }
 
+    // Opt-in suction-level variants, only when the robot actually exposes
+    // fan-power control. NOTE: Matter fixes the announced mode set at
+    // commissioning — toggling this option requires re-pairing the robot.
+    if (
+      this.isFanPowerCleanModesEnabled() &&
+      capabilities.canControlFanPower === true
+    ) {
+      for (const powerMode of FAN_POWER_CLEAN_MODES) {
+        supportedModes.push({
+          label: powerMode.label,
+          mode: powerMode.mode,
+          modeTags: [
+            { value: RVC_CLEAN_MODE_TAG_VACUUM },
+            ...powerMode.extraTags.map((value) => ({ value })),
+          ],
+        });
+      }
+    }
+
     return supportedModes;
+  }
+
+  private isFanPowerCleanModesEnabled(): boolean {
+    return this.platform.platformConfig.enableFanPowerCleanModes === true;
+  }
+
+  private getFanPowerCleanMode(
+    cleanMode: number
+  ): (typeof FAN_POWER_CLEAN_MODES)[number] | null {
+    return (
+      FAN_POWER_CLEAN_MODES.find((powerMode) => powerMode.mode === cleanMode) ??
+      null
+    );
   }
 
   private getCurrentCleanMode(): number {
@@ -1309,21 +1389,28 @@ export default class RoborockMatterVacuumAccessory {
     cleanMode: number
   ): RoborockCleanModeSettings | null {
     const capabilities = this.getMatterCleanModeCapabilities();
+    // Fan-power variants are vacuum-family modes with a pinned suction
+    // level: protocol layers only understand the three base clean types, so
+    // translate before handing over.
+    const fanPowerMode = this.getFanPowerCleanMode(cleanMode);
+    const baseCleanMode = fanPowerMode ? CLEAN_MODE_VACUUM : cleanMode;
+
     // Always carry the selected Matter clean mode; protocol layers that have
     // a native clean-type concept (B01/Q7) apply it directly and ignore the
     // v1-style fan/water workarounds below.
-    const settings: RoborockCleanModeSettings = { cleanMode };
+    const settings: RoborockCleanModeSettings = { cleanMode: baseCleanMode };
 
     if (capabilities.canControlFanPower) {
-      settings.fanPower =
-        cleanMode === CLEAN_MODE_MOP
+      settings.fanPower = fanPowerMode
+        ? fanPowerMode.fanPower
+        : baseCleanMode === CLEAN_MODE_MOP
           ? ROBOROCK_FAN_POWER_OFF
           : this.getPreferredVacuumFanPower();
     }
 
     if (capabilities.canControlWater) {
       settings.waterBoxMode =
-        cleanMode === CLEAN_MODE_VACUUM
+        baseCleanMode === CLEAN_MODE_VACUUM
           ? ROBOROCK_WATER_BOX_OFF
           : this.getPreferredWaterBoxMode();
     }
@@ -1377,6 +1464,10 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private getCleanModeLabel(cleanMode: number): string {
+    const fanPowerMode = this.getFanPowerCleanMode(cleanMode);
+    if (fanPowerMode) {
+      return fanPowerMode.label;
+    }
     switch (cleanMode) {
       case CLEAN_MODE_MOP:
         return "Mop";

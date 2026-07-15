@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.0
+
+- **New: opt-in suction-level cleaning modes.** With `enableFanPowerCleanModes` (default off), the Matter cleaning mode list gains **Quiet / Balanced / Turbo / Max Vacuum** variants with proper Matter mode tags (Vacuum + Quiet/Max), so suction can be chosen directly from Apple Home's mode picker. Selecting a variant pins the robot's fan power (v1 codes 101-104; the B01/Q7 adapter translates to wind levels 1-4) while behaving as a vacuum-family mode everywhere else (water box handling, mop rules). Off by default because Matter fixes an accessory's mode list at commissioning: toggling the option requires removing and re-pairing the robot once — this ships as a deliberate opt-in rather than a forced re-pair for everyone.
+- **README rebuilt from scratch** around what makes the plugin unique (2025 B01/Q7 support, live room tracking, Matter-only design), with a feature matrix, configuration reference, honest limitation notes, and the plugin icon.
+- Full suite: 247 passing (6 new clean-mode tests). No changes to default behavior anywhere.
+
 ## 2.5.0
 
 Supply-chain, robustness and capability-detection release. Every Socket.dev alert with a code-level source is eliminated at the source, and the plugin now adapts itself to unknown robot models instead of guessing silently.
