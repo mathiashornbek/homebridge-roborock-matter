@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/homebridge/homebridge/wiki/Verified-Plugins"><img src="https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat" alt="verified-by-homebridge"></a>
   <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/v/homebridge-roborock-matter?label=npm&color=cb3837" alt="npm version"></a>
   <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/dt/homebridge-roborock-matter?label=downloads&color=8a5cf5" alt="npm downloads"></a>
   <a href="https://github.com/mathiashornbek/homebridge-roborock-matter/actions"><img src="https://img.shields.io/github/actions/workflow/status/mathiashornbek/homebridge-roborock-matter/nodejs.yml?label=CI" alt="CI status"></a>
@@ -27,7 +28,7 @@ Log in with your **Roborock app account** — no token extraction, no rooted app
 - 📍 **Live room tracking — on every robot.** While the robot works, its position is read from the map channel (encrypted SCMap on B01/Q7, classic RRMap on S/Q-series), matched against your room geometry, and published as the current Matter Service Area. Apple Home shows _"Cleaning — Kitchen"_ — including runs started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **Matter-only, by design.** No legacy fan tiles, no helper-switch clutter. One robot, one native accessory, on Homebridge 2's built-in Matter bridge — including room/map selection sourced from your Roborock account's named rooms.
 - 🔌 **Cloud + local, automatically.** Commands prefer a direct local TCP connection to the robot and fall back to the Roborock cloud transparently, with per-device connection diagnostics in the settings UI when you want to see exactly what happened.
-- 🛡️ **Hardened and boring where it counts.** 256 automated tests, CI on Node 22/24 against Homebridge 1.11 and 2.x, zero known vulnerabilities, no analytics, no post-install scripts, and a startup that retries with backoff instead of ever crash-looping Homebridge — verified against the Homebridge plugin-verification harness.
+- 🛡️ **Hardened and boring where it counts.** 260 automated tests, CI on Node 22/24 against Homebridge 1.11 and 2.x, zero known vulnerabilities, no analytics, no post-install scripts, and a startup that retries with backoff instead of ever crash-looping Homebridge. **Verified by Homebridge** after review by the Homebridge team.
 
 ## Features
 
@@ -115,6 +116,10 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 ## Contributing
 
 Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 256 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+
+## Support the project
+
+If this plugin makes your home a little smarter, you can support its development via [PayPal](https://paypal.me/MathiasHornbek) — or through the ❤️ **Donate** button on the plugin's tile in the Homebridge UI. Model reports and diagnostics exports are just as valuable!
 
 ## Attribution
 

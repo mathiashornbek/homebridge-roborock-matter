@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.9.3
+
+**The plugin is now Verified by Homebridge!** 🎉 Reviewed and endorsed by the Homebridge team (homebridge/plugins#1124), with specific praise for the encrypted at-rest session storage, the preserved fork attribution, and the per-release notes.
+
+- Verified badge added to the README.
+- **Donate button enabled** on the plugin's Homebridge UI tile via the standard `funding` field (PayPal), plus a Support section in the README.
+- Verified plugins are bumped in Homebridge UI search results and distributed via the pre-bundled tarball pipeline for faster, more reliable installs on low-power devices.
+
 ## 2.9.2
 
 - **Max+ ("Grundig"/"Deep Clean") suction mode now announced on the S8 Pro Ultra.** Field report from a re-paired fleet: the S8 Pro Ultra only showed four suction levels because Max+ was gated to B01/Q7. The classic gate now uses the upstream-vetted per-model feature data (`set_custom_mode_max_plus` in the model's action list) — currently confirming the S8 Pro Ultra (`a70`); further models are added as feature data or field reports with diagnostics exports confirm the level. NOTE: the robot must be re-paired once for the new mode to appear (Matter locks the mode list at commissioning).
