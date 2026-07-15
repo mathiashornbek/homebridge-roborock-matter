@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.8
+
+- Fixed a long-standing quirk in state persistence: the file encoding argument was passed to `JSON.stringify` (where it is silently ignored) instead of `fs.writeFileSync`. Behavior was correct by luck (utf8 is the default); the code now says what it means.
+- npm search keywords expanded (s7, s8, q revo, saros, robotic vacuum) so the plugin is found by people searching for their model.
+- README: highlighted that one sign-in brings the whole fleet — every robot on the account appears as its own accessory.
+
 ## 2.9.7
 
 - Positioning sharpened across the npm description and README: the entire Roborock lineup is supported (classic S/Q/Saros series through the 2025 Q7 series that no other plugin can control, with automatic adoption of future models), presented as the most complete Roborock plugin for Apple Home. No functional changes.

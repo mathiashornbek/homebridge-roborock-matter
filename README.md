@@ -35,7 +35,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 
 - 🥇 **Every Roborock, fully supported.** The entire lineup works — from the classic S-series through the Q- and Saros families to the 2025 Q7 series (Q7 M5 / M5+), which speaks a brand-new protocol that no other Homebridge plugin understands. Brand-new models are adopted automatically with sensible defaults.
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
-- 🧭 **One robot, one tile.** Your vacuum shows up as a single, native accessory in Apple Home — no clutter of fake fans and helper switches. Rooms appear with the names you gave them in the Roborock app.
+- 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
 - 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 263 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 

@@ -303,7 +303,7 @@ class Roborock {
         }
         const persistPath = this.getPersistPath(id);
         fs.mkdirSync(path.dirname(persistPath), { recursive: true });
-        fs.writeFileSync(persistPath, JSON.stringify(state, null, 2, "utf8"));
+        fs.writeFileSync(persistPath, JSON.stringify(state, null, 2), "utf8");
       }
 
       this.states[id] = state;
@@ -320,7 +320,8 @@ class Roborock {
           );
           fs.writeFileSync(
             fallbackPath,
-            JSON.stringify(state, null, 2, "utf8")
+            JSON.stringify(state, null, 2),
+            "utf8"
           );
           this.states[id] = state;
           this.log.warn(
@@ -431,7 +432,7 @@ class Roborock {
 
     try {
       fs.mkdirSync(path.dirname(persistPath), { recursive: true });
-      fs.writeFileSync(persistPath, JSON.stringify(state, null, 2, "utf8"));
+      fs.writeFileSync(persistPath, JSON.stringify(state, null, 2), "utf8");
       this.log.info(
         `Migrated legacy '${id}' state file from '${legacyPath}' to '${persistPath}'.`
       );
