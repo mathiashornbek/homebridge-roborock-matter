@@ -96,7 +96,7 @@ Everything is configurable from the Homebridge UI. The essentials:
 
 ## Battery percentage in Apple Home
 
-Apple Home renders the battery percentage from pairing time and never re-reads it — the Matter attribute carries the spec's "changes omitted" reporting quality, so value changes are not pushed to controllers _by design_ (charging state on the very same cluster updates live). This is a controller-side limitation verified end-to-end, not a plugin bug.
+Apple Home renders the battery percentage from pairing time and refreshes it only on a fresh read (commissioning, hub restart) — while charging state on the very same cluster updates live. This is a controller-side limitation, not a plugin bug, and it is being investigated upstream with the Homebridge team ([homebridge#3958](https://github.com/homebridge/homebridge/issues/3958)). Current state of knowledge: as of Matter 1.4 the attribute carries the **"quieter" (Q)** reporting quality — reports ARE sent over the subscription (rate-limited to one per 10 s), a Homebridge maintainer verified that a spec-compliant matter.js controller receives and applies them, yet Apple Home in steady state does not. The likely permanent fix is on Apple's side (Apple Feedback).
 
 <details>
 <summary>The full evidence chain and workarounds</summary>

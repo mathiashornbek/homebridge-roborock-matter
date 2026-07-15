@@ -1,66 +1,57 @@
-# Matter PowerSource `batPercentRemaining` never refreshes in controllers (changes-omitted attribute; device-side store is fresh)
+# Matter PowerSource `batPercentRemaining` — investigation record
 
-Ready to file against `homebridge/homebridge` (Matter API). Title suggestion:
+Filed upstream as
+[homebridge/homebridge#3958](https://github.com/homebridge/homebridge/issues/3958)
+on 2026-07-15. This document tracks the current state of knowledge; the
+original report text lives in the issue.
 
-> Matter bridged accessories: `batPercentRemaining` freezes at pairing-time value in Apple Home (changes-omitted attribute; store verifiably fresh)
+## Symptom
 
-## Summary
+A Matter RVC bridged through Homebridge 2's Matter API publishes battery
+updates continuously; the matter.js store verifiably carries the live value;
+`batChargeState` on the same PowerSource cluster updates live in Apple Home —
+but the rendered battery **percentage** stays at its commissioning-time value
+until a fresh read (re-pair or Matter hub restart).
 
-A Matter Robotic Vacuum Cleaner (device type 0x74) exposed through Homebridge 2's
-Matter API publishes battery updates continuously via `updateAccessoryState`. The
-matter.js store demonstrably carries the live value. Controllers (Apple Home,
-multi-hub) keep rendering the value from pairing time indefinitely — across
-plugin restarts, Homebridge restarts, and days of uptime — while
-`batChargeState` on the very same cluster updates live.
+## Corrected analysis (per Homebridge maintainer verification, 2026-07-15)
 
-## Environment
+The original analysis assumed the attribute carries the Matter reporting
+quality **C (changes omitted)** — never reported via subscription, controllers
+must poll. That was true of older spec revisions, **but as of Matter 1.4 the
+attribute is quality Q (quieter)** , and matter.js 0.17.x (shipped with every
+Homebridge 2.1.x release) models it accordingly:
 
-- Homebridge 2.1.x (Matter API), plugin `homebridge-roborock-matter` publishing
-  full-state snapshots via `updateAccessoryState`
-- Three robots (one V1-protocol, two B01-protocol) — identical behavior on all
-- Controller: Apple Home (Apple TV + HomePod hubs, current iOS/tvOS)
+- **Q (quieter):** reported via subscription, rate-limited to at most one
+  report per 10 seconds, plus an immediate report on any null ↔ value
+  transition.
 
-## Reproduction
+A Homebridge maintainer (bwp91) commissioned a matter.js controller against a
+bridge exposing `PowerSource(Battery, Rechargeable)` — the same setup
+Homebridge builds — and logged the subscription: percentage changes propagate
+exactly as Q prescribes (immediate first report, deferred follow-up inside the
+10 s window, correct application after an interleaved `batChargeState` bump).
+The "stale cluster data version" theory does not hold on the controller side.
 
-1. Pair a bridged Matter accessory that exposes PowerSource with a battery
-   percentage that changes over time (any RVC works).
-2. Let the battery drain or charge by 10+ points.
-3. Compare the Apple Home tile with the matter.js store on disk.
+## Where that leaves things
 
-## Evidence chain
+- The bridge **emits** the reports; a spec-compliant controller **applies**
+  them. Apple Home in steady state does not — consistent with Apple's
+  controller still treating the attribute under the older changes-omitted
+  rules and refreshing only on a fresh read.
+- The plugin's boot-time resync nudge (null → value transition) does hit the
+  wire immediately (maintainer-confirmed) and remains useful for controllers
+  that re-prime their subscriptions; Apple still does not converge.
+- **No device-side fix exists**: bumping the data version or re-announcing
+  only produces more of the reports Apple already receives and ignores.
 
-1. Plugin log shows continuous publishes with live values (73% → 92% over an
-   hour, all three robots).
-2. `grep -ro "batPercentRemaining[^,}]*" <storage> --include="*.json"` shows the
-   persisted matter.js store matching the vendor app in real time (e.g. 170 =
-   85% while Apple renders 74%).
-3. `batChargeState` (same PowerSource cluster) propagates to Apple Home in
-   near-real-time throughout.
-4. The values Apple renders are exactly each robot's value from its
-   commissioning moment; a re-pair refreshes once, then freezes again.
-5. A device-side "resync nudge" (publishing the attribute as briefly unknown,
-   then real, to force two genuine store changes and a data-version bump) helps
-   only controllers that re-prime their subscription (e.g. after a hub
-   restart); Apple in steady state still never converges.
+## Next verification steps (requested upstream)
 
-## Analysis
+1. Run Homebridge with matter.js debug logging during a battery change and
+   capture the subscription flushes carrying `batPercentRemaining` — proves
+   the reports leave THIS bridge specifically.
+2. Optionally subscribe with `chip-tool` and confirm it sees (and applies)
+   the live values.
 
-`batPercentRemaining` (and `batTimeToFullCharge`) carry the Matter spec
-reporting quality **"changes omitted" (C)**. matter.js honors this on the
-device side (changes are not delivered via subscription reports), and the
-matter.js controller compensates on its own side ("Always read attributes that
-do not report changes via subscriptions" — matter.js changelog 0.10). Apple's
-controller evidently performs no such re-reads, so bridged accessories freeze
-on the pairing-time percentage. No plugin-side write can force a
-changes-omitted attribute to report.
-
-## Suggestion
-
-Consider a device-side mitigation in the Homebridge Matter layer for bridged
-accessories — for example bumping the cluster data version or scheduling a
-periodic re-announce for changes-omitted attributes whose value has drifted —
-so controllers that rely purely on subscriptions eventually converge. This
-would fix frozen battery percentages for every bridged plugin at once, in one
-place.
-
-Happy to provide full logs, store dumps, and to test builds.
+If both confirm reports going out, the permanent fix belongs with Apple
+(Apple Feedback report about the controller's handling of Q-quality
+PowerSource attributes). The upstream issue stays open in the meantime.
