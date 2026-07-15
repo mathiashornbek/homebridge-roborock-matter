@@ -1171,7 +1171,9 @@ class deviceFeatures {
             await action(this);
           }
         }
-      } else if (this.adapter.getVacuumDeviceInfo?.(this.duid, "pv") === "B01") {
+      } else if (
+        this.adapter.getVacuumDeviceInfo?.(this.duid, "pv") === "B01"
+      ) {
         // B01/Q7-series robots are fully supported through the dedicated B01
         // adapter (commands, status, rooms, clean modes); the v1 per-model
         // feature tables simply do not apply to them.

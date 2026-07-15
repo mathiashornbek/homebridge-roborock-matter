@@ -288,7 +288,9 @@ class RoborockPlatform {
             // as Matter vacuums — in Apple Home.
             if (this.accessories.length > 0) {
                 this.log.info(`Matter-only edition: removing ${this.accessories.length} legacy HomeKit accessor${this.accessories.length === 1 ? "y" : "ies"} (robots are published via Matter only).`);
-                this.api.unregisterPlatformAccessories(settings_1.PLUGIN_NAME, settings_1.PLATFORM_NAME, [...this.accessories]);
+                this.api.unregisterPlatformAccessories(settings_1.PLUGIN_NAME, settings_1.PLATFORM_NAME, [
+                    ...this.accessories,
+                ]);
                 this.accessories.length = 0;
             }
             await this.unregisterStaleMatterAccessories();

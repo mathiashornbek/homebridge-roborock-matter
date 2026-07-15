@@ -27,7 +27,12 @@ const FIRST_FLOOR = "duid-1sal";
 const CLASSIC = "duid-a70";
 
 function createLog() {
-  return { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  return {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  };
 }
 
 function buildHomeData() {
@@ -161,7 +166,10 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
 
     const accessories = new Map();
     for (const device of homeData.devices.filter((d) => d.pv === "B01")) {
-      const accessory = { UUID: `uuid-${device.duid}`, context: { duid: device.duid } };
+      const accessory = {
+        UUID: `uuid-${device.duid}`,
+        context: { duid: device.duid },
+      };
       accessories.set(
         device.duid,
         new RoborockMatterVacuumAccessory(platform, accessory, device, true)
@@ -210,7 +218,9 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
 
     const garagePower = lastFor(GARAGE, "powerSource");
     expect(garagePower.attributes.batPercentRemaining).toBe(148); // 74% in half-percent units
-    expect(lastFor(GARAGE, "rvcOperationalState").attributes.operationalState).toBe(
+    expect(
+      lastFor(GARAGE, "rvcOperationalState").attributes.operationalState
+    ).toBe(
       65 // Charging: status 4 at 74% under the 90% threshold
     );
 

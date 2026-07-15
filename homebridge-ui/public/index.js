@@ -180,7 +180,6 @@ function getDebugMode() {
   return Boolean(elements.debugMode.checked);
 }
 
-
 function getPreferCloudForMatterCommands() {
   return Boolean(elements.preferCloudForMatterCommands.checked);
 }

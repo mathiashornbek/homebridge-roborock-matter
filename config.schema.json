@@ -113,8 +113,6 @@
         "default": false
       }
     },
-    "required": [
-      "email"
-    ]
+    "required": ["email"]
   }
 }

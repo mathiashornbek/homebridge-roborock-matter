@@ -41,7 +41,9 @@ describe("Roborock API status reads never throw", () => {
     // gone from HomeData by the time the status read happens.
     api.getVacuumSchemaId = () => 42;
 
-    expect(() => api.getVacuumDeviceStatus("ghost-device", "state")).not.toThrow();
+    expect(() =>
+      api.getVacuumDeviceStatus("ghost-device", "state")
+    ).not.toThrow();
     expect(api.getVacuumDeviceStatus("ghost-device", "state")).toBe("");
   });
 
@@ -49,9 +51,7 @@ describe("Roborock API status reads never throw", () => {
     const api = createRoborock();
     await api.setStateAsync("HomeData", {
       val: JSON.stringify({
-        products: [
-          { id: "product-1", schema: [{ id: 121, code: "state" }] },
-        ],
+        products: [{ id: "product-1", schema: [{ id: 121, code: "state" }] }],
         devices: [{ duid: "device-1", productId: "product-1" }],
         receivedDevices: [],
       }),
@@ -257,7 +257,10 @@ describe("Matter heartbeat resilience", () => {
       }
       matterUpdates.push({ uuid, cluster, attributes });
     });
-    const platform = createMatterPlatform({ matterUpdates, updateAccessoryState });
+    const platform = createMatterPlatform({
+      matterUpdates,
+      updateAccessoryState,
+    });
     const { vacuum } = createMatterAccessory(platform);
 
     // Successful publish arms the heartbeat.
@@ -309,7 +312,12 @@ describe("catchError formatting without context", () => {
 
   test("keeps the contextual format when attribute and duid are provided", async () => {
     const api = createRoborock();
-    await api.catchError("boom", "get_status", "device-1", "roborock.vacuum.a70");
+    await api.catchError(
+      "boom",
+      "get_status",
+      "device-1",
+      "roborock.vacuum.a70"
+    );
 
     expect(api.log.error).toHaveBeenCalledWith(
       expect.stringContaining(

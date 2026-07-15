@@ -133,7 +133,9 @@ input {
   background: var(--input);
   color: var(--text);
   font-size: 1rem;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 select:focus,
@@ -350,7 +352,9 @@ select:focus-visible {
   border-radius: 8px;
   background: var(--panel-soft);
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .device-row:hover {

@@ -258,9 +258,8 @@ function findCurrentMapId(data) {
     return null;
   }
   const current =
-    list.find(
-      (/** @type {any} */ entry) => entry && entry.cur === true
-    ) || list[0];
+    list.find((/** @type {any} */ entry) => entry && entry.cur === true) ||
+    list[0];
   return current && Number.isInteger(current.id) ? current.id : null;
 }
 
@@ -273,9 +272,7 @@ function isB01Protocol(version) {
 
 /** 12-digit decimal message id matching the observed Q7 wire format. */
 function createB01MessageId() {
-  return String(
-    100000000000 + Math.floor(Math.random() * 899999999999)
-  );
+  return String(100000000000 + Math.floor(Math.random() * 899999999999));
 }
 
 /** @param {any} params */
@@ -305,17 +302,29 @@ function translateOutgoing(method, params) {
     case "app_start":
       return {
         method: "service.set_room_clean",
-        params: { clean_type: CLEAN_TASK.ALL, ctrl_value: CTRL.START, room_ids: [] },
+        params: {
+          clean_type: CLEAN_TASK.ALL,
+          ctrl_value: CTRL.START,
+          room_ids: [],
+        },
       };
     case "app_stop":
       return {
         method: "service.set_room_clean",
-        params: { clean_type: CLEAN_TASK.ALL, ctrl_value: CTRL.STOP, room_ids: [] },
+        params: {
+          clean_type: CLEAN_TASK.ALL,
+          ctrl_value: CTRL.STOP,
+          room_ids: [],
+        },
       };
     case "app_pause":
       return {
         method: "service.set_room_clean",
-        params: { clean_type: CLEAN_TASK.ALL, ctrl_value: CTRL.PAUSE, room_ids: [] },
+        params: {
+          clean_type: CLEAN_TASK.ALL,
+          ctrl_value: CTRL.PAUSE,
+          room_ids: [],
+        },
       };
     case "app_charge":
       return { method: "service.start_recharge", params: {} };

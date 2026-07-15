@@ -664,7 +664,9 @@ class Roborock {
   }
 
   getRoomMappingsForDevice(duid) {
-    if (this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION) {
+    if (
+      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
+    ) {
       return this.getB01RoomCache(duid).map((room) => ({
         segmentId: room.roomId,
         mapId: 0,
@@ -1744,7 +1746,6 @@ class Roborock {
     }
   }
 
-
   async executeScene(sceneID) {
     if (this.api) {
       try {
@@ -1835,7 +1836,9 @@ class Roborock {
     // with no electronic mop/water control, so Matter must never expose mop
     // modes for them regardless of what the generic cloud schema claims.
     // Suction (Q7 "wind") is controllable via the B01 adapter.
-    if (this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION) {
+    if (
+      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
+    ) {
       return {
         // Q7 robots mop with a manually filled tank: expose the mop/vacuum
         // mode switch, but never water-level status or control.
@@ -2582,7 +2585,6 @@ class Roborock {
     }
   }
 
-
   async updateDeviceInfo(devices) {
     devices = this.normalizeArray(devices);
     for (const device in devices) {
@@ -3295,7 +3297,11 @@ class Roborock {
     }
     let refreshState = this._b01StatusState.get(duid);
     if (!refreshState) {
-      refreshState = { lastAttemptAt: 0, inflight: null, consecutiveFailures: 0 };
+      refreshState = {
+        lastAttemptAt: 0,
+        inflight: null,
+        consecutiveFailures: 0,
+      };
       this._b01StatusState.set(duid, refreshState);
     }
 
@@ -3459,7 +3465,10 @@ class Roborock {
       }
     }
     all[duid] = rooms;
-    await this.setStateAsync("B01Rooms", { val: JSON.stringify(all), ack: true });
+    await this.setStateAsync("B01Rooms", {
+      val: JSON.stringify(all),
+      ack: true,
+    });
   }
 
   /**
@@ -3612,8 +3621,7 @@ class Roborock {
       device.deviceStatus
     ) {
       const rawStatus = device.deviceStatus[propertyID];
-      const translated =
-        b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
+      const translated = b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
       if (translated !== null) {
         return translated;
       }

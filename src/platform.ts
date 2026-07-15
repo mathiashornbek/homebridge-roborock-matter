@@ -419,11 +419,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         this.log.info(
           `Matter-only edition: removing ${this.accessories.length} legacy HomeKit accessor${this.accessories.length === 1 ? "y" : "ies"} (robots are published via Matter only).`
         );
-        this.api.unregisterPlatformAccessories(
-          PLUGIN_NAME,
-          PLATFORM_NAME,
-          [...this.accessories]
-        );
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
+          ...this.accessories,
+        ]);
         this.accessories.length = 0;
       }
 

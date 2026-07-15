@@ -10,8 +10,14 @@ function createPlatformHarness() {
     getVacuumList: jest.fn(() => [{ duid: "device-1" }, { duid: "device-2" }]),
   };
   platform.matterVacuums = new Map([
-    ["device-1", { notifyDeviceUpdater: jest.fn().mockResolvedValue(undefined) }],
-    ["device-2", { notifyDeviceUpdater: jest.fn().mockResolvedValue(undefined) }],
+    [
+      "device-1",
+      { notifyDeviceUpdater: jest.fn().mockResolvedValue(undefined) },
+    ],
+    [
+      "device-2",
+      { notifyDeviceUpdater: jest.fn().mockResolvedValue(undefined) },
+    ],
   ]);
 
   return platform;

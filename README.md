@@ -31,6 +31,7 @@ refresh paths today: re-establishing the controller subscription (Matter
 hub restart) and re-pairing. The permanent fix belongs in the controller
 ecosystem — `docs/matter-battery-issue-draft.md` contains a ready-to-file
 upstream report with the complete evidence chain.
+
 ## Requirements
 
 - Homebridge 2 with Matter enabled on the Roborock child/daughter bridge.

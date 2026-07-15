@@ -480,9 +480,7 @@ export default class RoborockMatterVacuumAccessory {
       "Roborock state refresh"
     );
     if (updated) {
-      const power = clusters.powerSource as
-        | Record<string, unknown>
-        | undefined;
+      const power = clusters.powerSource as Record<string, unknown> | undefined;
       const halfPercent = power?.batPercentRemaining;
       const batteryChanged =
         typeof halfPercent === "number" &&
@@ -638,7 +636,7 @@ export default class RoborockMatterVacuumAccessory {
         },
       };
       this.beginFullCleanServiceAreaProgress();
-        this.setAndScheduleOptimisticState(state, "start");
+      this.setAndScheduleOptimisticState(state, "start");
       this.dispatchRoborockMatterCommand("start", async () => {
         await this.applySelectedCleanModeIfNeeded();
         await this.api.app_start(duid, this.getMatterCommandOptions());
@@ -1221,10 +1219,10 @@ export default class RoborockMatterVacuumAccessory {
 
     // Guard against older/patched API builds returning undefined so cluster
     // builds (which run inside Matter attribute reads) can never throw.
-    const capabilities = getCapabilities.call(
-      this.api,
-      this.getDuid()
-    ) as MatterCleanModeCapabilities | null | undefined;
+    const capabilities = getCapabilities.call(this.api, this.getDuid()) as
+      | MatterCleanModeCapabilities
+      | null
+      | undefined;
 
     return capabilities ?? { canVacuum: true, canMop: false };
   }
@@ -1602,7 +1600,8 @@ export default class RoborockMatterVacuumAccessory {
       })),
       selectedAreas,
       currentArea:
-        this.serviceAreaCurrentArea ?? this.getCurrentServiceArea(selectedAreas),
+        this.serviceAreaCurrentArea ??
+        this.getCurrentServiceArea(selectedAreas),
     };
 
     if (supportedMaps.length > 0) {

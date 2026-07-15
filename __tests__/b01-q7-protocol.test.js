@@ -17,7 +17,12 @@ const FIXTURE = JSON.parse(
 );
 
 function createLog() {
-  return { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  return {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  };
 }
 
 describe("B01/Q7 command translation (reference parity)", () => {
@@ -25,25 +30,37 @@ describe("B01/Q7 command translation (reference parity)", () => {
     [
       "app_start",
       null,
-      { method: "service.set_room_clean", params: { clean_type: 0, ctrl_value: 1, room_ids: [] } },
+      {
+        method: "service.set_room_clean",
+        params: { clean_type: 0, ctrl_value: 1, room_ids: [] },
+      },
     ],
     [
       "app_stop",
       null,
-      { method: "service.set_room_clean", params: { clean_type: 0, ctrl_value: 0, room_ids: [] } },
+      {
+        method: "service.set_room_clean",
+        params: { clean_type: 0, ctrl_value: 0, room_ids: [] },
+      },
     ],
     [
       "app_pause",
       null,
-      { method: "service.set_room_clean", params: { clean_type: 0, ctrl_value: 2, room_ids: [] } },
+      {
+        method: "service.set_room_clean",
+        params: { clean_type: 0, ctrl_value: 2, room_ids: [] },
+      },
     ],
     ["app_charge", null, { method: "service.start_recharge", params: {} }],
     ["find_me", null, { method: "service.find_device", params: {} }],
-  ])("%s translates to the reference Q7 call", (methodName, params, expected) => {
-    const translated = b01.translateOutgoing(methodName, params);
-    expect(translated.method).toBe(expected.method);
-    expect(translated.params).toEqual(expected.params);
-  });
+  ])(
+    "%s translates to the reference Q7 call",
+    (methodName, params, expected) => {
+      const translated = b01.translateOutgoing(methodName, params);
+      expect(translated.method).toBe(expected.method);
+      expect(translated.params).toEqual(expected.params);
+    }
+  );
 
   test("app_segment_clean carries the room ids with clean_type room", () => {
     const translated = b01.translateOutgoing("app_segment_clean", [
@@ -116,7 +133,11 @@ describe("B01/Q7 status mapping", () => {
     // Informational 407 ("scheduled cleanup ignored") lingers on healthy,
     // charging robots — it must not taint state or error_code (field bug:
     // it froze the Apple Home tile in an error publish).
-    const informational = b01.mapStatusToV1({ status: 4, quantity: 100, fault: 407 });
+    const informational = b01.mapStatusToV1({
+      status: 4,
+      quantity: 100,
+      fault: 407,
+    });
     expect(informational.state).toBe(8);
     expect(informational.error_code).toBe(0);
     expect(informational.charge_status).toBe(1);
@@ -129,7 +150,9 @@ describe("B01/Q7 status mapping", () => {
 
   test("covers every documented Q7 work status", () => {
     for (const [q7, v1] of Object.entries(b01.B01_STATUS_TO_V1_STATE)) {
-      expect(b01.mapStatusToV1({ status: Number(q7), fault: 0 }).state).toBe(v1);
+      expect(b01.mapStatusToV1({ status: Number(q7), fault: 0 }).state).toBe(
+        v1
+      );
     }
   });
 });
@@ -315,11 +338,18 @@ describe("Field-test regressions (2.0.0-matter.2)", () => {
       storagePath: fs.mkdtempSync(path.join(os.tmpdir(), "b01-catch-")),
     });
     const unsupported = Object.assign(
-      new Error("Method get_timer is not supported on B01/Q7 devices yet (duid-1)."),
+      new Error(
+        "Method get_timer is not supported on B01/Q7 devices yet (duid-1)."
+      ),
       { code: "B01_METHOD_UNSUPPORTED" }
     );
 
-    await api.catchError(unsupported, "get_timer", "duid-1", "roborock.vacuum.sc05");
+    await api.catchError(
+      unsupported,
+      "get_timer",
+      "duid-1",
+      "roborock.vacuum.sc05"
+    );
 
     expect(api.log.error).not.toHaveBeenCalled();
     expect(api.log.warn).not.toHaveBeenCalled();
@@ -337,7 +367,10 @@ describe("Field-test regressions (2.0.0-matter.2)", () => {
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
     const vacuum = { getParameter: jest.fn() };
 
-    const result = await api.refreshMatterServiceAreaRoomMappings("duid-1", vacuum);
+    const result = await api.refreshMatterServiceAreaRoomMappings(
+      "duid-1",
+      vacuum
+    );
 
     expect(result).toBe(false);
     expect(vacuum.getParameter).not.toHaveBeenCalled();
@@ -378,7 +411,9 @@ describe("Field-test regressions (2.0.0-matter.2)", () => {
 describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
   test("water is neither queried nor controlled on Q7", () => {
     expect(b01.B01_STATUS_PROPS).not.toContain("water");
-    expect(b01.translateOutgoing("set_water_box_custom_mode", [202])).toBeNull();
+    expect(
+      b01.translateOutgoing("set_water_box_custom_mode", [202])
+    ).toBeNull();
   });
 
   test("app_segment_clean_by_ids (the actual wire method) translates with room ids", () => {
@@ -420,7 +455,9 @@ describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
     api.messageQueueHandler = {
-      sendRequest: jest.fn().mockResolvedValue({ status: 4, quantity: 90, fault: 0 }),
+      sendRequest: jest
+        .fn()
+        .mockResolvedValue({ status: 4, quantity: 90, fault: 0 }),
     };
     api.setDeviceNotify(jest.fn());
 
@@ -549,7 +586,12 @@ describe("Q7 mop/vacuum mode switching", () => {
 function createMatterPlatformB01() {
   return {
     platformConfig: { enableMatter: true, enableMatterCleanMode: true },
-    log: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    log: {
+      debug: jest.fn(),
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    },
     getMatterApi: () => null,
     shouldAcceptUnscopedLiveMessage: () => true,
     roborockAPI: {
@@ -700,9 +742,15 @@ describe("Q7 room discovery via the B01 map channel", () => {
 
 describe("Q7 charging tile (both status paths)", () => {
   test("live mapping carries charge_status for charging and dock-drying", () => {
-    expect(b01.mapStatusToV1({ status: 4, quantity: 74 }).charge_status).toBe(1);
-    expect(b01.mapStatusToV1({ status: 10, quantity: 99 }).charge_status).toBe(1);
-    expect(b01.mapStatusToV1({ status: 5, quantity: 74 }).charge_status).toBe(0);
+    expect(b01.mapStatusToV1({ status: 4, quantity: 74 }).charge_status).toBe(
+      1
+    );
+    expect(b01.mapStatusToV1({ status: 10, quantity: 99 }).charge_status).toBe(
+      1
+    );
+    expect(b01.mapStatusToV1({ status: 5, quantity: 74 }).charge_status).toBe(
+      0
+    );
   });
 
   test("HomeData fallback translates Q7-native state codes to v1", async () => {
