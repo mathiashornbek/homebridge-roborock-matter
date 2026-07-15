@@ -122,8 +122,6 @@ class Roborock {
     this.localDevices = {};
     this.remoteDevices = new Set();
 
-    this.scenesData = null; // Store scenes data locally
-
     this.name = "roborock";
     this.deviceNotify = null;
     this.serviceAreaRoomMapRefreshAttempts = new Map();

@@ -77,7 +77,10 @@ class roborock_mqtt_connector {
 
     this.connected = false;
 
-    this.keys = roborockCrypto.generateRsaKeyPair();
+    // NOTE: this class previously generated its own RSA-2048 keypair here,
+    // but nothing ever read it — the protocol keypair lives in message.js
+    // (lazily created for the rare photo path). Removed: one full RSA
+    // keygen less at every startup.
   }
 
   async initUser(userdata) {
@@ -523,24 +526,6 @@ class roborock_mqtt_connector {
     }
 
     return false;
-  }
-
-  decryptWithPrivateKey(privateKeyPem, encryptedData) {
-    const privateKey = crypto.createPrivateKey({
-      key: privateKeyPem,
-      format: "pem",
-      type: "pkcs8",
-    });
-
-    const decryptedData = crypto.privateDecrypt(
-      {
-        key: privateKey,
-        padding: crypto.constants.RSA_PKCS1_PADDING,
-      },
-      encryptedData
-    );
-
-    return decryptedData;
   }
 }
 

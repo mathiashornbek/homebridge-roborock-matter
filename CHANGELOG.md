@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.9.4
+
+Startup-cost cleanup release (also refreshes the npm README with the Donate button and the prominent Verified badge).
+
+- **Two fewer RSA-2048 key generations at every startup.** The MQTT connector generated a protocol keypair that nothing ever read (removed), and the message layer generated its keypair eagerly even though it is only needed for the rare photo request path on camera-equipped models (now created lazily on first use). Measured ~50 ms per keygen on fast hardware — substantially more on a Raspberry Pi.
+- Removed dead code: the never-called `decryptWithPrivateKey` helper and the unused `scenesData` field (both HomeKit-era leftovers).
+
 ## 2.9.3
 
 **The plugin is now Verified by Homebridge!** 🎉 Reviewed and endorsed by the Homebridge team (homebridge/plugins#1124), with specific praise for the encrypted at-rest session storage, the preserved fork attribution, and the per-release notes.

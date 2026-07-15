@@ -32,7 +32,18 @@ class message {
     this.adapter = adapter;
     this.missingLocalKeyWarnings = new Set();
 
-    this.keys = roborockCrypto.generateRsaKeyPair();
+    // The protocol RSA keypair is only needed for the rare photo request
+    // path (camera-equipped models). Generate it lazily on first use
+    // instead of paying a full RSA-2048 keygen (~50 ms on fast hardware,
+    // substantially more on a Raspberry Pi) at every startup.
+    this._keys = null;
+  }
+
+  get keys() {
+    if (!this._keys) {
+      this._keys = roborockCrypto.generateRsaKeyPair();
+    }
+    return this._keys;
   }
 
   async buildPayload(
