@@ -82,39 +82,6 @@
       </label>
     </div>
 
-    <label class="checkbox">
-      <input id="enable-matter-charging-docked" type="checkbox" />
-      <span>
-        Show Charging/Docked on the Apple Home tile
-        <small
-          >Reports real Matter Charging and Docked states instead of Ready while
-          on the dock. Requires a recent iOS/tvOS; turn off and restart the
-          bridge if the tile misbehaves.</small
-        >
-      </span>
-    </label>
-    <label class="field">
-      <span>Charged Battery Threshold (%)</span>
-      <input
-        id="matter-charged-battery-threshold"
-        type="number"
-        min="1"
-        max="100"
-        step="1"
-        placeholder="100"
-      />
-      <small
-        >The tile shows Charging while docked below this battery percentage, and
-        Docked at or above it. Lower it (e.g. 90) if a worn battery makes the
-        robot report fully charged early.</small
-      >
-    </label>
-    <p class="help matter-setup-note">
-      After saving and restarting the Roborock bridge, use the Matter Pairing
-      section below. Apple Home may need both the bridge QR code and the
-      vacuum's 11-digit setup code.
-    </p>
-
     <details id="advanced-settings" class="advanced-settings">
       <summary>Advanced troubleshooting</summary>
       <p class="help">
@@ -161,6 +128,130 @@
       <button id="save-settings" class="secondary">Save Settings</button>
       <button id="login" class="primary">Password Login</button>
       <button id="logout" class="secondary hidden">Logout</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <div>
+        <h2>Apple Home Features</h2>
+        <p class="help">
+          What each robot exposes through Matter. Options marked
+          <strong>&#9888; re-pair</strong> change the robot's announced
+          capabilities: after toggling them, save, restart Homebridge, then
+          remove the robot from Apple Home and pair it again — Matter locks
+          capabilities at pairing time.
+        </p>
+      </div>
+    </div>
+
+    <label class="checkbox">
+      <input id="enable-matter-service-area" type="checkbox" />
+      <span>
+        Room &amp; map selection <strong>&#9888; re-pair</strong>
+        <small
+          >Pick rooms to clean directly in Apple Home, using your Roborock room
+          names (multi-map homes included).</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-live-room-tracking" type="checkbox" />
+      <span>
+        Live room tracking
+        <small
+          >While cleaning, the robot's map position is resolved to the room it
+          is physically inside and shown as the current room in Apple Home
+          (fetched every ~20 s during active runs only).</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-matter-clean-mode" type="checkbox" />
+      <span>
+        Cleaning mode selection <strong>&#9888; re-pair</strong>
+        <small
+          >Vacuum / Mop / Vacuum + Mop in Apple Home's mode picker,
+          capability-gated per robot.</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-fan-power-clean-modes" type="checkbox" />
+      <span>
+        Suction-level cleaning modes <strong>&#9888; re-pair</strong>
+        <small
+          >Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) to the mode
+          picker — Apple renders them as Quiet / Automatic / Quick / Max / Deep
+          Clean. Requires cleaning mode selection above.</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-matter-power-source" type="checkbox" />
+      <span>
+        Battery status <strong>&#9888; re-pair</strong>
+        <small
+          >Battery percentage and charging state on the Matter accessory. See
+          the README for a known Apple-side limitation on percentage
+          refresh.</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-matter-extended-states" type="checkbox" />
+      <span>
+        Returning status
+        <small
+          >Shows the extended Matter Returning state while the robot heads back
+          to the dock. Off by default for maximum Apple Home
+          compatibility.</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-matter-charging-docked" type="checkbox" />
+      <span>
+        Show Charging/Docked on the Apple Home tile
+        <small
+          >Reports real Matter Charging and Docked states instead of Ready while
+          on the dock. Requires a recent iOS/tvOS; turn off and restart the
+          bridge if the tile misbehaves.</small
+        >
+      </span>
+    </label>
+    <label class="field">
+      <span>Charged Battery Threshold (%)</span>
+      <input
+        id="matter-charged-battery-threshold"
+        type="number"
+        min="1"
+        max="100"
+        step="1"
+        placeholder="100"
+      />
+      <small
+        >The tile shows Charging while docked below this battery percentage, and
+        Docked at or above it. Lower it (e.g. 90) if a worn battery makes the
+        robot report fully charged early.</small
+      >
+    </label>
+    <p class="help matter-setup-note">
+      After saving and restarting the Roborock bridge, use the Matter Pairing
+      section below. Apple Home may need both the bridge QR code and the
+      vacuum's 11-digit setup code.
+    </p>
+
+    <div class="actions">
+      <button id="save-feature-settings" class="secondary">
+        Save Settings
+      </button>
     </div>
   </section>
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.0
+
+- **All Apple Home feature toggles are now visible in the plugin settings UI.** The custom settings page previously exposed only a subset of the configuration; options like suction-level cleaning modes, live room tracking, room/map selection, cleaning mode selection, battery and Returning status could only be set by editing the JSON config by hand. They now live in a dedicated **Apple Home Features** section, with a clear "&#9888; re-pair" marker on every option that changes the robot's announced Matter capabilities (Matter locks capabilities at commissioning — after toggling those, restart Homebridge, then remove and re-pair the robot).
+- No functional changes to the plugin itself.
+
 ## 2.8.1
 
 - **Suction modes now render with proper localized names in Apple Home.** Field observation: Apple ignores Matter mode labels and renders its own localized names from the mode TAGS (a variant with only the Vacuum tag displays as plain "Vacuum"). Balanced and Turbo therefore now carry distinct intensity tags (Auto and Quick), matching Quiet and Max — in Apple Home the five levels render as Quiet / Automatic / Quick / Max (+ Deep Clean for Max+ on Q7). Remember: enabling `enableFanPowerCleanModes` requires one remove/re-pair of the robot, since Matter fixes the mode list at commissioning.

@@ -8,6 +8,21 @@ const elements = {
   devicesEmpty: document.getElementById("devices-empty"),
   refreshDevices: document.getElementById("refresh-devices"),
   debugMode: document.getElementById("debug-mode"),
+  enableMatterServiceArea: document.getElementById(
+    "enable-matter-service-area"
+  ),
+  enableLiveRoomTracking: document.getElementById("enable-live-room-tracking"),
+  enableMatterCleanMode: document.getElementById("enable-matter-clean-mode"),
+  enableFanPowerCleanModes: document.getElementById(
+    "enable-fan-power-clean-modes"
+  ),
+  enableMatterPowerSource: document.getElementById(
+    "enable-matter-power-source"
+  ),
+  enableMatterExtendedStates: document.getElementById(
+    "enable-matter-extended-states"
+  ),
+  saveFeatureSettings: document.getElementById("save-feature-settings"),
   enableMatterChargingDocked: document.getElementById(
     "enable-matter-charging-docked"
   ),
@@ -124,6 +139,35 @@ async function loadConfig() {
       elements.skipDevices.value = config.skipDevices;
     }
     elements.debugMode.checked = Boolean(config.debugMode);
+    // Apple Home feature toggles. Service Area, clean mode, power source and
+    // live room tracking default ON (config semantics: `!== false`);
+    // suction-level modes and extended states default OFF.
+    if (elements.enableMatterServiceArea) {
+      elements.enableMatterServiceArea.checked =
+        config.enableMatterServiceArea !== false;
+    }
+    if (elements.enableLiveRoomTracking) {
+      elements.enableLiveRoomTracking.checked =
+        config.enableLiveRoomTracking !== false;
+    }
+    if (elements.enableMatterCleanMode) {
+      elements.enableMatterCleanMode.checked =
+        config.enableMatterCleanMode !== false;
+    }
+    if (elements.enableFanPowerCleanModes) {
+      elements.enableFanPowerCleanModes.checked = Boolean(
+        config.enableFanPowerCleanModes
+      );
+    }
+    if (elements.enableMatterPowerSource) {
+      elements.enableMatterPowerSource.checked =
+        config.enableMatterPowerSource !== false;
+    }
+    if (elements.enableMatterExtendedStates) {
+      elements.enableMatterExtendedStates.checked = Boolean(
+        config.enableMatterExtendedOperationalStates
+      );
+    }
     if (elements.enableMatterChargingDocked) {
       elements.enableMatterChargingDocked.checked = Boolean(
         config.enableMatterChargingDockedStates
@@ -213,6 +257,16 @@ function getFormValues() {
     baseURL: getBaseUrl(),
     skipDevices: getSkipDevices(),
     debugMode: getDebugMode(),
+    enableMatterServiceArea: Boolean(elements.enableMatterServiceArea?.checked),
+    enableLiveRoomTracking: Boolean(elements.enableLiveRoomTracking?.checked),
+    enableMatterCleanMode: Boolean(elements.enableMatterCleanMode?.checked),
+    enableFanPowerCleanModes: Boolean(
+      elements.enableFanPowerCleanModes?.checked
+    ),
+    enableMatterPowerSource: Boolean(elements.enableMatterPowerSource?.checked),
+    enableMatterExtendedOperationalStates: Boolean(
+      elements.enableMatterExtendedStates?.checked
+    ),
     enableMatterChargingDockedStates: Boolean(
       elements.enableMatterChargingDocked?.checked
     ),
@@ -1207,6 +1261,11 @@ function init() {
     showToast("error", "Failed to load current config.");
   });
   elements.saveSettings.addEventListener("click", () => saveCredentials(true));
+  if (elements.saveFeatureSettings) {
+    elements.saveFeatureSettings.addEventListener("click", () =>
+      saveCredentials(true)
+    );
+  }
   elements.login.addEventListener("click", login);
   elements.send2fa.addEventListener("click", sendTwoFactorEmail);
   elements.verify2fa.addEventListener("click", verifyTwoFactorCode);
