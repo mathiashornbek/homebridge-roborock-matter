@@ -175,6 +175,15 @@ describe("opt-in fan-power clean modes", () => {
     expect(instance.buildCleanModeCluster().currentMode).toBe(0);
   });
 
+  test("classic capability gate: S8 Pro Ultra gets Max+, unlisted models do not", () => {
+    const {
+      supportsMaxPlusFanPower,
+    } = require("../roborockLib/lib/deviceFeatures");
+    expect(supportsMaxPlusFanPower("roborock.vacuum.a70")).toBe(true); // S8 Pro Ultra
+    expect(supportsMaxPlusFanPower("roborock.vacuum.a15")).toBe(false); // S7
+    expect(supportsMaxPlusFanPower("roborock.vacuum.a999")).toBe(false);
+  });
+
   test("labels used in logs match the announced mode labels", () => {
     const { instance } = createAccessory({ enableFanPowerCleanModes: true });
     expect(instance.getCleanModeLabel(3)).toBe("Quiet Vacuum");

@@ -14,6 +14,8 @@ const roborock_mqtt_connector =
 const rrMessage = require("./lib/message").message;
 const vacuum_class = require("./lib/vacuum").vacuum;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
+const supportsMaxPlusFanPower =
+  require("./lib/deviceFeatures").supportsMaxPlusFanPower;
 const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
@@ -1944,6 +1946,12 @@ class Roborock {
       canVacuum: true,
       canMop: hasWaterModeSchema || hasMopSchema || hasMopFeature,
       canControlFanPower,
+      // Max+ (fan power 108) only where the upstream-vetted per-model
+      // feature data confirms the level (e.g. S8 Pro Ultra) — field
+      // reports with diagnostics exports extend the list.
+      canMaxPlusFanPower: supportsMaxPlusFanPower(
+        this.getProductAttribute(duid, "model")
+      ),
       canControlWater:
         hasWaterModeSchema ||
         this.hasVacuumFeature(duid, [

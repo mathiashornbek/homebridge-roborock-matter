@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.2
+
+- **Max+ ("Grundig"/"Deep Clean") suction mode now announced on the S8 Pro Ultra.** Field report from a re-paired fleet: the S8 Pro Ultra only showed four suction levels because Max+ was gated to B01/Q7. The classic gate now uses the upstream-vetted per-model feature data (`set_custom_mode_max_plus` in the model's action list) — currently confirming the S8 Pro Ultra (`a70`); further models are added as feature data or field reports with diagnostics exports confirm the level. NOTE: the robot must be re-paired once for the new mode to appear (Matter locks the mode list at commissioning).
+- Battery documentation corrected after upstream verification on homebridge#3958: `batPercentRemaining` is quality **Q (quieter)** as of Matter 1.4 (reports ARE sent via subscription, 10 s throttle) — a spec-compliant controller applies them; Apple Home in steady state does not. No plugin architecture change needed; the bridge already does the right thing.
+
 ## 2.9.1
 
 Deep performance pass over the live-room hot paths, with honest before/after measurements.

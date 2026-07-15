@@ -1345,7 +1345,23 @@ class deviceFeatures {
   }
 }
 
+// Classic v1 models whose upstream-vetted per-model action list includes
+// `set_custom_mode_max_plus` — the verified signal that the robot's firmware
+// accepts the Max+ suction level (v1 fan power 108). Keep this in sync with
+// the modelConfig action lists in processSupportedFeatures above; models are
+// only added here once the upstream feature data (or a field report with a
+// diagnostics export) confirms the level.
+const MAX_PLUS_FAN_POWER_MODELS = new Set([
+  "roborock.vacuum.a70", // S8 Pro Ultra
+]);
+
+/** @param {string} model */
+function supportsMaxPlusFanPower(model) {
+  return MAX_PLUS_FAN_POWER_MODELS.has(model);
+}
+
 module.exports = {
   deviceFeatures,
   stateCodes,
+  supportsMaxPlusFanPower,
 };
