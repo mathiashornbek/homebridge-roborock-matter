@@ -28,6 +28,11 @@
 - Hardened startup so a rejected login or unreachable Roborock cloud can never crash Homebridge: credential errors stop with clear guidance, network errors retry with backoff (2.4.2).
 - Removed node-forge (RSA keys now via Node's OpenSSL CSPRNG), removed the dead ioBroker-era package/image downloader and jszip, and moved the custom UI server to native ESM loading — eliminating the Socket.dev "uses eval", "obfuscated code", and ZIP-handling alerts at the source (2.5.0).
 - Added self-healing capability detection: poll requests a robot answers as unsupported are disabled automatically per device, unknown models get capability-derived poll profiles, and model lookup mismatches log actionable guidance (2.5.0).
+- Shipped opt-in suction-level Matter clean modes (Quiet/Balanced/Turbo/Max + Max+ on Q7) with correct Apple-rendered intensity tags and live fan-power derivation, so app-side suction changes reflect in Apple Home (2.6.0-2.8.1).
+- Extended live room tracking to classic S/Q-series robots via the RRMap segment grid — the flagship feature now covers the whole fleet (2.7.0).
+- Rebuilt the README and the custom settings UI: every Apple Home feature toggle is now visible in a dedicated section with re-pair markers on capability-changing options (2.6.0, 2.9.0).
+- Filed the frozen-battery-percentage report upstream as homebridge/homebridge#3958 with the full evidence chain (2026-07-15).
+- Deep performance pass on the live-room hot paths: classic map lookup went from ~23 ms + ~6.7 MB allocations to ~1 µs with zero allocations; room-cache disk writes and hot debug stringify eliminated when idle (2.9.1).
 
 ## In Progress
 
@@ -37,7 +42,8 @@
 
 ## Worth Doing Next
 
-- Evaluate exposing fan-power levels as additional Matter RVC Clean Modes (Quiet/Balanced/Turbo/Max mode tags). Deliberately deferred: Matter locks the mode set at commissioning, so shipping it casually forces every user through a re-pair — it should land once, well-designed, in a planned minor release.
+- Await responses on homebridge/homebridge#3958 (frozen battery percentage) and the plugin verification final review (homebridge/plugins#1124, all automated checks passed).
+- Field-validate the classic S/Q-series live room tracking and the suction-level modes on real hardware (first run pending on the maintainer's own S8 Pro Ultra and Q7 fleet).
 - Continue validating Matter room/service-area selection, live room tracking, and clean-mode behavior across Apple Home and other controllers.
 - Field-validate the capability-derived defaults on newly released models (Saros 10, Q5 Max+, QX Revo Plus, Q10 S5+) as model reports come in; unsupported requests are now detected and disabled automatically per device.
 - Review GitHub Issues regularly for new model reports, diagnostics exports, and feature requests (automated monitoring of issues, Socket.dev alerts, and homebridge#3951 is set up on the maintainer side).

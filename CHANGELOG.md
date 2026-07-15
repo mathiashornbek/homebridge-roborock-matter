@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.9.1
+
+Deep performance pass over the live-room hot paths, with honest before/after measurements.
+
+- **Classic live-room lookup: ~23 ms + ~6.7 MB of allocations -> ~1 microsecond, zero allocations.** The RRMap was previously fully parsed every ~20 s while cleaning: parsedata materializes floor/obstacle/segment pixel arrays (hundreds of thousands of entries on a real 800x800 map) only for the tracker to look up a single pixel. The new `resolveLiveSegmentFromMapBuffer` fast path walks the block table once and reads exactly ONE pixel byte from the raw buffer (~19,000x faster, measured on an 800x800/700 KB map with a 20k-point path block). Equivalence with the full parser is locked by tests probing both paths across room, corridor and out-of-map positions.
+- **B01 room cache is only written to disk on actual change.** The live map fetch refreshed the persisted room-name cache every ~20 s during cleaning even when nothing changed; identical room lists no longer touch the disk.
+- **Hot debug lines no longer pay JSON.stringify when debug is off.** Template arguments are evaluated eagerly in JavaScript; the per-poll B01 status line and the per-message protocol-102 line are now gated behind the debug flag.
+- B01 SCMap parsing consolidated to a single walk (head, pose, rooms, chains in one pass). Measured honestly: no speed win (~0.05 ms either way, the grid field is skipped via its length prefix) — kept for the simpler structure.
+- Full suite: 259 passing (3 new fast-path equivalence/robustness tests).
+
 ## 2.9.0
 
 - **All Apple Home feature toggles are now visible in the plugin settings UI.** The custom settings page previously exposed only a subset of the configuration; options like suction-level cleaning modes, live room tracking, room/map selection, cleaning mode selection, battery and Returning status could only be set by editing the JSON config by hand. They now live in a dedicated **Apple Home Features** section, with a clear "&#9888; re-pair" marker on every option that changes the robot's announced Matter capabilities (Matter locks capabilities at commissioning — after toggling those, restart Homebridge, then remove and re-pair the robot).

@@ -3467,9 +3467,13 @@ class Roborock {
           );
         }
 
-        this.log.debug(
-          `B01 status for ${duid}: ${JSON.stringify(data)} -> ${JSON.stringify(v1Status)}`
-        );
+        // Template args are evaluated even when debug logging is off, and
+        // this line runs on every successful poll — gate the stringify.
+        if (this.config.debug) {
+          this.log.debug(
+            `B01 status for ${duid}: ${JSON.stringify(data)} -> ${JSON.stringify(v1Status)}`
+          );
+        }
 
         if (this.deviceNotify !== undefined) {
           this.deviceNotify("CloudMessage", { duid, payload: [v1Status] });
@@ -3752,13 +3756,18 @@ class Roborock {
 
         // The live fetch already paid for the full map payload; reuse it to
         // keep the room-name cache fresh instead of scheduling another
-        // 6-hour refreshB01Rooms fetch of the same data.
+        // 6-hour refreshB01Rooms fetch of the same data. Written only on
+        // actual change — the cache is persisted to disk, and rewriting an
+        // identical room list every ~20 s during cleaning is pure I/O waste.
         if (parsed.rooms.length > 0) {
           if (!this._b01RoomRefreshAt) {
             this._b01RoomRefreshAt = new Map();
           }
           this._b01RoomRefreshAt.set(duid, Date.now());
-          await this.setB01RoomCache(duid, parsed.rooms);
+          const cachedRooms = JSON.stringify(this.getB01RoomCache(duid));
+          if (cachedRooms !== JSON.stringify(parsed.rooms)) {
+            await this.setB01RoomCache(duid, parsed.rooms);
+          }
         }
 
         const roomId = b01Q7Adapter.resolveLiveRoomId(parsed);
@@ -3944,9 +3953,12 @@ class Roborock {
           return liveState.current;
         }
 
-        const parser = this.vacuums[duid]?.mapParser || new RRMapParser(this);
-        const parsedMap = await parser.parsedata(mapBuffer);
-        const segmentId = RRMapParser.resolveLiveSegmentId(parsedMap);
+        // Fast path: reads the single pixel under the robot directly from
+        // the raw buffer — no pixel arrays are materialized (parsedata costs
+        // ~23 ms + ~6.7 MB of allocations on a real-size map; this is
+        // microseconds).
+        const segmentId =
+          RRMapParser.resolveLiveSegmentFromMapBuffer(mapBuffer);
         liveState.consecutiveFailures = 0;
 
         if (segmentId === null) {

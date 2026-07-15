@@ -1,6 +1,6 @@
 {
   "name": "homebridge-roborock-matter",
-  "version": "2.9.0",
+  "version": "2.9.1",
   "description": "Matter-only Homebridge plugin publishing Roborock robot vacuums (including 2025 B01/Q7-series) as native Matter accessories for Apple Home. Fork of homebridge-roborock-vacuum2.",
   "license": "MIT",
   "author": {

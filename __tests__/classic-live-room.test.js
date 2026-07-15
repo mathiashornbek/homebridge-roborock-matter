@@ -145,6 +145,55 @@ describe("classic RRMap live segment resolution", () => {
   });
 });
 
+describe("fast buffer path (resolveLiveSegmentFromMapBuffer)", () => {
+  test("matches the parsedata-based resolution for every probe position", async () => {
+    const parser = new RRMapParser(parserAdapter);
+    const probes = [
+      [2, 5],
+      [7, 3],
+      [4, 4], // segment-free corridor
+      [0, 0],
+      [9, 9],
+      [3, 8],
+    ];
+    for (const [px, py] of probes) {
+      const map = buildMapWithRobotAt(px, py);
+      const slow = RRMapParser.resolveLiveSegmentId(
+        await parser.parsedata(map)
+      );
+      const fast = RRMapParser.resolveLiveSegmentFromMapBuffer(map);
+      expect(fast).toBe(slow);
+    }
+  });
+
+  test("rejects malformed buffers without throwing", () => {
+    expect(RRMapParser.resolveLiveSegmentFromMapBuffer(null)).toBeNull();
+    expect(
+      RRMapParser.resolveLiveSegmentFromMapBuffer(Buffer.from("not a map"))
+    ).toBeNull();
+    expect(
+      RRMapParser.resolveLiveSegmentFromMapBuffer(Buffer.alloc(0))
+    ).toBeNull();
+    // Valid magic but truncated body.
+    const truncated = buildMapWithRobotAt(2, 5).subarray(0, 40);
+    expect(RRMapParser.resolveLiveSegmentFromMapBuffer(truncated)).toBeNull();
+  });
+
+  test("robot position outside the image resolves to null", () => {
+    const map = buildRRMap([
+      buildImageBlock({
+        top: TOP,
+        left: LEFT,
+        width: WIDTH,
+        height: HEIGHT,
+        pixelBytes: buildPixels(),
+      }),
+      buildRobotPositionBlock(0, 0),
+    ]);
+    expect(RRMapParser.resolveLiveSegmentFromMapBuffer(map)).toBeNull();
+  });
+});
+
 describe("refreshClassicLiveRoom", () => {
   function createApi(options = {}) {
     const api = new Roborock({
