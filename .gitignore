@@ -22,3 +22,7 @@ openspec/
 AGENTS.md
 CLAUDE.md
 
+
+# Never track build output or packed tarballs
+*.tgz
+yarn.lock
