@@ -1,37 +1,48 @@
 "use strict";
 
 const crypto = require("crypto");
-const forge = require("node-forge");
 
+/**
+ * Convert a base64url JWK component to the minimal lowercase hex string
+ * format the previous node-forge implementation produced (BigInteger
+ * .toString(16): no leading zero digits).
+ * @param {string} base64url
+ * @returns {string}
+ */
+function jwkComponentToHex(base64url) {
+  const hex = Buffer.from(base64url, "base64url").toString("hex");
+  return hex.replace(/^0+(?=.)/, "");
+}
+
+/**
+ * Generate the 2048-bit RSA keypair used by the Roborock protocol's photo
+ * security block, via Node's built-in OpenSSL-backed generator (CSPRNG
+ * entropy). Output shape and hex formatting match the previous node-forge
+ * implementation exactly: n/e/d/p/q/dmp1/dmq1/coeff as minimal hex strings.
+ */
 function generateRsaKeyPair() {
-  const keypair = forge.pki.rsa.generateKeyPair(2048);
-  const keys = {
-    public: { n: null, e: null },
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const jwk = privateKey.export({ format: "jwk" });
+  void publicKey;
+
+  return {
+    public: {
+      n: jwkComponentToHex(jwk.n),
+      e: jwkComponentToHex(jwk.e),
+    },
     private: {
-      n: null,
-      e: null,
-      d: null,
-      p: null,
-      q: null,
-      dmp1: null,
-      dmq1: null,
-      coeff: null,
+      n: jwkComponentToHex(jwk.n),
+      e: jwkComponentToHex(jwk.e),
+      d: jwkComponentToHex(jwk.d),
+      p: jwkComponentToHex(jwk.p),
+      q: jwkComponentToHex(jwk.q),
+      dmp1: jwkComponentToHex(jwk.dp),
+      dmq1: jwkComponentToHex(jwk.dq),
+      coeff: jwkComponentToHex(jwk.qi),
     },
   };
-
-  // Convert the keys to the desired format
-  keys.public.n = keypair.publicKey.n.toString(16);
-  keys.public.e = keypair.publicKey.e.toString(16);
-  keys.private.n = keypair.privateKey.n.toString(16);
-  keys.private.e = keypair.privateKey.e.toString(16);
-  keys.private.d = keypair.privateKey.d.toString(16);
-  keys.private.p = keypair.privateKey.p.toString(16);
-  keys.private.q = keypair.privateKey.q.toString(16);
-  keys.private.dmp1 = keypair.privateKey.dP.toString(16);
-  keys.private.dmq1 = keypair.privateKey.dQ.toString(16);
-  keys.private.coeff = keypair.privateKey.qInv.toString(16);
-
-  return keys;
 }
 
 function md5bin(str) {

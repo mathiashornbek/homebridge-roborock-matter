@@ -1258,7 +1258,56 @@ class Roborock {
     await this.setStateAsync("info.connection", { val: true, ack: true });
     // api/v1/getUrlByEmail(email = ...)
 
-    const userdata = await this.getUserData(this.loginApi);
+    // A failed login must NEVER escape as an unhandled rejection: wrong
+    // credentials or an unreachable Roborock cloud would otherwise send
+    // Homebridge into a crash-restart loop. Credential errors stop here
+    // with a clear message; transient/network errors retry with backoff
+    // (Homebridge frequently boots before the network is up).
+    let userdata;
+    try {
+      userdata = await this.getUserData(this.loginApi);
+    } catch (error) {
+      const message = error?.message || String(error);
+      await this.setStateAsync("info.connection", { val: false, ack: true });
+
+      const isCredentialError =
+        /"code":\s*(2012|2008|2018)/.test(message) ||
+        /username or password/i.test(message);
+      if (isCredentialError) {
+        this.log.error(
+          `Roborock login rejected: ${message}. Check the email and password in the plugin settings; the plugin stays idle until the configuration is fixed.`
+        );
+        this.authState.statusMessage =
+          "Login rejected - check email and password.";
+        return;
+      }
+
+      this._startupLoginAttempts = (this._startupLoginAttempts || 0) + 1;
+      if (this._startupLoginAttempts <= 10) {
+        const delayMs = Math.min(
+          60000 * this._startupLoginAttempts,
+          10 * 60000
+        );
+        this.log.warn(
+          `Could not reach the Roborock cloud (attempt ${this._startupLoginAttempts}/10): ${message}. Retrying in ${Math.round(delayMs / 60000)} minute(s).`
+        );
+        const retryTimer = this.setTimeout(() => {
+          this.startService(callback).catch((retryError) => {
+            this.log.error(
+              `Roborock startup retry failed unexpectedly: ${retryError?.message || retryError}`
+            );
+          });
+        }, delayMs);
+        if (typeof retryTimer?.unref === "function") {
+          retryTimer.unref();
+        }
+      } else {
+        this.log.error(
+          `Could not reach the Roborock cloud after ${this._startupLoginAttempts - 1} attempts: ${message}. Giving up until the next Homebridge restart.`
+        );
+      }
+      return;
+    }
     if (!userdata) {
       this.log.error(
         "Login failed or requires 2FA. Please complete authentication in the Config UI."
@@ -1266,6 +1315,7 @@ class Roborock {
       await this.setStateAsync("info.connection", { val: false, ack: true });
       return;
     }
+    this._startupLoginAttempts = 0;
 
     try {
       this.loginApi.defaults.headers.common["Authorization"] = userdata.token;

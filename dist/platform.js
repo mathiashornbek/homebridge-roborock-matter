@@ -136,10 +136,15 @@ class RoborockPlatform {
         self.roborockAPI.setDeviceNotify(function (id, homeData) {
             self.dispatchDeviceUpdate(id, homeData);
         });
-        self.roborockAPI.startService(function () {
+        // Belt and braces: no rejection from the service startup may ever
+        // escape as an unhandled rejection (Homebridge 2 / Node 22+ would
+        // treat that as a plugin crash).
+        Promise.resolve(self.roborockAPI.startService(function () {
             self.log.info("Service started");
             //call the discoverDevices function
             self.discoverDevices();
+        })).catch((error) => {
+            self.log.error(`Roborock service failed to start: ${error instanceof Error ? error.message : String(error)}`);
         });
     }
     dispatchDeviceUpdate(id, homeData) {
