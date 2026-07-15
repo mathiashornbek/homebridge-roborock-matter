@@ -68,6 +68,12 @@
         "type": "boolean",
         "default": true
       },
+      "enableLiveRoomTracking": {
+        "title": "Enable Live Room Tracking",
+        "description": "While a B01/Q7-series robot is actively cleaning, periodically fetch the robot's map position (every ~20 seconds) and report the room it is physically inside as the current Matter Service Area, so controllers like Apple Home can show 'cleaning in <room>'. Requires Matter Room/Map Selection. Disable to avoid the extra map traffic.",
+        "type": "boolean",
+        "default": true
+      },
       "enableMatterPowerSource": {
         "title": "Enable Matter Battery",
         "description": "Adds the Matter battery/power-source cluster to the Matter vacuum. Disable this if a Matter controller gets stuck showing the vacuum as Updating.",

@@ -26,6 +26,21 @@ const b01Q7Adapter = require("./lib/b01Q7Adapter");
 // docking, mop washing). Drives the adaptive B01 poll cadence.
 const B01_ACTIVE_V1_STATES = new Set([5, 6, 7, 11, 15, 16, 17, 18, 23, 26]);
 
+// v1 states in which the robot is physically moving through rooms, making
+// the SCMap currentPose worth fetching for live-room tracking (cleaning,
+// spot/zone/segment runs, going to target). Returning/docking/washing are
+// excluded: the live room is static or irrelevant there.
+const B01_LIVE_ROOM_FETCH_V1_STATES = new Set([5, 11, 16, 17, 18]);
+
+// v1 states that mark a cleaning run as over for live-room purposes; the
+// cached live room is cleared so a later run starts fresh.
+const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
+
+// Minimum gap between live-room map fetch attempts while cleaning. The map
+// payload is an order of magnitude heavier than get_status, so it rides a
+// slower cadence than the ~12s active status polls.
+const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 20000;
+
 const PERSISTED_STATE_IDS = new Set([
   "UserData",
   "clientID",
@@ -3331,6 +3346,7 @@ class Roborock {
         );
         const v1Status = b01Q7Adapter.mapStatusToV1(data);
         refreshState.lastKnownV1State = v1Status.state;
+        refreshState.lastV1Status = v1Status;
 
         if (refreshState.consecutiveFailures > 0) {
           this.log.info(
@@ -3352,6 +3368,15 @@ class Roborock {
 
         if (this.deviceNotify !== undefined) {
           this.deviceNotify("CloudMessage", { duid, payload: [v1Status] });
+        }
+
+        if (B01_LIVE_ROOM_FETCH_V1_STATES.has(v1Status.state)) {
+          // Fire-and-forget: the live-room refresh has its own throttle and
+          // single-flight guard, and a map fetch failure must never disturb
+          // the status flow.
+          void this.refreshB01LiveRoom(duid).catch(() => undefined);
+        } else if (B01_LIVE_ROOM_CLEAR_V1_STATES.has(v1Status.state)) {
+          this.clearB01LiveRoom(duid);
         }
 
         return v1Status;
@@ -3557,6 +3582,151 @@ class Roborock {
     this.pendingB01MapRequests.set(duid, entry);
     this.rr_mqtt_connector.sendMessage(duid, roborockMessage);
     return promise;
+  }
+
+  /**
+   * Fetch the current SCMap and derive which room the robot is physically
+   * inside (currentPose ray-cast against the per-room boundary chains).
+   * Called from the B01 status loop while the robot is actively cleaning;
+   * throttled on attempts (min 20s gap), single-flight per device, and
+   * disabled entirely with the enableLiveRoomTracking=false config option.
+   *
+   * On a room CHANGE the cached last v1 status is re-broadcast through
+   * deviceNotify so the Matter accessory rebuilds its Service Area cluster
+   * promptly (unchanged clusters are suppressed by confirmed-publish
+   * diffing, so the re-broadcast costs one Service Area write at most).
+   * The fetched map also opportunistically refreshes the room-name cache,
+   * postponing the next scheduled 6-hour room refresh.
+   * @param {string} duid
+   * @returns {Promise<{segmentId: number, roomName: string, at: number} | null>}
+   */
+  async refreshB01LiveRoom(duid) {
+    if (this.config.enableLiveRoomTracking === false) {
+      return null;
+    }
+    if (!this._b01LiveRoomState) {
+      this._b01LiveRoomState = new Map();
+    }
+    let liveState = this._b01LiveRoomState.get(duid);
+    if (!liveState) {
+      liveState = {
+        lastAttemptAt: 0,
+        inflight: null,
+        consecutiveFailures: 0,
+        current: null,
+      };
+      this._b01LiveRoomState.set(duid, liveState);
+    }
+
+    if (liveState.inflight) {
+      return liveState.inflight;
+    }
+    if (Date.now() - liveState.lastAttemptAt < B01_LIVE_ROOM_MIN_FETCH_GAP_MS) {
+      return liveState.current;
+    }
+    liveState.lastAttemptAt = Date.now();
+
+    liveState.inflight = (async () => {
+      try {
+        const mapListData = await this.messageQueueHandler.sendRequest(
+          duid,
+          "get_map_list",
+          {}
+        );
+        const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+        if (mapId === null) {
+          return liveState.current;
+        }
+
+        const rawPayload = await this.sendB01MapRequest(duid, mapId);
+        const serial = this.getVacuumDeviceInfo(duid, "sn");
+        const model = this.getProductAttribute(duid, "model");
+        const mapKey = b01Q7Adapter.createMapKey(serial, model);
+        const scMap = b01Q7Adapter.decodeMapPayload(rawPayload, mapKey);
+        const parsed = b01Q7Adapter.parseScMapLiveState(scMap);
+
+        // The live fetch already paid for the full map payload; reuse it to
+        // keep the room-name cache fresh instead of scheduling another
+        // 6-hour refreshB01Rooms fetch of the same data.
+        if (parsed.rooms.length > 0) {
+          if (!this._b01RoomRefreshAt) {
+            this._b01RoomRefreshAt = new Map();
+          }
+          this._b01RoomRefreshAt.set(duid, Date.now());
+          await this.setB01RoomCache(duid, parsed.rooms);
+        }
+
+        const roomId = b01Q7Adapter.resolveLiveRoomId(parsed);
+        liveState.consecutiveFailures = 0;
+
+        if (roomId === null) {
+          this.log.debug(
+            `Live room for ${duid}: robot pose is outside every room outline (or pose/geometry missing from the map payload).`
+          );
+          return liveState.current;
+        }
+
+        const roomName =
+          parsed.rooms.find((room) => room.roomId === roomId)?.roomName ||
+          `Room ${roomId}`;
+        const previous = liveState.current;
+        liveState.current = { segmentId: roomId, roomName, at: Date.now() };
+
+        if (!previous || previous.segmentId !== roomId) {
+          this.log.info(
+            `Live room for ${duid}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}.`
+          );
+          const lastV1Status = this._b01StatusState?.get(duid)?.lastV1Status;
+          if (this.deviceNotify && lastV1Status) {
+            this.deviceNotify("CloudMessage", {
+              duid,
+              payload: [lastV1Status],
+            });
+          }
+        }
+
+        return liveState.current;
+      } catch (error) {
+        liveState.consecutiveFailures += 1;
+        const message = error?.message || String(error);
+        if (liveState.consecutiveFailures % 5 === 0) {
+          this.log.warn(
+            `Live-room map fetch has failed ${liveState.consecutiveFailures} times in a row for ${duid}. Last error: ${message}`
+          );
+        } else {
+          this.log.debug(
+            `Live-room map fetch attempt failed for ${duid}: ${message}`
+          );
+        }
+        return liveState.current;
+      } finally {
+        liveState.inflight = null;
+      }
+    })();
+
+    return liveState.inflight;
+  }
+
+  /**
+   * The robot's most recently derived live room, or null when unknown /
+   * cleared / tracking disabled. segmentId matches the segmentId exposed by
+   * getRoomMappingsForDevice for B01 robots (the SCMap roomId).
+   * @param {string} duid
+   * @returns {{segmentId: number, roomName: string, at: number} | null}
+   */
+  getB01LiveRoomForDevice(duid) {
+    return this._b01LiveRoomState?.get(duid)?.current || null;
+  }
+
+  /** @param {string} duid */
+  clearB01LiveRoom(duid) {
+    const liveState = this._b01LiveRoomState?.get(duid);
+    if (liveState?.current) {
+      this.log.debug(
+        `Cleared live room for ${duid} (${liveState.current.roomName}).`
+      );
+      liveState.current = null;
+    }
   }
 
   getProductData(productId) {

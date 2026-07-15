@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.4.0
+
+- **New: live room tracking for B01/Q7-series robots.** While the robot is actively cleaning, the plugin now fetches the robot's live position from the encrypted SCMap channel (`currentPose`, ~20s cadence, only during active cleaning states) and ray-casts it against the per-room boundary outlines (`roomChain`) to determine which room the robot is physically inside. The detected room is published as the Matter Service Area `currentArea`, so Apple Home's status pill can show "cleaning in \<room\>" with the actual room — including runs started from the robot button or the Roborock app, and full-home cleans, which previously had no room to name. This closes the gap noted in 2.3.1 ("deriving the live room from the robot's map position, the way the vendor app does").
+- **Honest progress semantics.** The progress list only transitions rooms that are part of the announced run scope: a detected room becomes operating, and a previously operating room is marked completed only if the robot was actually detected inside it during this run — the old first-requested-room guess falls back to pending instead of claiming a clean that may never have happened. Rooms outside the announced scope update `currentArea` (a true statement about where the robot is) but never rewrite the scope, and stale progress lists from finished runs are never mutated.
+- **Protocol layer:** the minimal SCMap protobuf reader now decodes `mapHead` (grid geometry), `currentPose` and `roomChain` alongside the existing room list, following the wider CRL-200S family schema documented by ioBroker.roborock; wire-format parsing is covered by tests that encode payloads independently and run the production AES/zlib decode path end to end. Each live fetch also opportunistically refreshes the room-name cache, postponing the next scheduled 6-hour room refresh.
+- **Footprint and control:** map fetches ride a dedicated 20s attempt throttle with a single-flight guard, run only while the robot is in an actively-cleaning state, and stop the moment the run ends. The feature is on by default and can be disabled with the new **Enable Live Room Tracking** setting (`enableLiveRoomTracking: false`).
+- Full suite: 232 passing (14 new tests: protobuf parsing/geometry, API throttle/notify/caching behavior, and Matter progress semantics).
+
 ## 2.3.2
 
 Security and dependency hygiene release (prompted by the Socket.dev scan of 2.3.1).

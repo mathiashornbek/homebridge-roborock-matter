@@ -294,6 +294,13 @@ export default class RoborockMatterVacuumAccessory {
   private lastLoggedBatteryHalfPercent: number | null = null;
   private powerSourceResyncDone = false;
   private serviceAreaCurrentArea: number | null = null;
+  // Area ids in which the robot was actually DETECTED via live map-position
+  // tracking during the current run. Only detected areas are marked
+  // completed when the robot moves on; the initial first-requested-room
+  // guess falls back to pending instead of claiming a clean that may never
+  // have happened. In-memory only: after a mid-run restart the worst case is
+  // one pending-instead-of-completed entry until the run ends.
+  private liveConfirmedServiceAreaIds = new Set<number>();
   // Per-cluster JSON of the last CONFIRMED publish. Used to skip republishing
   // identical cluster payloads on every poll/heartbeat. Safe against the
   // historical "Updating..." desync (see updateMatterState comment) because
@@ -1070,6 +1077,15 @@ export default class RoborockMatterVacuumAccessory {
       );
     }
 
+    // Live map-position room tracking: reflect the physically detected room
+    // in currentArea/progress before the snapshot below is built.
+    this.applyLiveServiceAreaRoom(
+      this.getOperationalState(
+        this.getNumberStatus("state"),
+        this.getNumberStatus("charge_status")
+      )
+    );
+
     const updated = await this.publishRoborockSnapshot(
       this.buildClusters(),
       "live state"
@@ -1498,9 +1514,10 @@ export default class RoborockMatterVacuumAccessory {
       this.clearServiceAreaProgress();
       return;
     }
-    // We know which rooms were requested; the robot does not report which
-    // one it is inside, so the first requested area is shown as operating
-    // and the rest as pending until the run completes.
+    // We know which rooms were requested; until live map-position tracking
+    // reports which one the robot is actually inside, the first requested
+    // area is shown as operating and the rest as pending.
+    this.liveConfirmedServiceAreaIds = new Set();
     this.serviceAreaCurrentArea = areaIds[0];
     this.serviceAreaProgress = areaIds.map((areaId, index) => ({
       areaId,
@@ -1526,6 +1543,7 @@ export default class RoborockMatterVacuumAccessory {
       this.clearServiceAreaProgress();
       return;
     }
+    this.liveConfirmedServiceAreaIds = new Set();
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
@@ -1535,6 +1553,7 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private clearServiceAreaProgress(): void {
+    this.liveConfirmedServiceAreaIds = new Set();
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = [];
     this.persistServiceAreaProgress();
@@ -1549,12 +1568,113 @@ export default class RoborockMatterVacuumAccessory {
     }
     // The run ended (docked, charging, stopped): everything requested is
     // reported as completed and no area is current anymore.
+    this.liveConfirmedServiceAreaIds = new Set();
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
       status: SERVICE_AREA_PROGRESS.COMPLETED,
     }));
     this.persistServiceAreaProgress();
+  }
+
+  /**
+   * Apply the live map-position room (B01/Q7: SCMap currentPose ray-cast
+   * against room outlines, refreshed by the Roborock API layer while the
+   * robot is actively cleaning) to the Service Area state.
+   *
+   * currentArea always follows the physically detected room — that is the
+   * honest signal controllers render as "cleaning in <room>". The progress
+   * list only transitions entries that are part of the announced run scope:
+   * the detected room's entry becomes operating, and a previously operating
+   * scoped entry becomes completed once the robot is detected in a DIFFERENT
+   * scoped room — but only if the robot was actually detected inside it at
+   * some point (otherwise it was just the initial first-requested guess and
+   * honestly returns to pending). Stale all-completed lists from a finished
+   * run are never mutated.
+   */
+  private applyLiveServiceAreaRoom(operationalState: number): void {
+    if (!this.isServiceAreaEnabled()) {
+      return;
+    }
+    if (!this.isInCleaningRunMode(operationalState)) {
+      return;
+    }
+
+    const getLiveRoom = (
+      this.api as {
+        getB01LiveRoomForDevice?: (duid: string) => unknown;
+      }
+    ).getB01LiveRoomForDevice;
+    if (typeof getLiveRoom !== "function") {
+      return;
+    }
+
+    const liveRoom = this.asRecord(getLiveRoom.call(this.api, this.getDuid()));
+    const segmentId = this.getNumberFromValue(liveRoom?.segmentId);
+    if (segmentId === null) {
+      return;
+    }
+
+    const area = this.getMatterServiceAreas().find(
+      (candidate) => candidate.segmentId === segmentId
+    );
+    if (!area) {
+      return;
+    }
+
+    const changedCurrentArea = this.serviceAreaCurrentArea !== area.areaId;
+    const previousAreaId = this.serviceAreaCurrentArea;
+
+    const hasActiveScope = this.serviceAreaProgress.some(
+      (entry) => entry.status !== SERVICE_AREA_PROGRESS.COMPLETED
+    );
+    const detectedEntryInScope = this.serviceAreaProgress.some(
+      (entry) => entry.areaId === area.areaId
+    );
+
+    let changedProgress = false;
+    if (hasActiveScope && detectedEntryInScope) {
+      this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => {
+        if (
+          entry.areaId === area.areaId &&
+          entry.status !== SERVICE_AREA_PROGRESS.OPERATING
+        ) {
+          changedProgress = true;
+          return {
+            areaId: entry.areaId,
+            status: SERVICE_AREA_PROGRESS.OPERATING,
+          };
+        }
+        if (
+          entry.areaId !== area.areaId &&
+          entry.status === SERVICE_AREA_PROGRESS.OPERATING
+        ) {
+          changedProgress = true;
+          return {
+            areaId: entry.areaId,
+            status: this.liveConfirmedServiceAreaIds.has(entry.areaId)
+              ? SERVICE_AREA_PROGRESS.COMPLETED
+              : SERVICE_AREA_PROGRESS.PENDING,
+          };
+        }
+        return entry;
+      });
+    }
+
+    this.liveConfirmedServiceAreaIds.add(area.areaId);
+    if (!changedCurrentArea && !changedProgress) {
+      return;
+    }
+
+    this.serviceAreaCurrentArea = area.areaId;
+    this.persistServiceAreaProgress();
+    if (changedCurrentArea) {
+      this.platform.log.info(
+        `Live room for ${this.getVacuumName()}: robot detected in ${this.formatServiceAreaName(area)}${
+          previousAreaId !== null ? "" : " (first detection this run)"
+        }.`
+      );
+    }
   }
 
   private buildServiceAreaCluster(): Record<string, unknown> {

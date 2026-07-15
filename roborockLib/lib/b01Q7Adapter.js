@@ -151,6 +151,46 @@ function decodeMapPayload(rawPayload, mapKey) {
 }
 
 /**
+ * Shared minimal protobuf wire readers for the SCMap RobotMap payload.
+ * Reference schema: b01_scmap.proto (fields 5-11/13-22 documented in the
+ * wider CRL-200S family schema used by ioBroker.roborock).
+ */
+
+/** @param {Buffer} buf @param {number} pos */
+function readVarint(buf, pos) {
+  let result = 0;
+  let shift = 0;
+  while (pos < buf.length) {
+    const byte = buf[pos++];
+    result += (byte & 0x7f) * Math.pow(2, shift);
+    if ((byte & 0x80) === 0) {
+      return { value: result, pos };
+    }
+    shift += 7;
+    if (shift > 63) break;
+  }
+  throw new Error("Malformed varint in SCMap payload");
+}
+
+/** @param {Buffer} buf @param {number} pos @param {number} wireType */
+function skipField(buf, pos, wireType) {
+  switch (wireType) {
+    case 0:
+      return readVarint(buf, pos).pos;
+    case 1:
+      return pos + 8;
+    case 2: {
+      const len = readVarint(buf, pos);
+      return len.pos + len.value;
+    }
+    case 5:
+      return pos + 4;
+    default:
+      throw new Error(`Unsupported protobuf wire type ${wireType}`);
+  }
+}
+
+/**
  * Minimal protobuf wire reader extracting rooms from SCMap RobotMap bytes.
  * Only RobotMap field 12 (repeated RoomDataInfo) is decoded, and inside it
  * only roomId (field 1, varint) and roomName (field 2, string); every other
@@ -161,40 +201,6 @@ function decodeMapPayload(rawPayload, mapKey) {
 function parseRoomsFromScMap(buffer) {
   /** @type {Array<{roomId: number, roomName: string}>} */
   const rooms = [];
-
-  /** @param {Buffer} buf @param {number} pos */
-  function readVarint(buf, pos) {
-    let result = 0;
-    let shift = 0;
-    while (pos < buf.length) {
-      const byte = buf[pos++];
-      result += (byte & 0x7f) * Math.pow(2, shift);
-      if ((byte & 0x80) === 0) {
-        return { value: result, pos };
-      }
-      shift += 7;
-      if (shift > 63) break;
-    }
-    throw new Error("Malformed varint in SCMap payload");
-  }
-
-  /** @param {Buffer} buf @param {number} pos @param {number} wireType */
-  function skipField(buf, pos, wireType) {
-    switch (wireType) {
-      case 0:
-        return readVarint(buf, pos).pos;
-      case 1:
-        return pos + 8;
-      case 2: {
-        const len = readVarint(buf, pos);
-        return len.pos + len.value;
-      }
-      case 5:
-        return pos + 4;
-      default:
-        throw new Error(`Unsupported protobuf wire type ${wireType}`);
-    }
-  }
 
   /** @param {Buffer} buf */
   function parseRoom(buf) {
@@ -244,6 +250,226 @@ function parseRoomsFromScMap(buffer) {
   }
 
   return rooms;
+}
+
+/**
+ * Parse the SCMap RobotMap fields needed to derive the robot's live room:
+ * map head (field 3: grid geometry), current pose (field 8: world-coordinate
+ * robot position in meters) and room outline chains (field 14: per-room
+ * boundary contours in grid-cell coordinates). Room names come from field 12
+ * via the same reader as parseRoomsFromScMap. Every other field is skipped.
+ *
+ * Wire reference (proto2, CRL-200S family / ioBroker.roborock schema):
+ * - MapHeadInfo:            sizeX=1 varint, sizeY=2 varint, minX=4 float,
+ *                           minY=5 float, resolution=8 float
+ * - DeviceCurrentPoseInfo:  poseId=1 varint, update=2 varint,
+ *                           x=3 float, y=4 float, phi=5 float
+ * - DeviceRoomChainDataInfo: roomId=1 varint,
+ *                            points=2 repeated {x=1 varint, y=2 varint}
+ * @param {Buffer} buffer
+ * @returns {{
+ *   head: {sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null,
+ *   pose: {x: number, y: number} | null,
+ *   rooms: Array<{roomId: number, roomName: string}>,
+ *   roomChains: Array<{roomId: number, points: Array<{x: number, y: number}>}>,
+ * }}
+ */
+function parseScMapLiveState(buffer) {
+  /** @type {{sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null} */
+  let head = null;
+  /** @type {{x: number, y: number} | null} */
+  let pose = null;
+  /** @type {Array<{roomId: number, roomChainPoints?: unknown}>} */
+  const roomChains = [];
+
+  /** @param {Buffer} buf */
+  function parseMapHead(buf) {
+    const parsed = { sizeX: 0, sizeY: 0, minX: 0, minY: 0, resolution: 0.05 };
+    let pos = 0;
+    while (pos < buf.length) {
+      const tag = readVarint(buf, pos);
+      pos = tag.pos;
+      const fieldNumber = Math.floor(tag.value / 8);
+      const wireType = tag.value % 8;
+      if (wireType === 0) {
+        const value = readVarint(buf, pos);
+        pos = value.pos;
+        if (fieldNumber === 2) parsed.sizeX = value.value;
+        else if (fieldNumber === 3) parsed.sizeY = value.value;
+      } else if (wireType === 5) {
+        const value = buf.readFloatLE(pos);
+        pos += 4;
+        if (fieldNumber === 4) parsed.minX = value;
+        else if (fieldNumber === 5) parsed.minY = value;
+        else if (fieldNumber === 8 && value > 0) parsed.resolution = value;
+      } else {
+        pos = skipField(buf, pos, wireType);
+      }
+    }
+    return parsed;
+  }
+
+  /** @param {Buffer} buf */
+  function parseCurrentPose(buf) {
+    /** @type {{x: number | null, y: number | null}} */
+    const parsed = { x: null, y: null };
+    let pos = 0;
+    while (pos < buf.length) {
+      const tag = readVarint(buf, pos);
+      pos = tag.pos;
+      const fieldNumber = Math.floor(tag.value / 8);
+      const wireType = tag.value % 8;
+      if (wireType === 5) {
+        const value = buf.readFloatLE(pos);
+        pos += 4;
+        if (fieldNumber === 3) parsed.x = value;
+        else if (fieldNumber === 4) parsed.y = value;
+      } else {
+        pos = skipField(buf, pos, wireType);
+      }
+    }
+    return parsed.x !== null && parsed.y !== null
+      ? { x: parsed.x, y: parsed.y }
+      : null;
+  }
+
+  /** @param {Buffer} buf */
+  function parseChainPoint(buf) {
+    const point = { x: 0, y: 0 };
+    let pos = 0;
+    while (pos < buf.length) {
+      const tag = readVarint(buf, pos);
+      pos = tag.pos;
+      const fieldNumber = Math.floor(tag.value / 8);
+      const wireType = tag.value % 8;
+      if (wireType === 0) {
+        const value = readVarint(buf, pos);
+        pos = value.pos;
+        if (fieldNumber === 1) point.x = value.value;
+        else if (fieldNumber === 2) point.y = value.value;
+      } else {
+        pos = skipField(buf, pos, wireType);
+      }
+    }
+    return point;
+  }
+
+  /** @param {Buffer} buf */
+  function parseRoomChain(buf) {
+    /** @type {{roomId: number, points: Array<{x: number, y: number}>}} */
+    const chain = { roomId: -1, points: [] };
+    let pos = 0;
+    while (pos < buf.length) {
+      const tag = readVarint(buf, pos);
+      pos = tag.pos;
+      const fieldNumber = Math.floor(tag.value / 8);
+      const wireType = tag.value % 8;
+      if (fieldNumber === 1 && wireType === 0) {
+        const value = readVarint(buf, pos);
+        chain.roomId = value.value;
+        pos = value.pos;
+      } else if (fieldNumber === 2 && wireType === 2) {
+        const len = readVarint(buf, pos);
+        chain.points.push(
+          parseChainPoint(buf.subarray(len.pos, len.pos + len.value))
+        );
+        pos = len.pos + len.value;
+      } else {
+        pos = skipField(buf, pos, wireType);
+      }
+    }
+    return chain;
+  }
+
+  let pos = 0;
+  while (pos < buffer.length) {
+    const tag = readVarint(buffer, pos);
+    pos = tag.pos;
+    const fieldNumber = Math.floor(tag.value / 8);
+    const wireType = tag.value % 8;
+
+    if (wireType === 2) {
+      const len = readVarint(buffer, pos);
+      const body = buffer.subarray(len.pos, len.pos + len.value);
+      if (fieldNumber === 3) {
+        head = parseMapHead(body);
+      } else if (fieldNumber === 8) {
+        pose = parseCurrentPose(body);
+      } else if (fieldNumber === 14) {
+        const chain = parseRoomChain(body);
+        if (chain.roomId >= 0 && chain.points.length >= 3) {
+          roomChains.push(chain);
+        }
+      }
+      pos = len.pos + len.value;
+    } else {
+      pos = skipField(buffer, pos, wireType);
+    }
+  }
+
+  return {
+    head,
+    pose,
+    rooms: parseRoomsFromScMap(buffer),
+    roomChains:
+      /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */ (
+        roomChains
+      ),
+  };
+}
+
+/**
+ * Resolve which room the robot is physically inside from a parsed SCMap
+ * live state: the world-coordinate pose (meters) is converted to grid-cell
+ * coordinates ((pose - min) / resolution, the inverse of the chain-point
+ * mapping world = min + cell * resolution) and ray-cast against each room's
+ * boundary chain. Returns the roomId or null when the pose is unknown, the
+ * geometry is missing, or the robot is outside every room outline (e.g.
+ * sitting on a dock placed in an unassigned hallway).
+ * @param {ReturnType<typeof parseScMapLiveState>} liveState
+ * @returns {number | null}
+ */
+function resolveLiveRoomId(liveState) {
+  const head = liveState?.head;
+  const pose = liveState?.pose;
+  const chains = Array.isArray(liveState?.roomChains)
+    ? liveState.roomChains
+    : [];
+  if (!head || !pose || !chains.length) {
+    return null;
+  }
+  const resolution = head.resolution > 0 ? head.resolution : 0.05;
+  const cellX = (pose.x - head.minX) / resolution;
+  const cellY = (pose.y - head.minY) / resolution;
+
+  for (const chain of chains) {
+    if (pointInPolygon(cellX, cellY, chain.points)) {
+      return chain.roomId;
+    }
+  }
+  return null;
+}
+
+/**
+ * Standard ray-casting point-in-polygon test over a room boundary chain.
+ * @param {number} x @param {number} y
+ * @param {Array<{x: number, y: number}>} points
+ * @returns {boolean}
+ */
+function pointInPolygon(x, y, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i].x;
+    const yi = points[i].y;
+    const xj = points[j].x;
+    const yj = points[j].y;
+    const intersects =
+      yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 /**
@@ -462,6 +688,8 @@ module.exports = {
   createMapKey,
   decodeMapPayload,
   parseRoomsFromScMap,
+  parseScMapLiveState,
+  resolveLiveRoomId,
   findCurrentMapId,
   MATTER_TO_Q7_CLEAN_TYPE,
   B01_PROTOCOL_VERSION,

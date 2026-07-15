@@ -75,6 +75,7 @@ class RoborockPlatform {
             baseURL: baseURL,
             skipDevices: this.platformConfig.skipDevices,
             enableMatterServiceArea: this.platformConfig.enableMatterServiceArea !== false,
+            enableLiveRoomTracking: this.platformConfig.enableLiveRoomTracking !== false,
             cloudOnlyMode: Boolean(this.platformConfig.cloudOnlyMode),
             log: this.log,
             userData: decryptedSession,

@@ -1285,6 +1285,9 @@ describe("Adaptive B01 poll cadence", () => {
     const api = new Roborock({
       log: createLog(),
       storagePath: fs.mkdtempSync(path.join(os.tmpdir(), "b01-adaptive-")),
+      // This test asserts exact get_status attempt counts; keep the
+      // background live-room map fetches out of the tally.
+      enableLiveRoomTracking: false,
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
