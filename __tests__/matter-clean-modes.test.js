@@ -191,3 +191,83 @@ describe("opt-in fan-power clean modes", () => {
     expect(instance.getCleanModeLabel(1)).toBe("Mop");
   });
 });
+
+describe("live clean-type derivation (externally started cleans)", () => {
+  const CLEANING_STATE = 5;
+  const CHARGING_STATE = 8;
+
+  test("B01/Q7: the robot-reported clean type wins during an active run", () => {
+    const { instance } = createAccessory();
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+
+    // Started as vacuum+mop in the Roborock app.
+    instance.rememberLiveStatus("matter_clean_type", 2);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(2);
+
+    // Mop-only run.
+    instance.rememberLiveStatus("matter_clean_type", 1);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(1);
+  });
+
+  test("outside an active run the sticky robot-side setting must not shadow the Matter selection", () => {
+    const { instance } = createAccessory();
+    instance.rememberLiveStatus("state", CHARGING_STATE);
+    instance.rememberLiveStatus("matter_clean_type", 2);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+  });
+
+  test("a pending Matter selection wins until it has been applied", () => {
+    const { instance } = createAccessory();
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+    instance.rememberLiveStatus("matter_clean_type", 2);
+    instance.selectedCleanMode = 0;
+    instance.selectedCleanModeNeedsApply = true;
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+
+    instance.selectedCleanModeNeedsApply = false;
+    expect(instance.buildCleanModeCluster().currentMode).toBe(2);
+  });
+
+  test("classic: fan power 105 is the mop-only signature", () => {
+    const { instance } = createAccessory();
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+    instance.rememberLiveStatus("fan_power", 105);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(1);
+  });
+
+  test("classic: an active water flow on a water-controllable robot means vacuum+mop", () => {
+    const { instance } = createAccessory({ canControlWater: true });
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+    instance.rememberLiveStatus("fan_power", 102);
+    instance.rememberLiveStatus("water_box_custom_mode", 202);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(2);
+
+    // Water off -> plain vacuum.
+    instance.rememberLiveStatus("water_box_custom_mode", 200);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+  });
+
+  test("without water control there is no mop guess", () => {
+    const { instance } = createAccessory({ canControlWater: false });
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+    instance.rememberLiveStatus("fan_power", 102);
+    instance.rememberLiveStatus("water_box_custom_mode", 202);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+  });
+
+  test("an unsupported live type (mop on a mop-less robot) falls back to the selection", () => {
+    const { instance } = createAccessory({ canMop: false });
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+    instance.rememberLiveStatus("matter_clean_type", 2);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(0);
+  });
+
+  test("a live vacuum type still refines into the announced suction variant", () => {
+    const { instance } = createAccessory({ enableFanPowerCleanModes: true });
+    instance.rememberLiveStatus("state", CLEANING_STATE);
+    instance.selectedCleanMode = 1; // stale mop selection from Home
+    instance.rememberLiveStatus("matter_clean_type", 0);
+    instance.rememberLiveStatus("fan_power", 103);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(5); // Turbo Vacuum
+  });
+});

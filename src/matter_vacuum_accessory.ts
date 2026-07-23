@@ -569,8 +569,14 @@ export default class RoborockMatterVacuumAccessory {
         const opState = clusters.rvcOperationalState as
           | Record<string, unknown>
           | undefined;
+        const runMode = clusters.rvcRunMode as
+          | Record<string, unknown>
+          | undefined;
+        const cleanMode = clusters.rvcCleanMode as
+          | Record<string, unknown>
+          | undefined;
         this.platform.log.info(
-          `Matter publish for ${this.accessory.context?.duid ?? this.accessory.UUID}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}.`
+          `Matter publish for ${this.accessory.context?.duid ?? this.accessory.UUID}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}.`
         );
       }
       this.ensureMatterStateHeartbeat();
@@ -1087,6 +1093,8 @@ export default class RoborockMatterVacuumAccessory {
     const battery = this.getNumberFromValue(status.battery);
     const cleanArea = this.getNumberFromValue(status.clean_area);
     const cleanTime = this.getNumberFromValue(status.clean_time);
+    const fanPower = this.getNumberFromValue(status.fan_power);
+    const matterCleanType = this.getNumberFromValue(status.matter_clean_type);
 
     if (
       state === null &&
@@ -1120,6 +1128,10 @@ export default class RoborockMatterVacuumAccessory {
     this.rememberLiveStatus("battery", battery);
     this.rememberLiveStatus("clean_area", cleanArea);
     this.rememberLiveStatus("clean_time", cleanTime);
+    // Fan power and clean type drive the live RvcCleanMode derivation, so
+    // cleans (re)configured outside Apple Home surface within one update.
+    this.rememberLiveStatus("fan_power", fanPower);
+    this.rememberLiveStatus("matter_clean_type", matterCleanType);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -1324,9 +1336,32 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private getCurrentCleanMode(): number {
-    const selected = this.isSupportedCleanMode(this.selectedCleanMode)
+    let selected = this.isSupportedCleanMode(this.selectedCleanMode)
       ? this.selectedCleanMode
       : CLEAN_MODE_VACUUM;
+
+    // Live clean-type derivation during an active run: cleans started from
+    // the Roborock app or the robot's own buttons carry their own clean type
+    // (vacuum / mop / vacuum+mop), so report what the robot is ACTUALLY
+    // doing instead of the last Matter selection. B01/Q7 robots report the
+    // type directly; classic robots are derived from the mop-only fan power
+    // signature and the active water-flow setting. A pending Matter
+    // selection wins until it has been applied, and outside an active run
+    // the (sticky) robot-side setting must not shadow the user's selection.
+    if (
+      !this.selectedCleanModeNeedsApply &&
+      this.isInCleaningRunMode(this.getOperationalState())
+    ) {
+      const liveCleanType = this.getLiveCleanType();
+      if (liveCleanType !== null && this.isSupportedCleanMode(liveCleanType)) {
+        if (liveCleanType !== CLEAN_MODE_VACUUM) {
+          return liveCleanType;
+        }
+        // Vacuum-family: fall through so the fan-power refinement below can
+        // pick the matching suction variant when those modes are announced.
+        selected = CLEAN_MODE_VACUUM;
+      }
+    }
 
     // Live derivation while suction-level modes are announced: report the
     // variant matching the robot's ACTUAL fan power, so suction changed in
@@ -1355,6 +1390,42 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     return selected;
+  }
+
+  /**
+   * The clean type the robot itself reports for the CURRENT run, translated
+   * to the Matter clean-mode id, or null when the robot gives no signal.
+   * B01/Q7: reported directly (`mode` property in every status poll).
+   * Classic v1: fan power 105 ("off") is the mop-only signature; otherwise an
+   * active water-flow setting on a mop-capable robot means vacuum+mop.
+   */
+  private getLiveCleanType(): number | null {
+    const reported = this.getNumberStatus("matter_clean_type");
+    if (reported !== null) {
+      return reported;
+    }
+
+    const fanPower = this.getNumberStatus("fan_power");
+    if (fanPower === ROBOROCK_FAN_POWER_OFF) {
+      return CLEAN_MODE_MOP;
+    }
+
+    if (!this.getMatterCleanModeCapabilities().canControlWater) {
+      // Without water-flow control there is no reliable mop signal; robots
+      // like mop-less models must not be guessed into a mop mode.
+      return null;
+    }
+
+    const waterBoxMode =
+      this.getNumberStatus("water_box_custom_mode") ??
+      this.getNumberStatus("water_box_mode");
+    if (waterBoxMode === null) {
+      return null;
+    }
+
+    return waterBoxMode !== ROBOROCK_WATER_BOX_OFF
+      ? CLEAN_MODE_VACUUM_AND_MOP
+      : CLEAN_MODE_VACUUM;
   }
 
   private isSupportedCleanMode(mode?: number): mode is number {

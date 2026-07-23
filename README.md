@@ -83,6 +83,8 @@ While a robot is actively cleaning, the plugin fetches its live position from th
 
 Enable **Enable Suction-Level Cleaning Modes** (`enableFanPowerCleanModes`) and Apple Home's mode picker gains the suction levels — rendered by Apple with localized names from the Matter mode tags: **Quiet / Automatic / Quick / Max** (+ **Deep Clean** for the Q7's Max+ level). The current mode follows the robot live, so suction changed in the Roborock app shows up in Apple Home too.
 
+The clean mode follows the robot as well: start a vacuum+mop or mop-only clean from the Roborock app (or the robot's buttons) and Apple Home switches to the matching mode during the run — no setup needed.
+
 > ⚠️ **Re-pairing required:** Matter locks an accessory's mode list at commissioning. After enabling (or disabling) this option, restart Homebridge, then **remove the robot from Apple Home and pair it again** — otherwise the new modes will not appear. The same applies to any option that changes announced capabilities.
 
 ## Supported robots

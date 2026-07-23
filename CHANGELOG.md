@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.9.9
+
+- **Cleans started outside Apple Home now show the right clean mode.** Starting a vacuum+mop (or mop-only) clean from the Roborock app or the robot's buttons left Apple Home claiming plain "Vacuum". The Q7 series reports its active clean type in every status poll (the plugin sent it on start but never read it back); classic S/Q robots are derived from the mop-only suction signature and the active water-flow setting. Apple Home's mode picker now follows the robot live during a run — no re-pairing needed.
+- Live fan power and clean type are now also picked up from push messages, not only polls, so mode changes surface within one update.
+- The periodic `Matter publish` log line now includes `runMode` and `cleanMode` alongside `operationalState`, making Apple Home display issues diagnosable from a single log excerpt.
+- Full suite: 272 passing (9 new live clean-type tests).
+
 ## 2.9.8
 
 - Fixed a long-standing quirk in state persistence: the file encoding argument was passed to `JSON.stringify` (where it is silently ignored) instead of `fs.writeFileSync`. Behavior was correct by luck (utf8 is the default); the code now says what it means.

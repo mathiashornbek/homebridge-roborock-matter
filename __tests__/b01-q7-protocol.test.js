@@ -118,6 +118,7 @@ describe("B01/Q7 status mapping", () => {
       fault: 0,
       wind: 2,
       water: 3,
+      mode: 1,
     });
     // Q7 water tanks are manual: water is never mapped or exposed.
     expect(v1).toEqual({
@@ -126,7 +127,27 @@ describe("B01/Q7 status mapping", () => {
       charge_status: 0,
       battery: 87,
       fan_power: 102,
+      matter_clean_type: 2,
     });
+  });
+
+  test("translates the reported clean type to the Matter clean-mode id", () => {
+    // Q7 CleanTypeMapping: 0 sweep, 1 sweep+mop, 2 mop. Matter: 0 vacuum,
+    // 1 mop, 2 vacuum+mop — note the crossed values for 1 and 2.
+    expect(b01.mapStatusToV1({ status: 5, mode: 0 }).matter_clean_type).toBe(0);
+    expect(b01.mapStatusToV1({ status: 5, mode: 1 }).matter_clean_type).toBe(2);
+    expect(b01.mapStatusToV1({ status: 5, mode: 2 }).matter_clean_type).toBe(1);
+    // Round-trips with the outgoing direction used by set_clean_type.
+    for (const [matterMode, q7Mode] of Object.entries(
+      b01.MATTER_TO_Q7_CLEAN_TYPE
+    )) {
+      expect(b01.Q7_CLEAN_TYPE_TO_MATTER[q7Mode]).toBe(Number(matterMode));
+    }
+    // Unknown or missing values are not guessed.
+    expect(
+      b01.mapStatusToV1({ status: 5, mode: 9 }).matter_clean_type
+    ).toBeUndefined();
+    expect(b01.mapStatusToV1({ status: 5 }).matter_clean_type).toBeUndefined();
   });
 
   test("fault is a diagnostic channel and never overrides the work status", () => {

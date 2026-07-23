@@ -1,6 +1,6 @@
 {
   "name": "homebridge-roborock-matter",
-  "version": "2.9.8",
+  "version": "2.9.9",
   "description": "The most complete Roborock plugin for Apple Home. Supports the entire Roborock lineup — from the classic S-series to the new 2025 Q7 series that no other plugin can control. Sign in with your Roborock account and get native start/stop, room cleaning, suction levels, battery, and live 'cleaning in the kitchen' room tracking. Verified by Homebridge.",
   "license": "MIT",
   "author": {

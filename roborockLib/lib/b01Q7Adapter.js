@@ -45,6 +45,11 @@ const B01_STATUS_PROPS = ["status", "quantity", "fault", "wind", "mode"];
 // Note the crossed values: Matter's Mop is Q7's 2, Matter's combo is Q7's 1.
 /** @type {Record<number, number>} */
 const MATTER_TO_Q7_CLEAN_TYPE = { 0: 0, 1: 2, 2: 1 };
+// Inverse direction: the Q7 reports its ACTIVE clean type in the same `mode`
+// property on every status poll, so cleans started from the Roborock app (or
+// the robot's buttons) can be reflected truthfully in Matter controllers.
+/** @type {Record<number, number>} */
+const Q7_CLEAN_TYPE_TO_MATTER = { 0: 0, 1: 2, 2: 1 };
 
 // service.set_room_clean control values (SCDeviceCleanParam).
 const CTRL = { STOP: 0, START: 1, PAUSE: 2 };
@@ -688,7 +693,7 @@ function translateQ7WorkStatusToV1State(rawStatus) {
 
 /**
  * @param {any} data
- * @returns {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number}}
+ * @returns {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
  */
 function mapStatusToV1(data) {
   const source = data && typeof data === "object" ? data : {};
@@ -696,7 +701,7 @@ function mapStatusToV1(data) {
   const rawStatus = Number(source.status);
   const mappedState = B01_STATUS_TO_V1_STATE[rawStatus];
 
-  /** @type {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number}} */
+  /** @type {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
   const v1 = {
     // The Q7 fault field is a separate diagnostic channel: informational
     // codes (e.g. 407 "cleaning in progress / scheduled cleanup ignored")
@@ -719,6 +724,14 @@ function mapStatusToV1(data) {
     v1.fan_power = fanPower;
   }
 
+  // The `mode` property carries the robot's current clean type (sweep /
+  // sweep+mop / mop). Surface it as the Matter clean-mode id so the
+  // accessory can mirror externally started cleans in Apple Home.
+  const matterCleanType = Q7_CLEAN_TYPE_TO_MATTER[Number(source.mode)];
+  if (matterCleanType !== undefined) {
+    v1.matter_clean_type = matterCleanType;
+  }
+
   return v1;
 }
 
@@ -732,6 +745,7 @@ module.exports = {
   resolveLiveRoomId,
   findCurrentMapId,
   MATTER_TO_Q7_CLEAN_TYPE,
+  Q7_CLEAN_TYPE_TO_MATTER,
   B01_PROTOCOL_VERSION,
   B01_REQUEST_DPS,
   B01_RESPONSE_DPS,
