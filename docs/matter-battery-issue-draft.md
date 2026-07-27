@@ -13,45 +13,40 @@ updates continuously; the matter.js store verifiably carries the live value;
 but the rendered battery **percentage** stays at its commissioning-time value
 until a fresh read (re-pair or Matter hub restart).
 
-## Corrected analysis (per Homebridge maintainer verification, 2026-07-15)
+## Root cause (confirmed in the matter.js source by the Homebridge maintainer, July 2026)
 
-The original analysis assumed the attribute carries the Matter reporting
-quality **C (changes omitted)** — never reported via subscription, controllers
-must poll. That was true of older spec revisions, **but as of Matter 1.4 the
-attribute is quality Q (quieter)** , and matter.js 0.17.x (shipped with every
-Homebridge 2.1.x release) models it accordingly:
+`ServerBehaviorBacking#configureEventSuppression()` collects every
+changes-omitted property into a suppressed set; only properties that are ALSO
+marked `quieter` get the observer that re-broadcasts them
+(`broadcastChanges([name])`). `batPercentRemaining` is changes-omitted without
+`quieter`, so it hits the `continue` and **no subscription report is ever
+produced** — the store stays fresh and reads serve the live value, which is
+exactly what this investigation's store dumps showed. `batChargeState`
+carries no C quality, which is why it updates live on the same cluster.
 
-- **Q (quieter):** reported via subscription, rate-limited to at most one
-  report per 10 seconds, plus an immediate report on any null ↔ value
-  transition.
+Ruled out along the way:
 
-A Homebridge maintainer (bwp91) commissioned a matter.js controller against a
-bridge exposing `PowerSource(Battery, Rechargeable)` — the same setup
-Homebridge builds — and logged the subscription: percentage changes propagate
-exactly as Q prescribes (immediate first report, deferred follow-up inside the
-10 s window, correct application after an interleaved `batChargeState` bump).
-The "stale cluster data version" theory does not hold on the controller side.
+- An intermediate theory (Matter 1.4 Q-quality, reports leaving the bridge)
+  did not survive the maintainer's source check.
+- The freeze reproduces on Homebridge v2.2.2-beta.12 in a **restart-free**
+  window, ruling out the dead-subscription bug fixed by homebridge#3973.
+- matter.js 0.17.7 does not change the behavior (`ServerBehaviorBacking.js`
+  is byte-identical to what Homebridge ships).
+- No viable device-side nudge exists from the Homebridge layer:
+  `broadcastChanges` is `protected`, and private-internals access or patching
+  would break silently on a matter.js update.
 
-## Where that leaves things
+## The fix
 
-- The bridge **emits** the reports; a spec-compliant controller **applies**
-  them. Apple Home in steady state does not — consistent with Apple's
-  controller still treating the attribute under the older changes-omitted
-  rules and refreshing only on a fresh read.
-- The plugin's boot-time resync nudge (null → value transition) does hit the
-  wire immediately (maintainer-confirmed) and remains useful for controllers
-  that re-prime their subscriptions; Apple still does not converge.
-- **No device-side fix exists**: bumping the data version or re-announcing
-  only produces more of the reports Apple already receives and ignores.
+The Matter spec says a server _may_ omit changes for C attributes — reporting
+them anyway is permitted. The clean solution is an opt-in on the matter.js
+side, raised upstream by the Homebridge maintainer as
+[matter-js/matter.js#4163](https://github.com/matter-js/matter.js/issues/4163)
+with this investigation linked as evidence. Once it lands, Homebridge wires it
+up for bridged accessories and every plugin gets working battery percentages
+at once — no plugin-side change needed.
 
-## Next verification steps (requested upstream)
-
-1. Run Homebridge with matter.js debug logging during a battery change and
-   capture the subscription flushes carrying `batPercentRemaining` — proves
-   the reports leave THIS bridge specifically.
-2. Optionally subscribe with `chip-tool` and confirm it sees (and applies)
-   the live values.
-
-If both confirm reports going out, the permanent fix belongs with Apple
-(Apple Feedback report about the controller's handling of Q-quality
-PowerSource attributes). The upstream issue stays open in the meantime.
+Until then: homebridge#3958 stays open to track; the plugin keeps its
+boot-time battery resync (useful for controllers that re-prime their
+subscriptions after a hub restart), and the known refresh paths remain
+restarting the Matter hub or re-pairing.
