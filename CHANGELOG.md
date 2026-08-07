@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0
+
+Startup and refresh pass: Homebridge restarts are noticeably faster, and a status refresh that had never actually run now does. Nothing here requires re-pairing — existing setups keep working exactly as they are.
+
+- **Restarts are roughly 5 seconds faster.** LAN discovery listens for robot broadcasts for a fixed 5-second window, and startup used to sit and wait for it with nothing else happening. It now runs alongside the home-data refresh, device setup and network probes, which all fit inside that same window. Measured on a three-robot setup: ~8 s from "Starting adapter" to "Lets go!!!!!!!" before, ~3 s after.
+- **Multi-robot startup no longer costs extra time.** Each robot's first status read and network probe used to run one after another; they now run at once, so three robots start as quickly as one. New tests pin the concurrency down so it cannot silently regress.
+- **A dead status refresh has been repaired.** The periodic `get_status` refresh for classic (S/Q-series) robots was gated on a config key this plugin never sets, which made the condition permanently false — the refresh promised by the code has never run in any released version. It now polls each robot at most once a minute (forced refreshes are unaffected), so a dropped MQTT push self-corrects within a minute instead of waiting up to three for the slow full poll.
+- **~86,000 needless timer wake-ups per robot per day removed.** With the refresh properly throttled, the 1-second scheduler tick that served it is now 15 seconds — same refresh rate, a fraction of the idle CPU on Raspberry Pi class hardware.
+- One request removed from every startup: a scene list was fetched from the Roborock cloud and thrown away.
+- **Security:** a newly published high-severity advisory in a transitive dependency (`ip-address`, reached through the MQTT client) is resolved, and the build toolchain was refreshed. `npm audit` reports zero vulnerabilities for both the shipped package and the development tree.
+- Full suite: 279 passing (7 new startup/refresh tests).
+
 ## 2.9.9
 
 - **Cleans started outside Apple Home now show the right clean mode.** Starting a vacuum+mop (or mop-only) clean from the Roborock app or the robot's buttons left Apple Home claiming plain "Vacuum". The Q7 series reports its active clean type in every status poll (the plugin sent it on start but never read it back); classic S/Q robots are derived from the mop-only suction signature and the active water-flow setting. Apple Home's mode picker now follows the robot live during a run — no re-pairing needed.

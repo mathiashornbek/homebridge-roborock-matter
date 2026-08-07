@@ -42,6 +42,12 @@ const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
 // slower cadence than the ~12s active status polls.
 const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 20000;
 
+// Scheduler granularity for the classic (v1-protocol) status refresh. The
+// refresh itself is throttled per robot inside vacuum.getParameter, so this
+// only decides how promptly that window is noticed — a 1-second tick meant
+// ~86k wake-ups per robot per day to serve at most 1440 polls.
+const CLASSIC_STATUS_TICK_MS = 15000;
+
 // Persisted states whose disk flush is debounced (see setStateAsync): they
 // change on every received robot message, are served from memory, and only
 // need the on-disk copy for restart survival.
@@ -1404,8 +1410,6 @@ class Roborock {
           const homedata = await this.api.get(`v2/user/homes/${homeId}`);
           const homedataResult = homedata.data.result;
 
-          const scene = await this.api.get(`user/scene/home/${homeId}`);
-
           await this.setStateAsync("HomeData", {
             val: JSON.stringify(homedataResult),
             ack: true,
@@ -1482,14 +1486,28 @@ class Roborock {
             this.updateInterval * 1000,
             homeId
           );
-          await this.updateHomeData(homeId);
 
-          const discoveredDevices = this.isCloudOnlyModeEnabled()
-            ? {}
-            : await this.localConnector.getLocalDevices();
+          // LAN discovery listens for UDP broadcasts for a fixed window, so
+          // awaiting it here used to stall startup for the full timeout with
+          // the CPU idle. Its results are only needed at the merge below, and
+          // the local keys it matches against are already loaded, so start it
+          // now and let the home-data refresh, device creation and network
+          // probes run inside that window instead.
+          const localDiscovery = this.isCloudOnlyModeEnabled()
+            ? Promise.resolve({})
+            : this.localConnector.getLocalDevices().catch((error) => {
+                this.log.debug(
+                  `LAN discovery failed; continuing with cloud transport: ${error?.message || error}`
+                );
+                return {};
+              });
+
+          await this.updateHomeData(homeId);
 
           await this.createDevices();
           await this.getNetworkInfo();
+
+          const discoveredDevices = await localDiscovery;
 
           if (!this.isCloudOnlyModeEnabled()) {
             // merge udp discovered devices with local devices found via mqtt
@@ -1763,14 +1781,20 @@ class Roborock {
   }
 
   async getNetworkInfo() {
-    for (const device of this.devices) {
-      const duid = device.duid;
-      if (!this.hasInitializedVacuum(duid)) {
-        continue;
-      }
-
-      await this.vacuums[duid].getParameter(duid, "get_network_info");
-    }
+    // One round-trip per robot, all independent: probing them in parallel
+    // turns N sequential cloud/LAN waits into one at startup. Failures are
+    // already handled inside getParameter, but allSettled keeps a rejection
+    // from one robot from skipping the others.
+    await Promise.allSettled(
+      this.devices
+        .filter((device) => this.hasInitializedVacuum(device.duid))
+        .map((device) =>
+          this.vacuums[device.duid].getParameter(
+            device.duid,
+            "get_network_info"
+          )
+        )
+    );
   }
 
   async createDevices() {
@@ -1830,6 +1854,11 @@ class Roborock {
     this.log.debug(`initializeDeviceUpdates`);
 
     const devices = this.devices;
+    // Each robot's first poll is a chain of round-trips to that robot alone.
+    // Running the chains for different robots concurrently keeps a
+    // multi-robot startup as fast as a single-robot one; the timers below are
+    // still wired up in order, only the initial reads overlap.
+    const initialPolls = [];
 
     for (const device of devices) {
       const duid = device.duid;
@@ -1863,7 +1892,7 @@ class Roborock {
 
       this.vacuums[duid].getStatusIntervall = () => {
         // B01/Q7 status is owned by the dedicated 15s loop; the per-device
-        // 1-second tick would only burn cycles hitting the attempt throttle.
+        // tick would only burn cycles hitting the attempt throttle.
         if (
           this.getVacuumDeviceInfo(duid, "pv") ===
           b01Q7Adapter.B01_PROTOCOL_VERSION
@@ -1873,7 +1902,7 @@ class Roborock {
         this.clearInterval(this.vacuums[duid].getStatusIntervalHandle);
         this.vacuums[duid].getStatusIntervalHandle = this.setInterval(
           this.getStatus.bind(this),
-          1000,
+          CLASSIC_STATUS_TICK_MS,
           duid,
           this.vacuums[duid],
           robotModel
@@ -1886,8 +1915,12 @@ class Roborock {
         this.vacuums[duid].getStatusIntervall(); // actually start getStatusIntervall()
       }
 
-      await this.updateDataMinimumData(duid, this.vacuums[duid], robotModel);
+      initialPolls.push(
+        this.updateDataMinimumData(duid, this.vacuums[duid], robotModel)
+      );
     }
+
+    await Promise.allSettled(initialPolls);
   }
 
   async executeScene(sceneID) {
@@ -1920,17 +1953,6 @@ class Roborock {
       throw error;
     }
   }
-
-  /**
-   * Get scenes from the Roborock API
-   * @returns {Promise<Object>} The scenes data
-   */
-
-  /**
-   * Get scenes for a specific device by duid
-   * @param {string} duid - The device unique identifier
-   * @returns {Array} Array of scenes for the specified device
-   */
 
   getProductAttribute(duid, attribute) {
     const device = this.getVacuumDeviceData(duid);

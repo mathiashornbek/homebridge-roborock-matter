@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 263 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 279 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -92,7 +92,10 @@ The clean mode follows the robot as well: start a vacuum+mop or mop-only clean f
 **The entire Roborock lineup.** If it runs in the Roborock app, this plugin can control it:
 
 - **2025 Q7 series** (`roborock.vacuum.sc05`, Q7 M5 / M5+) — the only Homebridge plugin that supports these at all, including manual-tank mopping with vacuum/mop mode switching.
-- **Classic S-, Q- and Saros-series** — S5 through S8 Pro Ultra, Q5/Q7/Q8/Q Revo families, Saros, and newer.
+- **Classic S-, Q- and Saros-series** — S4 / S5 Max through S8 Pro Ultra, Q5/Q7/Q8/Q Revo families, Saros, and newer.
+
+> **Heads-up for early models:** a few legacy robots — most notably the original S5 — only work with Xiaomi's Mi Home app and can never be added to a Roborock account, so no Roborock-account plugin can reach them. For those, [homebridge-xiaomi-roborock-vacuum](https://github.com/homebridge-xiaomi-roborock-vacuum/homebridge-xiaomi-roborock-vacuum) is the right tool.
+
 - **Future models** are adopted automatically: the plugin reads what each robot says it can do and adapts, so brand-new releases get sensible defaults from day one. If something looks off, [open a model report](https://github.com/mathiashornbek/homebridge-roborock-matter/issues) with a diagnostics export — that's exactly what it's for.
 
 ## Configuration

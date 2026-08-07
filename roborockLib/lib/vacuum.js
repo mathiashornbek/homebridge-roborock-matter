@@ -5,6 +5,11 @@ const RRMapParser = require("./RRMapParser");
 const fs = require("fs");
 const zlib = require("zlib");
 
+// Minimum spacing between periodic (non-forced) get_status polls per robot.
+// MQTT push remains the primary live channel; this is the safety net that
+// catches a dropped push long before the 3-minute full refresh would.
+const STATUS_POLL_MIN_INTERVAL_MS = 60 * 1000;
+
 const mappedCleanSummary = {
   0: "clean_time",
   1: "clean_area",
@@ -47,6 +52,25 @@ class vacuum {
       get_carpet_clean_mode: "deviceStatus",
       get_carpet_cleaning_mode: "deviceStatus",
     };
+
+    /** @type {Map<string, number>} last periodic status poll, per duid */
+    this.lastStatusPollAt = new Map();
+  }
+
+  /**
+   * True when this robot's periodic status poll is due again.
+   * @param {string} duid
+   */
+  shouldPollStatusNow(duid) {
+    const last = this.lastStatusPollAt.get(duid);
+    return (
+      last === undefined || Date.now() - last >= STATUS_POLL_MIN_INTERVAL_MS
+    );
+  }
+
+  /** @param {string} duid */
+  markStatusPolled(duid) {
+    this.lastStatusPollAt.set(duid, Date.now());
   }
 
   async updateDiagnosticSnapshot(duid, key, payload) {
@@ -332,16 +356,21 @@ class vacuum {
           }
         }
       } else if (parameter == "get_status") {
-        const now = new Date();
-        const seconds = now.getSeconds();
         const force = attribute == "force";
 
-        if (
-          force ||
-          this.adapter.socket ||
-          seconds % this.adapter.config.updateInterval == 0
-        ) {
-          // only send status every minute or if websocket is connected
+        // Periodic status refresh, throttled per robot.
+        //
+        // The inherited gate here read `config.updateInterval` (a key this
+        // plugin never sets) and `adapter.socket` (permanently null), so the
+        // expression was `NaN == 0` — always false. The refresh the comment
+        // promised has therefore never run: classic robots relied entirely on
+        // MQTT push plus the slow 3-minute full poll, and a silently dropped
+        // push left Apple Home stale for minutes. An explicit elapsed-time
+        // throttle restores the safety net, and being relative rather than
+        // aligned to wall-clock seconds also stops every robot in a fleet
+        // from polling in the same instant.
+        if (force || this.shouldPollStatusNow(duid)) {
+          this.markStatusPolled(duid);
 
           // const deviceStatus = await this.adapter.messageQueueHandler.sendRequest(duid, "get_status", []);
           const requestOptions = options.preferCloud

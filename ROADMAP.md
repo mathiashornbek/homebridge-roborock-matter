@@ -2,6 +2,7 @@
 
 ## Recently Completed
 
+- Startup and refresh pass (3.0.0): LAN discovery now overlaps the rest of startup (~5 s faster restarts), per-robot probes run concurrently, the never-firing classic status refresh was repaired (60 s throttle), and the 1 s scheduler tick became 15 s.
 - Live clean-mode mirroring (2.9.9): cleans started from the Roborock app or the robot's buttons now show the correct Vacuum / Mop / Vacuum+Mop mode in Apple Home during the run (Q7 native clean-type reporting; classic robots derived from suction/water signals).
 - Added admin UI diagnostics for model resolution, local credential availability, local IP discovery, TCP connection state, and last cloud/local transport.
 - Persisted discovery and transport state so failures can be inspected after startup.
