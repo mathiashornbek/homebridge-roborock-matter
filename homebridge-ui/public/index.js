@@ -982,7 +982,7 @@ async function copyDiagnosticsReport() {
 function buildDiagnosticsReport(result) {
   const hasToken = Boolean(result.hasEncryptedToken || state.hasEncryptedToken);
   const lines = [
-    "homebridge-roborock-vacuum2 diagnostic report",
+    "homebridge-roborock-matter diagnostic report",
     `generatedAt: ${result.generatedAt || "unknown"}`,
     `pluginVersion: ${result.pluginVersion || "unknown"}`,
     `nodeVersion: ${result.nodeVersion || "unknown"}`,

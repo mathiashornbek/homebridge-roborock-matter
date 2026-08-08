@@ -1505,52 +1505,26 @@ class Roborock {
           await this.updateHomeData(homeId);
 
           await this.createDevices();
+
+          // Cloud requests fail outright until the MQTT session is up, and
+          // the very first ones (the per-robot network probe, then each
+          // robot's initial poll) used to be issued a second after the
+          // broker handshake started. Wait for the real signal instead of
+          // hoping an unrelated delay covers it; a broker that never comes
+          // up releases the wait and the requests fail as they would have.
+          await this.rr_mqtt_connector.waitUntilConnected();
+
           await this.getNetworkInfo();
-
-          const discoveredDevices = await localDiscovery;
-
-          if (!this.isCloudOnlyModeEnabled()) {
-            // merge udp discovered devices with local devices found via mqtt
-            Object.entries(discoveredDevices).forEach(([duid, ip]) => {
-              if (
-                !Object.prototype.hasOwnProperty.call(this.localDevices, duid)
-              ) {
-                this.localDevices[duid] = ip;
-              }
-            });
-            this.log.debug(
-              `localDevices: ${JSON.stringify(this.localDevices)}`
-            );
-
-            for (const device of localKeyDevices) {
-              if (
-                !Object.prototype.hasOwnProperty.call(
-                  this.localDevices,
-                  device.duid
-                )
-              ) {
-                await this.updateTransportDiagnostics(device.duid, {
-                  localDiscoveryState: "not-discovered",
-                  lastTransportReason: "missing-local-ip",
-                });
-              }
-            }
-
-            for (const device in this.localDevices) {
-              const duid = device;
-              const ip = this.localDevices[device];
-
-              await this.updateTransportDiagnostics(duid, {
-                localIp: ip,
-                localDiscoveryState: "discovered",
-              });
-              await this.localConnector.createClient(duid, ip);
-            }
-          }
-
           await this.initializeDeviceUpdates();
+
           this.bInited = true;
           this.log.info(`Starting adapter finished. Lets go!!!!!!!`);
+
+          // LAN attach runs to completion in the background. Everything above
+          // works over the cloud, and the transport layer already falls back
+          // to it, so holding accessory registration hostage to a fixed-length
+          // broadcast listen only delayed the Apple Home tiles.
+          void this.attachLocalTransports(localDiscovery, localKeyDevices);
         } else {
           this.log.info(
             `Most likely failed to login. Deleting UserData to force new login!`
@@ -1564,6 +1538,59 @@ class Roborock {
 
     if (callback) {
       callback();
+    }
+  }
+
+  /**
+   * Merge LAN-discovered robots and open their local TCP connections.
+   *
+   * Deliberately runs after startup has completed: local transport is an
+   * optimisation over the cloud path, not a prerequisite for it.
+   *
+   * @param {Promise<Record<string, string>>} localDiscovery
+   * @param {Array<{duid: string}>} localKeyDevices
+   */
+  async attachLocalTransports(localDiscovery, localKeyDevices) {
+    if (this.isCloudOnlyModeEnabled()) {
+      return;
+    }
+
+    try {
+      const discoveredDevices = await localDiscovery;
+
+      // merge udp discovered devices with local devices found via mqtt
+      Object.entries(discoveredDevices).forEach(([duid, ip]) => {
+        if (!Object.prototype.hasOwnProperty.call(this.localDevices, duid)) {
+          this.localDevices[duid] = ip;
+        }
+      });
+      this.log.debug(`localDevices: ${JSON.stringify(this.localDevices)}`);
+
+      for (const device of this.normalizeArray(localKeyDevices)) {
+        if (
+          !Object.prototype.hasOwnProperty.call(this.localDevices, device.duid)
+        ) {
+          await this.updateTransportDiagnostics(device.duid, {
+            localDiscoveryState: "not-discovered",
+            lastTransportReason: "missing-local-ip",
+          });
+        }
+      }
+
+      for (const duid in this.localDevices) {
+        const ip = this.localDevices[duid];
+
+        await this.updateTransportDiagnostics(duid, {
+          localIp: ip,
+          localDiscoveryState: "discovered",
+        });
+        await this.localConnector.createClient(duid, ip);
+      }
+    } catch (error) {
+      // Local transport is best-effort; the cloud path stays available.
+      this.log.debug(
+        `Local transport attach failed; continuing on cloud transport: ${error?.message || error}`
+      );
     }
   }
 

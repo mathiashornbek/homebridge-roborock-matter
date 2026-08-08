@@ -1,10 +1,20 @@
 # Changelog
 
+## 3.0.1
+
+Follow-up to 3.0.0 after measuring a real restart instead of trusting the reasoning. Two things needed fixing, one of them mine.
+
+- **Startup now genuinely finishes in ~2 seconds instead of ~7.** 3.0.0 moved LAN discovery off the critical path but still waited for its full 5-second broadcast window before declaring startup finished, so the total barely moved — the claim in the 3.0.0 notes ("~8 s before, ~3 s after") was wrong, and the corrected numbers are below. Local transport is an optimisation over the cloud path, not a prerequisite for it, so it now attaches in the background after the robots are already live in Apple Home.
+- **Fixed: the first cloud request could fail on a cold start.** `get_network_info` was issued about a second after the MQTT handshake began and failed with "Cloud connection not available" — visible in real logs for a cloud-transported robot. Startup now waits for the broker session to actually come up (up to 10 s, then continues regardless) before the first requests, instead of relying on an unrelated delay to cover the gap.
+- The diagnostics export is no longer headed `homebridge-roborock-vacuum2 diagnostic report` — a leftover from the fork that made reports confusing to read.
+
+Measured on a three-robot fleet (two Q7, one S8 Pro Ultra), "Starting adapter" to "Lets go!!!!!!!": 6–7 s on 2.9.x and 3.0.0, ~2 s on 3.0.1.
+
 ## 3.0.0
 
 Startup and refresh pass: Homebridge restarts are noticeably faster, and a status refresh that had never actually run now does. Nothing here requires re-pairing — existing setups keep working exactly as they are.
 
-- **Restarts are roughly 5 seconds faster.** LAN discovery listens for robot broadcasts for a fixed 5-second window, and startup used to sit and wait for it with nothing else happening. It now runs alongside the home-data refresh, device setup and network probes, which all fit inside that same window. Measured on a three-robot setup: ~8 s from "Starting adapter" to "Lets go!!!!!!!" before, ~3 s after.
+- **LAN discovery moved off the critical path.** It listens for robot broadcasts for a fixed 5-second window, and startup used to sit and wait for it before even creating the devices. Device setup and network probes now run inside that window instead. (The wall-clock win landed in 3.0.1 — see above; this release only reordered the work.)
 - **Multi-robot startup no longer costs extra time.** Each robot's first status read and network probe used to run one after another; they now run at once, so three robots start as quickly as one. New tests pin the concurrency down so it cannot silently regress.
 - **A dead status refresh has been repaired.** The periodic `get_status` refresh for classic (S/Q-series) robots was gated on a config key this plugin never sets, which made the condition permanently false — the refresh promised by the code has never run in any released version. It now polls each robot at most once a minute (forced refreshes are unaffected), so a dropped MQTT push self-corrects within a minute instead of waiting up to three for the slow full poll.
 - **~86,000 needless timer wake-ups per robot per day removed.** With the refresh properly throttled, the 1-second scheduler tick that served it is now 15 seconds — same refresh rate, a fraction of the idle CPU on Raspberry Pi class hardware.
