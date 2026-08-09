@@ -13,7 +13,12 @@ const RoborockPlatform = require("../src/platform").default;
 function createPlatform({ inited = true, devices = [] } = {}) {
   const platform = Object.create(RoborockPlatform.prototype);
 
-  platform.log = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  platform.log = {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  };
   platform.roborockAPI = {
     isInited: jest.fn(() => inited),
     getVacuumList: jest.fn(() => devices),
@@ -33,8 +38,16 @@ function createPlatform({ inited = true, devices = [] } = {}) {
     (accessory) => accessory.context?.duid
   );
   platform.matterAccessories = [
-    { UUID: "uuid-device-1", displayName: "Vicky", context: { duid: "device-1" } },
-    { UUID: "uuid-device-2", displayName: "Bob", context: { duid: "device-2" } },
+    {
+      UUID: "uuid-device-1",
+      displayName: "Vicky",
+      context: { duid: "device-1" },
+    },
+    {
+      UUID: "uuid-device-2",
+      displayName: "Bob",
+      context: { duid: "device-2" },
+    },
   ];
   platform.matterVacuums = new Map([
     ["device-1", { dispose: jest.fn() }],

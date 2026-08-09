@@ -31,6 +31,9 @@ function getRequestTimeout(method, requestTimeoutMs) {
  * @property {(value: unknown) => void} resolve
  * @property {(reason?: unknown) => void} reject
  * @property {ReturnType<typeof setTimeout>} timeout
+ * @property {boolean} [secure] True for requests whose protocol-102 reply is
+ *   only an acknowledgement, with the real payload arriving on protocol 301.
+ * @property {string} [method] The Roborock method, kept for diagnostics.
  */
 
 /**

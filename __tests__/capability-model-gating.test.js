@@ -10,11 +10,21 @@ const { deviceFeatures } = require("../roborockLib/lib/deviceFeatures");
 
 function createFeatures(model, { featureSet = "0", featuresStr = "0" } = {}) {
   const adapter = {
-    log: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    log: {
+      debug: jest.fn(),
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    },
     getVacuumDeviceInfo: jest.fn(() => ""),
     getProductAttribute: jest.fn(() => model),
   };
-  const features = new deviceFeatures(adapter, featureSet, featuresStr, "duid-1");
+  const features = new deviceFeatures(
+    adapter,
+    featureSet,
+    featuresStr,
+    "duid-1"
+  );
   features.robotModel = model;
   return features;
 }
@@ -67,9 +77,9 @@ describe("model-gated capabilities are not universally true", () => {
       "roborock.vacuum.a51",
       "roborock.vacuum.a70",
     ]) {
-      expect(
-        Boolean(featureListFor(model).isVoiceControlSupported)
-      ).toBe(false);
+      expect(Boolean(featureListFor(model).isVoiceControlSupported)).toBe(
+        false
+      );
     }
   });
 

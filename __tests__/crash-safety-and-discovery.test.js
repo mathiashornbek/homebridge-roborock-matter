@@ -50,7 +50,12 @@ function buildDiscoveryPacket(payloadObject) {
 function createAdapter() {
   const timers = [];
   return {
-    log: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    log: {
+      debug: jest.fn(),
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    },
     localKeys: new Map(),
     remoteDevices: new Set(),
     updateTransportDiagnostics: jest.fn().mockResolvedValue(undefined),
@@ -157,7 +162,13 @@ describe("decryptECB actually decrypts", () => {
 
 describe("MQTT startup watchdog cannot crash the process", () => {
   const connectorSource = fs.readFileSync(
-    path.join(__dirname, "..", "roborockLib", "lib", "roborock_mqtt_connector.js"),
+    path.join(
+      __dirname,
+      "..",
+      "roborockLib",
+      "lib",
+      "roborock_mqtt_connector.js"
+    ),
     "utf8"
   );
 
