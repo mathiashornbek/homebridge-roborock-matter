@@ -308,8 +308,16 @@ class Roborock {
           return;
         }
         const persistPath = this.getPersistPath(id);
-        fs.mkdirSync(path.dirname(persistPath), { recursive: true });
-        fs.writeFileSync(persistPath, JSON.stringify(state, null, 2), "utf8");
+        // UserData holds the cloud token and the rriot block (including the
+        // HMAC key that signs every API request); HomeData holds every
+        // robot's localKey. Those are exactly as sensitive as the AES key in
+        // src/crypto.ts, which is already written 0600 — writing them
+        // world-readable made that encryption pointless on any host with a
+        // second user or service account.
+        this.writeSecurePersistFile(
+          persistPath,
+          JSON.stringify(state, null, 2)
+        );
       }
 
       this.states[id] = state;
@@ -324,10 +332,9 @@ class Roborock {
             this.forceTemporaryPersistPath(),
             `roborock.${id}`
           );
-          fs.writeFileSync(
+          this.writeSecurePersistFile(
             fallbackPath,
-            JSON.stringify(state, null, 2),
-            "utf8"
+            JSON.stringify(state, null, 2)
           );
           this.states[id] = state;
           this.log.warn(
@@ -437,8 +444,7 @@ class Roborock {
     }
 
     try {
-      fs.mkdirSync(path.dirname(persistPath), { recursive: true });
-      fs.writeFileSync(persistPath, JSON.stringify(state, null, 2), "utf8");
+      this.writeSecurePersistFile(persistPath, JSON.stringify(state, null, 2));
       this.log.info(
         `Migrated legacy '${id}' state file from '${legacyPath}' to '${persistPath}'.`
       );
@@ -1640,6 +1646,27 @@ class Roborock {
     this._pendingPersistFlushes.set(id, timer);
   }
 
+  /**
+   * Write a persisted state file so only the Homebridge user can read it, and
+   * repair the mode on files that already exist. `writeFileSync`'s mode only
+   * applies when the file is created, so an install that has been running
+   * since before this change would otherwise keep its world-readable
+   * UserData/HomeData forever.
+   * @param {string} filePath
+   * @param {string} contents
+   */
+  writeSecurePersistFile(filePath, contents) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(filePath, contents, { encoding: "utf8", mode: 0o600 });
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch (error) {
+      this.log.debug(
+        `Could not tighten permissions on ${filePath}: ${error?.message || error}`
+      );
+    }
+  }
+
   /** Write the current in-memory value of a persisted state to disk now. */
   persistStateToDisk(id) {
     try {
@@ -1648,8 +1675,7 @@ class Roborock {
         return;
       }
       const persistPath = this.getPersistPath(id);
-      fs.mkdirSync(path.dirname(persistPath), { recursive: true });
-      fs.writeFileSync(persistPath, JSON.stringify(state, null, 2));
+      this.writeSecurePersistFile(persistPath, JSON.stringify(state, null, 2));
     } catch (error) {
       this.log.debug(
         `Debounced persist of '${id}' failed: ${error?.message || error}`

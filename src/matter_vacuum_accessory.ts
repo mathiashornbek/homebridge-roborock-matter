@@ -260,11 +260,28 @@ const RVC_OPERATIONAL_STATE_LIST = [
   RVC_OPERATIONAL_STATE.PAUSED,
   RVC_OPERATIONAL_STATE.ERROR,
   RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+  // Dock activities. These were the whole point of the "Extended Operational
+  // States" toggle, but they were missing from this list, and Matter requires
+  // operationalState to be a member of operationalStateList — so even a
+  // correctly derived "emptying the dust bin" could not legally be published.
+  RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN,
+  RVC_OPERATIONAL_STATE.CLEANING_MOP,
+  RVC_OPERATIONAL_STATE.UPDATING_MAPS,
 ] as const;
 
 // The basic (non-extended) operational state list is the first four entries
 // of the full list, without SEEKING_CHARGER.
 const RVC_BASIC_OPERATIONAL_STATE_LIST = RVC_OPERATIONAL_STATE_LIST.slice(0, 4);
+
+// The states that the "Extended Operational States" toggle unlocks. Publishing
+// any of these requires them to be advertised, which is why this set and
+// RVC_OPERATIONAL_STATE_LIST must stay in agreement.
+const EXTENDED_OPERATIONAL_STATES: ReadonlySet<number> = new Set([
+  RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+  RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN,
+  RVC_OPERATIONAL_STATE.CLEANING_MOP,
+  RVC_OPERATIONAL_STATE.UPDATING_MAPS,
+]);
 
 // Optional charging/docked additions. CHARGING (0x41) and DOCKED (0x42) are
 // standard RVC operational state IDs (not manufacturer-range), so they are
@@ -1096,12 +1113,21 @@ export default class RoborockMatterVacuumAccessory {
     const fanPower = this.getNumberFromValue(status.fan_power);
     const matterCleanType = this.getNumberFromValue(status.matter_clean_type);
 
+    // Fan power and clean type count as meaningful updates too. A suction or
+    // mop-mode change made in the Roborock app (or chosen by SmartPlan) pushes
+    // a frame carrying only that field; treating it as empty meant the Apple
+    // Home clean-mode picker kept showing the previous level until some other
+    // event happened to arrive. The publish below resolves the operational
+    // state through getNumberStatus, which falls back to the remembered state,
+    // so a frame without `state` does not reset the tile.
     if (
       state === null &&
       chargeStatus === null &&
       battery === null &&
       cleanArea === null &&
-      cleanTime === null
+      cleanTime === null &&
+      fanPower === null &&
+      matterCleanType === null
     ) {
       return;
     }
@@ -2601,9 +2627,16 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private toControllerOperationalState(operationalState: number): number {
+    // With Extended Operational States on, report the dock activities as
+    // themselves. Only SEEKING_CHARGER used to survive this gate; EMPTYING_
+    // DUST_BIN, CLEANING_MOP and UPDATING_MAPS fell through to the switch
+    // below and were rewritten to RUNNING no matter what the user had
+    // enabled — so the toggle silently delivered one of the four states it
+    // promised, and "emptying" and "washing the mop" never reached Apple Home
+    // in any released version (issue #5).
     if (
       this.isExtendedOperationalStateEnabled() &&
-      operationalState === RVC_OPERATIONAL_STATE.SEEKING_CHARGER
+      EXTENDED_OPERATIONAL_STATES.has(operationalState)
     ) {
       return operationalState;
     }
@@ -2744,8 +2777,25 @@ export default class RoborockMatterVacuumAccessory {
       if (Object.prototype.hasOwnProperty.call(dps, "122")) {
         status.battery = dps["122"];
       }
+      // 123 is FAN POWER, not charge status. The Roborock v1 dps numbering is
+      // 120 error_code, 121 state, 122 battery, 123 fan_power,
+      // 124 water_box_mode, 125/126/127 main-brush/side-brush/filter life,
+      // 133 charge_status — and this file's own consumables table uses
+      // 125/126/127 for exactly those lives, which corroborates it.
+      //
+      // Reading 123 as charge_status meant that changing suction mid-clean
+      // (from the Roborock app, a schedule, or SmartPlan) pushed a frame whose
+      // only field was 123. That produced {charge_status: 102} with state
+      // null, which falls through to the charging branch — so an actively
+      // cleaning robot flipped to "Charging" in Apple Home.
       if (Object.prototype.hasOwnProperty.call(dps, "123")) {
-        status.charge_status = dps["123"];
+        status.fan_power = dps["123"];
+      }
+      if (Object.prototype.hasOwnProperty.call(dps, "124")) {
+        status.water_box_mode = dps["124"];
+      }
+      if (Object.prototype.hasOwnProperty.call(dps, "133")) {
+        status.charge_status = dps["133"];
       }
 
       return Object.keys(status).length > 0 ? status : null;

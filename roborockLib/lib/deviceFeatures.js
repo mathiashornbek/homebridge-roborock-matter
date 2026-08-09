@@ -249,111 +249,115 @@ const cleaningInfoString = {
   },
 };
 
+// Every action below is invoked as `action(this)` from processSupportedFeatures,
+// so `context` is the deviceFeatures instance being set up. They must write to
+// the instance's own tables, never to the module-level baselines above — see
+// the note in the constructor.
 const actions = {
   setConsumablesInt: async (context) => {
-    context.consumables = consumablesInt;
+    context.consumables = context.consumablesInt;
   },
   setConsumablesString: async (context) => {
-    context.consumables = consumablesString;
+    context.consumables = context.consumablesString;
   },
   setCleaningRecordsInt: async (context) => {
-    context.cleaningRecords = cleaningRecordsInt;
-    context.cleaningInfo = cleaningInfoInt;
+    context.cleaningRecords = context.cleaningRecordsInt;
+    context.cleaningInfo = context.cleaningInfoInt;
   },
   setCleaningRecordsString: async (context) => {
-    context.cleaningRecords = cleaningRecordsString;
-    context.cleaningInfo = cleaningInfoString;
+    context.cleaningRecords = context.cleaningRecordsString;
+    context.cleaningInfo = context.cleaningInfoString;
   },
   setCleaningRecordsMixed: async (context) => {
     // this is a special case some olders robots
-    context.cleaningRecords = cleaningRecordsString;
-    context.cleaningInfo = cleaningInfoInt;
+    context.cleaningRecords = context.cleaningRecordsString;
+    context.cleaningInfo = context.cleaningInfoInt;
   },
-  set_charge_status: async () => {
-    deviceStates.charge_status = "number";
+  set_charge_status: async (context) => {
+    context.deviceStates.charge_status = "number";
   },
-  set_clean_percent: async () => {
-    deviceStates.clean_percent = "number";
+  set_clean_percent: async (context) => {
+    context.deviceStates.clean_percent = "number";
   },
-  set_common_status: () => {
-    deviceStates.common_status = "number";
+  set_common_status: (context) => {
+    context.deviceStates.common_status = "number";
   },
-  set_rss: () => {
-    deviceStates.rss = "number";
+  set_rss: (context) => {
+    context.deviceStates.rss = "number";
   },
-  set_dss: () => {
-    deviceStates.dss = "number";
+  set_dss: (context) => {
+    context.deviceStates.dss = "number";
   },
-  set_kct: () => {
-    deviceStates.kct = "number";
+  set_kct: (context) => {
+    context.deviceStates.kct = "number";
   },
-  set_in_warmup: () => {
-    deviceStates.in_warmup = "number";
+  set_in_warmup: (context) => {
+    context.deviceStates.in_warmup = "number";
   },
-  set_last_clean_t: () => {
-    deviceStates.last_clean_t = "string";
+  set_last_clean_t: (context) => {
+    context.deviceStates.last_clean_t = "string";
   },
-  set_wash_count: () => {
-    cleaningRecordsString.wash_count = {
+  set_wash_count: (context) => {
+    context.cleaningRecordsString.wash_count = {
       type: "number",
       name: "cleaning_record_wash_count",
     };
   },
   set_map_flag: (context) => {
-    deviceStates.map_flag = "number";
+    context.deviceStates.map_flag = "number";
     context.cleaningRecords.map_flag = {
       type: "number",
       name: "cleaningRecord_map_flag",
     };
   },
-  set_back_type: () => {
-    deviceStates.back_type = "number";
+  set_back_type: (context) => {
+    context.deviceStates.back_type = "number";
   },
-  set_rdt: () => {
-    deviceStates.rdt = "number";
+  set_rdt: (context) => {
+    context.deviceStates.rdt = "number";
   },
-  set_replenish_mode: () => {
-    cleaningRecordsString.manual_replenish = {
+  set_replenish_mode: (context) => {
+    context.cleaningRecordsString.manual_replenish = {
       type: "number",
       name: "cleaning_record_manual_replenish",
     };
-    cleaningRecordsString.dirty_replenish = {
+    context.cleaningRecordsString.dirty_replenish = {
       type: "number",
       name: "cleaning_record_dirty_replenish",
     };
-    deviceStates.replenish_mode = "number";
+    context.deviceStates.replenish_mode = "number";
   },
-  set_repeat: () => {
-    deviceStates.repeat = "number";
+  set_repeat: (context) => {
+    context.deviceStates.repeat = "number";
   },
-  set_cleaned_area: () => {
-    cleaningRecordsString.cleaned_area = {
+  set_cleaned_area: (context) => {
+    context.cleaningRecordsString.cleaned_area = {
       type: "number",
       name: "cleaning_record_cleaned_area",
       unit: "m²",
       divider: 1000000,
     };
   },
-  set_clean_times: () => {
-    cleaningRecordsString.clean_times = {
+  set_clean_times: (context) => {
+    context.cleaningRecordsString.clean_times = {
       type: "number",
       name: "cleaning_record_clean_times",
     };
   },
-  set_switch_status: () => {
-    deviceStates.switch_status = "number";
+  set_switch_status: (context) => {
+    context.deviceStates.switch_status = "number";
   },
-  set_task_id: () => {
-    cleaningRecordsString.task_id = {
+  set_task_id: (context) => {
+    context.cleaningRecordsString.task_id = {
       type: "number",
       name: "cleaning_record_task_id",
     };
   },
-  set_monitor_status: () => {
-    deviceStates.monitor_status = "number";
+  set_monitor_status: (context) => {
+    context.deviceStates.monitor_status = "number";
   },
-  set_clean_fluid: () => {
-    deviceStates.clean_fluid = "number";
+  set_clean_fluid: (context) => {
+    context.deviceStates.clean_fluid = "number";
   },
 };
 
@@ -366,18 +370,43 @@ class deviceFeatures {
     this.cleaningInfo = {};
     this.cleaningRecords = {};
     this.consumables = {};
+
+    // Capability detection writes into these tables, so every instance needs
+    // its own copies and the module-level tables above stay pristine
+    // baselines. createDevices() walks the robots sequentially through this
+    // one shared module, so writing to the module tables handed robot N
+    // everything robots 1..N-1 had switched on: an S4 Max set up after an
+    // S8 Pro Ultra was given app_start_collect_dust and friends despite
+    // having no auto-empty dock. It is not only a setup-time concern either —
+    // vacuum.js calls hasDeviceStatusAttribute()/getStatusDivider() on every
+    // get_status poll and processDockType() can re-run capability detection,
+    // so shared tables made a robot's runtime behaviour depend on which robot
+    // was set up last.
+    //
+    // A shallow copy is enough: the nested descriptor objects ({ type,
+    // states, unit, divider }) are only ever read or replaced wholesale,
+    // never mutated in place.
+    this.commands = { ...commands };
+    this.deviceStates = { ...deviceStates };
+    this.resetConsumables = [...resetConsumables];
+    this.consumablesInt = { ...consumablesInt };
+    this.consumablesString = { ...consumablesString };
+    this.cleaningRecordsInt = { ...cleaningRecordsInt };
+    this.cleaningRecordsString = { ...cleaningRecordsString };
+    this.cleaningInfoInt = { ...cleaningInfoInt };
+    this.cleaningInfoString = { ...cleaningInfoString };
   }
 
   isWashThenChargeCmdSupported() {
-    commands.app_start_wash = { type: "boolean", defaultState: false };
-    commands.app_stop_wash = { type: "boolean", defaultState: false };
+    this.commands.app_start_wash = { type: "boolean", defaultState: false };
+    this.commands.app_stop_wash = { type: "boolean", defaultState: false };
 
     this.cleaningRecords.wash_count = {
       type: "number",
       name: "cleaning_record_wash_count",
     };
 
-    commands.set_wash_towel_mode = {
+    this.commands.set_wash_towel_mode = {
       type: "json",
       defaultState: '{"wash_mode":2}',
       states: {
@@ -386,7 +415,7 @@ class deviceFeatures {
         '{"wash_mode":2}': "Intense",
       },
     };
-    commands.set_smart_wash_params = {
+    this.commands.set_smart_wash_params = {
       type: "json",
       defaultState: '{"smart_wash":0,"wash_interval":1800}',
       states: {
@@ -402,35 +431,41 @@ class deviceFeatures {
         '{"smart_wash":1,"wash_interval":1200}': "Per room",
       },
     };
-    deviceStates.wash_phase = "number";
-    deviceStates.wash_ready = "number";
-    deviceStates.back_type = "number";
-    deviceStates.wash_status = "number";
+    this.deviceStates.wash_phase = "number";
+    this.deviceStates.wash_ready = "number";
+    this.deviceStates.back_type = "number";
+    this.deviceStates.wash_status = "number";
 
-    consumablesString.strainer_work_times = {
+    this.consumablesString.strainer_work_times = {
       type: "number",
       unit: null,
       divider: null,
     };
-    consumablesString.cleaning_brush_work_times = {
+    this.consumablesString.cleaning_brush_work_times = {
       type: "number",
       unit: null,
       divider: null,
     };
 
-    resetConsumables.push("strainer_work_times");
-    resetConsumables.push("cleaning_brush_work_times");
+    this.resetConsumables.push("strainer_work_times");
+    this.resetConsumables.push("cleaning_brush_work_times");
   }
 
   isDustCollectionSettingSupported() {
-    commands.app_start_collect_dust = { type: "boolean", defaultState: false };
-    commands.app_stop_collect_dust = { type: "boolean", defaultState: false };
-    commands.set_dust_collection_switch_status = {
+    this.commands.app_start_collect_dust = {
+      type: "boolean",
+      defaultState: false,
+    };
+    this.commands.app_stop_collect_dust = {
+      type: "boolean",
+      defaultState: false,
+    };
+    this.commands.set_dust_collection_switch_status = {
       type: "json",
       defaultState: '{"status":1}',
       states: { '{"status":0}': "Off", '{"status":1}': "On" },
     };
-    commands.set_dust_collection_mode = {
+    this.commands.set_dust_collection_mode = {
       type: "json",
       defaultState: '{"mode":0}',
       states: {
@@ -443,12 +478,12 @@ class deviceFeatures {
   }
 
   isSupportedDrying() {
-    commands.app_set_dryer_status = {
+    this.commands.app_set_dryer_status = {
       type: "string",
       defaultState: '{"status": 0}',
       states: { '{"status": 1}': "On", '{"status": 0}': "Off" },
     };
-    commands.app_set_dryer_setting = {
+    this.commands.app_set_dryer_setting = {
       type: "json",
       defaultState: '{"on":{"dry_time":10800},"status":0}',
       states: {
@@ -459,22 +494,22 @@ class deviceFeatures {
       },
     };
 
-    deviceStates.dry_status = "number";
+    this.deviceStates.dry_status = "number";
   }
 
   isSupportedWaterMode() {
-    commands.set_mop_mode = {
+    this.commands.set_mop_mode = {
       type: "number",
       defaultState: 300,
       states: { 300: "Standard", 301: "Deep", 303: "Deep+" },
     };
-    commands.set_water_box_custom_mode = {
+    this.commands.set_water_box_custom_mode = {
       type: "number",
       defaultState: 201,
       states: { 200: "Off", 201: "Mild", 202: "Moderate", 203: "Intense" },
     };
 
-    deviceStates.water_box_custom_mode = {
+    this.deviceStates.water_box_custom_mode = {
       type: "number",
       states: { 200: "Off", 201: "Mild", 202: "Moderate", 203: "Intense" },
     };
@@ -493,20 +528,20 @@ class deviceFeatures {
   }
 
   isCleanRouteFastModeSupported() {
-    commands.set_mop_mode = {
+    this.commands.set_mop_mode = {
       type: "number",
       defaultState: 300,
       states: { 300: "Standard", 301: "Deep", 303: "Deep+", 304: "Fast" },
     };
-    deviceStates.mop_mode = {
+    this.deviceStates.mop_mode = {
       type: "number",
       states: { 300: "Standard", 301: "Deep", 303: "Deep+", 304: "Fast" },
     };
   }
 
   isAvoidCollisionSupported() {
-    deviceStates.collision_avoid_status = "number";
-    deviceStates.avoid_count = "number";
+    this.deviceStates.collision_avoid_status = "number";
+    this.deviceStates.avoid_count = "number";
 
     this.cleaningRecords.avoid_count = {
       type: "number",
@@ -515,17 +550,17 @@ class deviceFeatures {
   }
 
   isCornerCleanModeSupported() {
-    deviceStates.corner_clean_mode = "number";
+    this.deviceStates.corner_clean_mode = "number";
   }
 
   isCameraSupported() {
-    deviceStates.distance_off = "number";
-    deviceStates.camera_status = "number";
+    this.deviceStates.distance_off = "number";
+    this.deviceStates.camera_status = "number";
   }
 
   isVideoLiveCallSupported() {
-    deviceStates.home_sec_enable_password = "number";
-    deviceStates.home_sec_status = "number";
+    this.deviceStates.home_sec_enable_password = "number";
+    this.deviceStates.home_sec_status = "number";
     const ip = this.adapter.config.hostname_ip;
     const streamTypes = {
       stream_html: `http://${ip}:1984/stream.html?src=${this.duid}`,
@@ -551,15 +586,15 @@ class deviceFeatures {
   }
 
   isVoiceControlSupported() {
-    deviceStates.voice_chat_status = "number";
+    this.deviceStates.voice_chat_status = "number";
   }
 
   isSupportSetSwitchMapMode() {
-    deviceStates.switch_map_mode = "number";
+    this.deviceStates.switch_map_mode = "number";
   }
 
   isMopForbiddenSupported() {
-    deviceStates.mop_forbidden_enable = "number";
+    this.deviceStates.mop_forbidden_enable = "number";
   }
 
   isShakeMopStrengthSupported() {
@@ -567,15 +602,15 @@ class deviceFeatures {
   }
 
   isWaterBoxSupported() {
-    deviceStates.water_box_carriage_status = "number";
-    deviceStates.water_box_mode = {
+    this.deviceStates.water_box_carriage_status = "number";
+    this.deviceStates.water_box_mode = {
       type: "number",
       states: { 200: "Off", 201: "Mild", 202: "Moderate", 203: "Intense" },
     };
-    deviceStates.water_box_status = "number";
-    deviceStates.water_shortage_status = "number";
+    this.deviceStates.water_box_status = "number";
+    this.deviceStates.water_shortage_status = "number";
 
-    deviceStates.mop_mode = {
+    this.deviceStates.mop_mode = {
       type: "number",
       states: { 300: "Standard", 301: "Deep", 303: "Deep+" },
     };
@@ -608,7 +643,7 @@ class deviceFeatures {
   }
 
   isAvoidCarpetSupported() {
-    deviceStates.carpet_mode = {
+    this.deviceStates.carpet_mode = {
       type: "string",
       states: {
         '[{"enable":0,"stall_time":10,"current_low":400,"current_high":500,"current_integral":450}]':
@@ -617,7 +652,7 @@ class deviceFeatures {
           "on",
       },
     };
-    deviceStates.carpet_clean_mode = {
+    this.deviceStates.carpet_clean_mode = {
       type: "string",
       states: {
         '{"carpet_clean_mode":0}': "Avoid",
@@ -1221,7 +1256,7 @@ class deviceFeatures {
       });
 
       // process commands
-      for (const [command, type] of Object.entries(commands)) {
+      for (const [command, type] of Object.entries(this.commands)) {
         if (typeof type == "string") {
           await this.adapter.createCommand(this.duid, command, type);
         } else {
@@ -1236,7 +1271,7 @@ class deviceFeatures {
       }
 
       // process device states
-      for (const [state, type] of Object.entries(deviceStates)) {
+      for (const [state, type] of Object.entries(this.deviceStates)) {
         if (typeof type == "string") {
           await this.adapter.createDeviceStatus(this.duid, state, type);
         } else {
@@ -1261,7 +1296,7 @@ class deviceFeatures {
         );
       }
       // process reset of consumables
-      for (const [, resetConsumable] of Object.entries(resetConsumables)) {
+      for (const [, resetConsumable] of Object.entries(this.resetConsumables)) {
         await this.adapter.createResetConsumables(this.duid, resetConsumable);
       }
 
@@ -1333,17 +1368,19 @@ class deviceFeatures {
   getConsumablesDivider(consumable) {
     const robotModel = this.adapter.getProductAttribute(this.duid, "model");
     const consumables =
-      robotModel == "roborock.vacuum.s4" ? consumablesInt : consumablesString;
+      robotModel == "roborock.vacuum.s4"
+        ? this.consumablesInt
+        : this.consumablesString;
 
     return this.getDivider(consumables, consumable);
   }
 
   getStatusDivider(attribute) {
-    return this.getDivider(deviceStates, attribute);
+    return this.getDivider(this.deviceStates, attribute);
   }
 
   hasDeviceStatusAttribute(attribute) {
-    return Object.prototype.hasOwnProperty.call(deviceStates, attribute);
+    return Object.prototype.hasOwnProperty.call(this.deviceStates, attribute);
   }
 
   getFirmwareFeature(featureID) {

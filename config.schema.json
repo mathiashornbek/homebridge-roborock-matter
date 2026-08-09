@@ -99,8 +99,8 @@
         "default": false
       },
       "enableMatterExtendedOperationalStates": {
-        "title": "Enable Matter Returning Status",
-        "description": "Opt in to the extended Matter Returning status while the vacuum is heading back to the dock. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready for Apple Home compatibility.",
+        "title": "Enable Matter Dock & Returning Status",
+        "description": "Opt in to the extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. Requires removing and re-pairing the robot in Apple Home once, because Matter fixes an accessory's capabilities at commissioning. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no equivalent in the Matter robot vacuum specification, so it cannot be reported by any plugin.",
         "type": "boolean",
         "default": false
       },

@@ -284,16 +284,29 @@ class RoborockUiServer {
       return { ok: true, message: "Logged out. Token cleared." };
     }
 
-    const userDataPath = path.join(storagePath, "roborock.UserData");
-    try {
-      if (fs.existsSync(userDataPath)) {
-        fs.unlinkSync(userDataPath);
+    // HomeData goes with the session: it caches every robot's localKey, the
+    // credential that decrypts all LAN traffic. Leaving it behind meant a user
+    // who had explicitly disconnected the account still had per-device keys on
+    // disk. It is re-fetched on the next successful login.
+    const removed: string[] = [];
+    for (const file of ["roborock.UserData", "roborock.HomeData"]) {
+      const target = path.join(storagePath, file);
+      try {
+        if (fs.existsSync(target)) {
+          fs.unlinkSync(target);
+          removed.push(file);
+        }
+      } catch (error) {
+        // Ignore file removal errors.
       }
-    } catch (error) {
-      // Ignore file removal errors.
     }
 
-    return { ok: true, message: "Logged out. Token cleared." };
+    return {
+      ok: true,
+      message: removed.length
+        ? "Logged out. Session and cached device keys cleared."
+        : "Logged out. Token cleared.",
+    };
   }
 
   private async getDiagnostics() {

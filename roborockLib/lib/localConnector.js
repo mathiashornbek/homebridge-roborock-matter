@@ -10,6 +10,22 @@ const PORT = 58866;
 const TIMEOUT = 5000; // 5 Sekunden Timeout
 const LOCAL_RECONNECT_DELAY_MS = 60000;
 const LOCAL_CONNECT_TIMEOUT_MS = 4000;
+// A failed connect attempt now re-arms itself, so the delay has to grow: a
+// robot that is unplugged for a week must not be probed every minute for a
+// week. Doubling from LOCAL_RECONNECT_DELAY_MS keeps the first retries
+// responsive (60s, 2m, 4m, 8m) and the cap keeps a permanently absent robot
+// down to four probes an hour.
+const LOCAL_RECONNECT_MAX_DELAY_MS = 900000;
+
+// Upper bound for a plausible local TCP frame. Everything the robot sends over
+// the LAN socket is a single Roborock message: a 19 byte header, an AES
+// payload and a CRC. The largest of those by far is a protocol-301 map blob,
+// which lands in the low tens of kB, so 1 MiB leaves two orders of magnitude of
+// headroom. A declared length past this is never a real frame — it is a
+// corrupted length prefix or a stream that has lost frame alignment — and
+// without a ceiling those bytes can never arrive, so the completeness check
+// would answer "not yet" forever while the buffer grew without bound.
+const MAX_LOCAL_FRAME_BYTES = 1048576;
 
 const BROADCAST_TOKEN = Buffer.from("qWKYcdQWrbm9hPqe", "utf8");
 
@@ -34,6 +50,9 @@ class EnhancedSocket extends net.Socket {
     super(options);
     this.connected = false;
     this.chunkBuffer = Buffer.alloc(0);
+    // Whether a stream desync has already been reported for this socket, so a
+    // permanently broken peer produces one warning instead of one per chunk.
+    this.desyncReported = false;
 
     this.on("connect", () => {
       this.connected = true;
@@ -84,6 +103,25 @@ class localConnector {
     this.l01HandshakeWaiters = new Map();
     this.reconnectTimers = new Map();
     this.connectPromises = new Map();
+    // Consecutive failed local connects per duid, used to back the retry delay
+    // off. Reset the moment a connect succeeds.
+    this.reconnectAttempts = new Map();
+  }
+
+  /**
+   * Delay before the next reconnect for `duid`, growing with the number of
+   * consecutive failures. The first retry after a healthy connection is still
+   * LOCAL_RECONNECT_DELAY_MS, because a successful connect zeroes the counter.
+   * @param {string} duid
+   * @returns {number}
+   */
+  nextReconnectDelay(duid) {
+    const attempt = (this.reconnectAttempts.get(duid) || 0) + 1;
+    this.reconnectAttempts.set(duid, attempt);
+    return Math.min(
+      LOCAL_RECONNECT_DELAY_MS * Math.pow(2, attempt - 1),
+      LOCAL_RECONNECT_MAX_DELAY_MS
+    );
   }
 
   clearReconnectTimer(duid) {
@@ -155,6 +193,9 @@ class localConnector {
 
   async resetClient(duid, reason = "local-client-reset") {
     this.clearReconnectTimer(duid);
+    // A deliberate reset is not a connection failure: whatever reconnects next
+    // must start from the base delay instead of inheriting a long back-off.
+    this.reconnectAttempts.delete(duid);
     const client = this.localClients[duid];
     if (!client) {
       return;
@@ -183,6 +224,9 @@ class localConnector {
   }
 
   async markLocalConnected(duid) {
+    // The robot answered, so the back-off starts over for the next outage.
+    this.reconnectAttempts.delete(duid);
+
     if (this.adapter.remoteDevices?.delete(duid)) {
       this.adapter.log.debug(
         `Local TCP connected for ${duid}; clearing remote fallback marker.`
@@ -213,6 +257,7 @@ class localConnector {
     });
 
     // Wrap the connect method in a promise to await its completion
+    let connectFailed = false;
     await new Promise((resolve, reject) => {
       let settled = false;
       const { setTimer, clearTimer } = getTimerFns(this.adapter);
@@ -257,6 +302,7 @@ class localConnector {
           finish(reject, error);
         });
     }).catch(async (error) => {
+      connectFailed = true;
       const online = await this.adapter.onlineChecker(duid);
       await this.adapter.updateTransportDiagnostics(duid, {
         tcpConnectionState: "connect-failed",
@@ -279,104 +325,8 @@ class localConnector {
       }
     });
 
-    client.on("data", async (message) => {
-      try {
-        if (client.chunkBuffer.length == 0) {
-          this.adapter.log.debug(`new chunk started`);
-          client.chunkBuffer = message;
-        } else {
-          this.adapter.log.debug(`new chunk received`);
-          client.chunkBuffer = Buffer.concat([client.chunkBuffer, message]);
-        }
-        // this.adapter.log.debug(`new chunk received: ${message.toString("hex")}`);
-
-        let offset = 0;
-        if (this.checkComplete(client.chunkBuffer)) {
-          this.adapter.log.debug(
-            `Chunk buffer data is complete. Processing...`
-          );
-          // this.adapter.log.debug(`chunkBuffer: ${client.chunkBuffer.toString("hex")}`);
-          while (offset + 4 <= client.chunkBuffer.length) {
-            const segmentLength = client.chunkBuffer.readUInt32BE(offset);
-            const currentBuffer = client.chunkBuffer.subarray(
-              offset + 4,
-              offset + segmentLength + 4
-            );
-            // length of 17 does not contain any useful data.
-            // It seems to be protocol handshake metadata.
-            if (segmentLength != 17) {
-              const data = this.adapter.message._decodeMsg(currentBuffer, duid);
-              if (!data) {
-                offset += 4 + segmentLength;
-                continue;
-              }
-
-              if (data.protocol == 4) {
-                const dps = JSON.parse(data.payload).dps;
-
-                if (dps) {
-                  const _102 = JSON.stringify(dps["102"]);
-                  const parsed_102 = JSON.parse(JSON.parse(_102));
-                  const id = parsed_102.id;
-                  const result = parsed_102.result;
-
-                  if (this.adapter.pendingRequests.has(id)) {
-                    this.adapter.log.debug(
-                      `Local message with protocol 4 and id ${id} received. Result: ${JSON.stringify(result)}`
-                    );
-                    const { resolve, timeout } =
-                      this.adapter.pendingRequests.get(id);
-                    this.adapter.clearTimeout(timeout);
-                    this.adapter.pendingRequests.delete(id);
-                    resolve(result);
-
-                    if (this.adapter.deviceNotify !== undefined) {
-                      this.adapter.deviceNotify("LocalMessage", {
-                        duid,
-                        payload: result,
-                      });
-                    }
-                  }
-                }
-              }
-            } else {
-              try {
-                const shortMessage = shortMessageParser.parse(currentBuffer);
-                if (
-                  shortMessage.version == "L01" &&
-                  shortMessage.protocol == 1
-                ) {
-                  const currentNonces =
-                    this.adapter.localL01Nonces.get(duid) || {};
-                  this.adapter.localL01Nonces.set(duid, {
-                    connectNonce: currentNonces.connectNonce,
-                    ackNonce: shortMessage.random,
-                  });
-
-                  const waiter = this.l01HandshakeWaiters.get(duid);
-                  if (waiter) {
-                    this.adapter.clearTimeout(waiter.timeout);
-                    this.l01HandshakeWaiters.delete(duid);
-                    waiter.resolve(true);
-                  }
-                }
-              } catch (error) {
-                this.adapter.log.debug(
-                  `Failed parsing short local message for ${duid}: ${error.message}`
-                );
-              }
-            }
-            offset += 4 + segmentLength;
-          }
-          this.clearChunkBuffer(duid);
-        }
-      } catch (error) {
-        this.adapter.catchError(
-          `Failed to create tcp client: ${error.stack}`,
-          `function createClient`,
-          duid
-        );
-      }
+    client.on("data", (message) => {
+      this.handleLocalData(duid, client, message);
     });
 
     client.on("close", () => {
@@ -400,7 +350,7 @@ class localConnector {
         );
       }
       this.adapter.localL01Nonces.delete(duid);
-      this.scheduleReconnect(duid, ip);
+      this.scheduleReconnect(duid, ip, this.nextReconnectDelay(duid));
       client.connected = false;
     });
 
@@ -415,23 +365,245 @@ class localConnector {
     });
 
     this.localClients[duid] = client;
+
+    if (connectFailed) {
+      // The close/error listeners above are attached only now, after the
+      // connect promise settled. On a FAILED connect both events already fired
+      // into a socket with no listeners, so nothing would ever schedule a
+      // retry: an unplugged robot stayed on the cloud path until Homebridge was
+      // restarted, even after it came back. Re-arm here instead, backing off so
+      // a permanently absent robot is not probed every minute forever.
+      const delayMs = this.nextReconnectDelay(duid);
+      this.adapter.log.debug(
+        `Local connect for ${duid} at ${ip} failed; retrying in ${Math.round(delayMs / 1000)}s.`
+      );
+      this.scheduleReconnect(duid, ip, delayMs);
+    }
   }
 
-  checkComplete(buffer) {
-    let totalLength = 0;
+  /**
+   * Process one TCP chunk for `duid`.
+   *
+   * Lives outside the `data` listener so the framing and the buffer
+   * bookkeeping have exactly one home and can be exercised directly.
+   *
+   * @param {string} duid
+   * @param {EnhancedSocket} client
+   * @param {Buffer} message
+   */
+  handleLocalData(duid, client, message) {
+    try {
+      if (client.chunkBuffer.length == 0) {
+        this.adapter.log.debug(`new chunk started`);
+        client.chunkBuffer = message;
+      } else {
+        this.adapter.log.debug(`new chunk received`);
+        client.chunkBuffer = Buffer.concat([client.chunkBuffer, message]);
+      }
+      // this.adapter.log.debug(`new chunk received: ${message.toString("hex")}`);
+
+      const scan = this.scanChunkBuffer(client.chunkBuffer);
+
+      if (scan.status == "desync") {
+        // Waiting for a frame this size is waiting forever, so every later
+        // chunk would just be appended to a buffer that can never complete.
+        // Throw the buffer away and re-align on whatever arrives next.
+        const dropped = client.chunkBuffer.length;
+        client.chunkBuffer = Buffer.alloc(0);
+        const reason = `Local TCP stream for ${duid} is out of sync: a frame of ${scan.declaredLength} bytes was announced at offset ${scan.consumed} (max ${MAX_LOCAL_FRAME_BYTES}). Dropping ${dropped} buffered bytes and resyncing.`;
+        if (client.desyncReported) {
+          this.adapter.log.debug(reason);
+        } else {
+          client.desyncReported = true;
+          this.adapter.log.warn(reason);
+        }
+        return;
+      }
+
+      if (scan.status != "complete") {
+        return;
+      }
+
+      const buffer = client.chunkBuffer;
+      let offset = 0;
+
+      try {
+        if (scan.consumed > 0) {
+          this.adapter.log.debug(
+            `Chunk buffer data is complete. Processing...`
+          );
+        }
+        // this.adapter.log.debug(`chunkBuffer: ${buffer.toString("hex")}`);
+        while (offset < scan.consumed) {
+          const segmentLength = buffer.readUInt32BE(offset);
+          const currentBuffer = buffer.subarray(
+            offset + 4,
+            offset + segmentLength + 4
+          );
+          offset += 4 + segmentLength;
+
+          try {
+            this.processLocalSegment(duid, segmentLength, currentBuffer);
+          } catch (error) {
+            // One frame the robot sent in a shape we cannot read (a payload
+            // that is not JSON after decryption, a dps["102"] with unexpected
+            // contents) must not take the frames queued behind it in the same
+            // chunk down with it.
+            this.adapter.log.debug(
+              `Discarding an unprocessable local frame for ${duid}: ${error?.message || error}`
+            );
+          }
+        }
+      } finally {
+        // Consume unconditionally. When this only ran on the success path, a
+        // single frame that threw skipped the reset, so the next chunk was
+        // concatenated onto the retained bytes, re-processed the same poison
+        // frame, threw at the same offset again — forever. The buffer grew
+        // without bound and every later local reply for this robot was lost
+        // with no way back short of restarting Homebridge.
+        const remainder = buffer.length - scan.consumed;
+        // subarray keeps the entire parent chunk alive, so the 1-3 byte tail is
+        // copied out rather than viewed.
+        client.chunkBuffer =
+          remainder > 0
+            ? Buffer.from(buffer.subarray(scan.consumed))
+            : Buffer.alloc(0);
+        if (scan.consumed > 0) {
+          client.desyncReported = false;
+        }
+      }
+    } catch (error) {
+      // Nothing above should reach this, but if it ever does the buffer still
+      // has to go: a retained buffer is what turns one bad chunk into a
+      // permanently dead local channel.
+      client.chunkBuffer = Buffer.alloc(0);
+      this.adapter.catchError(
+        `Failed to process local tcp data: ${error.stack}`,
+        `function handleLocalData`,
+        duid
+      );
+    }
+  }
+
+  /**
+   * Decode and dispatch a single framed segment.
+   * @param {string} duid
+   * @param {number} segmentLength
+   * @param {Buffer} currentBuffer
+   */
+  processLocalSegment(duid, segmentLength, currentBuffer) {
+    // length of 17 does not contain any useful data.
+    // It seems to be protocol handshake metadata.
+    if (segmentLength == 17) {
+      try {
+        const shortMessage = shortMessageParser.parse(currentBuffer);
+        if (shortMessage.version == "L01" && shortMessage.protocol == 1) {
+          const currentNonces = this.adapter.localL01Nonces.get(duid) || {};
+          this.adapter.localL01Nonces.set(duid, {
+            connectNonce: currentNonces.connectNonce,
+            ackNonce: shortMessage.random,
+          });
+
+          const waiter = this.l01HandshakeWaiters.get(duid);
+          if (waiter) {
+            this.adapter.clearTimeout(waiter.timeout);
+            this.l01HandshakeWaiters.delete(duid);
+            waiter.resolve(true);
+          }
+        }
+      } catch (error) {
+        this.adapter.log.debug(
+          `Failed parsing short local message for ${duid}: ${error.message}`
+        );
+      }
+      return;
+    }
+
+    const data = this.adapter.message._decodeMsg(currentBuffer, duid);
+    if (!data || data.protocol != 4) {
+      return;
+    }
+
+    const dps = JSON.parse(data.payload).dps;
+    if (!dps) {
+      return;
+    }
+
+    // Most firmwares put a JSON string in dps["102"], but some hand back an
+    // already-parsed object. The old double JSON.parse turned that second case
+    // into "[object Object]" and threw, which is one of the two ways a single
+    // frame used to wedge the whole channel.
+    const raw = dps["102"];
+    const parsed_102 = typeof raw == "string" ? JSON.parse(raw) : raw;
+    if (!parsed_102) {
+      return;
+    }
+
+    const id = parsed_102.id;
+    const result = parsed_102.result;
+
+    if (this.adapter.pendingRequests.has(id)) {
+      this.adapter.log.debug(
+        `Local message with protocol 4 and id ${id} received. Result: ${JSON.stringify(result)}`
+      );
+      const { resolve, timeout } = this.adapter.pendingRequests.get(id);
+      this.adapter.clearTimeout(timeout);
+      this.adapter.pendingRequests.delete(id);
+      resolve(result);
+
+      if (this.adapter.deviceNotify !== undefined) {
+        this.adapter.deviceNotify("LocalMessage", {
+          duid,
+          payload: result,
+        });
+      }
+    }
+  }
+
+  /**
+   * Walk the length-prefixed frames in `buffer` without decoding them.
+   *
+   * `consumed` is the offset just past the last WHOLE frame, so the caller can
+   * keep everything after it. That tail is what used to be lost: both loops
+   * were bounded by `offset + 4 <= length`, so a chunk ending 1-3 bytes into a
+   * length prefix was reported complete and those bytes were dropped, which
+   * misaligned every frame that followed on that connection.
+   *
+   * @param {Buffer} buffer
+   * @returns {{status: "complete" | "incomplete" | "desync", consumed: number, declaredLength: number}}
+   */
+  scanChunkBuffer(buffer) {
     let offset = 0;
 
     while (offset + 4 <= buffer.length) {
       const segmentLength = buffer.readUInt32BE(offset);
-      totalLength += 4 + segmentLength;
-      offset += 4 + segmentLength;
 
-      if (offset > buffer.length) {
-        return false; // Data is not complete yet
+      if (segmentLength > MAX_LOCAL_FRAME_BYTES) {
+        return {
+          status: "desync",
+          consumed: offset,
+          declaredLength: segmentLength,
+        };
       }
+
+      const nextOffset = offset + 4 + segmentLength;
+      if (nextOffset > buffer.length) {
+        // The payload is still in flight; wait for the rest of it.
+        return {
+          status: "incomplete",
+          consumed: offset,
+          declaredLength: segmentLength,
+        };
+      }
+
+      offset = nextOffset;
     }
 
-    return totalLength <= buffer.length;
+    return { status: "complete", consumed: offset, declaredLength: 0 };
+  }
+
+  checkComplete(buffer) {
+    return this.scanChunkBuffer(buffer).status == "complete";
   }
 
   clearChunkBuffer(duid) {
@@ -652,6 +824,15 @@ class localConnector {
     if (this.localDevicesTimeout) {
       this.adapter.clearTimeout(this.localDevicesTimeout);
     }
+
+    // This is the only local-transport hook the adapter's
+    // clearTimersAndIntervals calls on shutdown. Reconnect timers are armed as
+    // far out as LOCAL_RECONNECT_MAX_DELAY_MS, so without this they would
+    // outlive stopService and fire createClient into a torn-down adapter.
+    for (const duid of [...this.reconnectTimers.keys()]) {
+      this.clearReconnectTimer(duid);
+    }
+    this.reconnectAttempts.clear();
   }
 }
 

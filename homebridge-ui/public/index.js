@@ -454,15 +454,27 @@ async function login() {
   const result = await request("/auth/login", { email, password, baseURL });
 
   if (result.ok) {
-    await updatePluginConfig({
+    // Drop the password once a token exists — the 2FA path below has always
+    // done this, and this path spreading the whole form kept the account
+    // password in cleartext in config.json for no benefit. The encrypted
+    // token is what the plugin authenticates with from here on, and every
+    // later `saveCredentials` (fired by a change to email, region, debug mode,
+    // ...) used to write the password back again.
+    const patch = {
       ...formValues,
       enableMatterServiceAreaBeta: undefined,
       encryptedToken: result.encryptedToken,
-    });
+    };
+    delete patch.password;
+
+    await updatePluginConfig(patch);
     showToast("success", result.message || "Login successful.");
     state.hasEncryptedToken = true;
-    state.hasPassword = true;
-    setLoggedInState(true, true);
+    state.hasPassword = false;
+    if (elements.password) {
+      elements.password.value = "";
+    }
+    setLoggedInState(true, false);
     return;
   }
 
@@ -533,10 +545,20 @@ async function verifyTwoFactorCode() {
 async function logout() {
   const result = await request("/auth/logout");
   if (result.ok) {
-    await updatePluginConfig({ encryptedToken: undefined });
+    // Clear the password too, or "Logout" does not log out: platform.ts treats
+    // a present password as enough to start, so the next Homebridge restart
+    // silently re-authenticated and wrote a fresh token.
+    await updatePluginConfig({
+      encryptedToken: undefined,
+      password: undefined,
+    });
     showToast("success", result.message || "Logged out.");
     state.hasEncryptedToken = false;
-    setLoggedInState(false, state.hasPassword);
+    state.hasPassword = false;
+    if (elements.password) {
+      elements.password.value = "";
+    }
+    setLoggedInState(false, false);
     resetDiagnosticsAutoRefresh();
     renderLocalTestResults(null);
     renderDiagnostics(null);
@@ -1046,9 +1068,39 @@ function appendRoborockDiagnosticReport(lines, device) {
   }
 }
 
+// Keys whose values must never leave the machine in a report that users are
+// told to paste into a public GitHub issue. A denylist is the wrong shape here
+// — this block is raw robot RPC output, so the safe default has to be "redact
+// anything that looks identifying". `get_network_info` in particular answers
+// with the home Wi-Fi SSID, the access point BSSID and the robot MAC, none of
+// which matched the upstream token|key|password filter; a BSSID resolves to a
+// street address in public Wi-Fi geolocation databases.
+const SENSITIVE_DIAGNOSTIC_KEY_PATTERN =
+  /ssid|bssid|\bmac\b|gw|gateway|netmask|token|password|secret|rriot|localkey|local_key|\bkey\b|serial|\bsn\b|uid|email|account|latitude|longitude|\blat\b|\blon\b/i;
+
+/** Recursively redact identifying values while keeping the shape readable. */
+function redactDiagnosticValue(value, depth = 0) {
+  if (depth > 6) {
+    return "[depth-limited]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactDiagnosticValue(entry, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const output = {};
+    for (const [key, entry] of Object.entries(value)) {
+      output[key] = SENSITIVE_DIAGNOSTIC_KEY_PATTERN.test(key)
+        ? "[redacted]"
+        : redactDiagnosticValue(entry, depth + 1);
+    }
+    return output;
+  }
+  return value;
+}
+
 function formatDiagnosticPayload(value) {
   try {
-    const text = JSON.stringify(value);
+    const text = JSON.stringify(redactDiagnosticValue(value));
     const masked = maskLocalIpsInText(text);
     return masked.length > 1500 ? `${masked.slice(0, 1500)}...` : masked;
   } catch {

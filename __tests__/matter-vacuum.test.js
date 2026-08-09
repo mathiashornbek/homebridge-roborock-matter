@@ -7,6 +7,9 @@ const RUN_MODE_CLEANING = 1;
 const RVC_OPERATIONAL_STATE_STOPPED = 0;
 const RVC_OPERATIONAL_STATE_RUNNING = 1;
 const RVC_OPERATIONAL_STATE_SEEKING_CHARGER = 64;
+const RVC_OPERATIONAL_STATE_EMPTYING_DUST_BIN = 67;
+const RVC_OPERATIONAL_STATE_CLEANING_MOP = 68;
+const RVC_OPERATIONAL_STATE_UPDATING_MAPS = 70;
 
 function flush() {
   return new Promise((resolve) => realSetTimeout(resolve, 0));
@@ -766,7 +769,7 @@ describe("Matter operational state", () => {
     expect(accessory.clusters.rvcRunMode).not.toHaveProperty("onMode");
   });
 
-  test("adds only Returning when extended operational states are enabled", () => {
+  test("advertises the dock activities when extended operational states are enabled", () => {
     const platform = createPlatform({
       enableMatterExtendedOperationalStates: true,
     });
@@ -774,13 +777,36 @@ describe("Matter operational state", () => {
 
     const list = accessory.clusters.rvcOperationalState.operationalStateList;
 
+    // Matter requires operationalState to be a member of operationalStateList.
+    // These were missing, so "emptying the dust bin" and "washing the mop"
+    // could never legally be published even though the toggle promised them
+    // (issue #5). All are standard RVC state IDs advertised without labels —
+    // the manufacturer-range states with labels that broke Apple Home
+    // commissioning in 1.4.40 are a different thing and stay gone.
     expect(list.map((entry) => entry.operationalStateId)).toEqual([
       0,
       1,
       2,
       3,
       RVC_OPERATIONAL_STATE_SEEKING_CHARGER,
+      RVC_OPERATIONAL_STATE_EMPTYING_DUST_BIN,
+      RVC_OPERATIONAL_STATE_CLEANING_MOP,
+      RVC_OPERATIONAL_STATE_UPDATING_MAPS,
     ]);
+    expect(list.every((entry) => !("operationalStateLabel" in entry))).toBe(
+      true
+    );
+  });
+
+  test("the basic list is unchanged when the toggle is off", () => {
+    const platform = createPlatform();
+    const { accessory } = createAccessory(platform);
+
+    expect(
+      accessory.clusters.rvcOperationalState.operationalStateList.map(
+        (entry) => entry.operationalStateId
+      )
+    ).toEqual([0, 1, 2, 3]);
   });
 
   test("keeps phase attributes null as required by the RVC Operational State cluster", () => {
@@ -794,11 +820,15 @@ describe("Matter operational state", () => {
     expect(accessory.clusters.rvcOperationalState.currentPhase).toBeNull();
   });
 
-  test("maps Roborock maintenance states to running for Apple Home compatibility", () => {
+  test("publishes the real dock activity when extended states are enabled", () => {
+    // Issue #5: a user enabled the toggle, re-paired, and still never saw
+    // emptying or mop washing. These three fell through the extended-state
+    // gate (which only covered SEEKING_CHARGER) and were rewritten to RUNNING
+    // regardless of the setting.
     const cases = [
-      { state: 22, expected: RVC_OPERATIONAL_STATE_RUNNING }, // emptying dust container
-      { state: 23, expected: RVC_OPERATIONAL_STATE_RUNNING }, // washing the mop
-      { state: 29, expected: RVC_OPERATIONAL_STATE_RUNNING }, // mapping
+      { state: 22, expected: RVC_OPERATIONAL_STATE_EMPTYING_DUST_BIN },
+      { state: 23, expected: RVC_OPERATIONAL_STATE_CLEANING_MOP },
+      { state: 29, expected: RVC_OPERATIONAL_STATE_UPDATING_MAPS },
     ];
 
     for (const { state, expected } of cases) {
@@ -809,6 +839,24 @@ describe("Matter operational state", () => {
       const { accessory } = createAccessory(platform);
       expect(accessory.clusters.rvcOperationalState.operationalState).toBe(
         expected
+      );
+      // Every publishable state must be advertised, or Matter rejects it.
+      expect(
+        accessory.clusters.rvcOperationalState.operationalStateList.map(
+          (entry) => entry.operationalStateId
+        )
+      ).toContain(expected);
+    }
+  });
+
+  test("maintenance states still read as running when the toggle is off", () => {
+    // Default behaviour is unchanged: no new states appear for users who have
+    // not opted in and re-paired.
+    for (const state of [22, 23, 29]) {
+      const platform = createPlatform({ status: { state } });
+      const { accessory } = createAccessory(platform);
+      expect(accessory.clusters.rvcOperationalState.operationalState).toBe(
+        RVC_OPERATIONAL_STATE_RUNNING
       );
     }
   });
