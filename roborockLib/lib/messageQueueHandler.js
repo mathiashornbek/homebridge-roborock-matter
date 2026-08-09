@@ -322,11 +322,18 @@ class messageQueueHandler {
             }
           }, requestTimeout);
 
-          // Store request with resolve and reject functions
+          // Store request with resolve and reject functions.
+          // `secure` travels with the entry so the MQTT receiver can tell a
+          // secure request (whose protocol-102 reply is only an ack — the real
+          // payload arrives on protocol 301) from an ordinary one (whose 102
+          // reply IS the result). It used to guess by comparing the result to
+          // the string "ok", which silently never matched.
           this.adapter.pendingRequests.set(messageID, {
             resolve,
             reject,
             timeout,
+            secure,
+            method,
           });
 
           if (useCloudConnection) {

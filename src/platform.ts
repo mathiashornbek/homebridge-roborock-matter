@@ -583,9 +583,36 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       return;
     }
 
+    // A failed startup surfaces here as "the account has no robots": when
+    // getHomeDetail() throws (Roborock maintenance, a rate-limited response,
+    // or plain DNS failure — EAI_AGAIN hit this log twice in three weeks) the
+    // error is caught and logged, but the discovery callback still runs, so
+    // getVacuumList() returns an empty array. Treating that as "everything is
+    // stale" unregisters every Matter accessory, and because Matter locks the
+    // mode list at commissioning, the user then has to re-pair every single
+    // robot — a destructive, non-recoverable outcome triggered by one bad
+    // cloud response. Leaving a genuinely removed robot in place until the
+    // next successful discovery is by far the cheaper mistake.
+    if (!this.roborockAPI.isInited()) {
+      this.log.debug(
+        "Skipping stale-accessory cleanup: the Roborock API is not initialised yet, so the device list cannot be trusted."
+      );
+      return;
+    }
+
+    const knownDevices = this.roborockAPI.getVacuumList();
+    if (!Array.isArray(knownDevices) || knownDevices.length === 0) {
+      this.log.warn(
+        "Skipping stale-accessory cleanup: the Roborock account reported no robots. " +
+          "This is almost always a temporary cloud or network failure, and unregistering " +
+          "the Matter accessories here would force you to re-pair every robot. If you have " +
+          "genuinely removed all robots from your account, remove the accessories manually."
+      );
+      return;
+    }
+
     const currentMatterUuids = new Set(
-      this.roborockAPI
-        .getVacuumList()
+      knownDevices
         .filter((device) =>
           this.isSupportedDevice(
             this.roborockAPI.getProductAttribute(device.duid, "model")

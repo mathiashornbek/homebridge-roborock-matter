@@ -39,6 +39,39 @@ let rriot;
 let photoGzipChunks = [];
 let photoChunkID = 0;
 
+/**
+ * True when a protocol-102 result is a bare "command accepted" acknowledgement
+ * rather than real data. Roborock sends this as the single-element array
+ * ["ok"]; some firmware answers with the bare string.
+ * @param {unknown} result
+ * @returns {boolean}
+ */
+function isOkAcknowledgement(result) {
+  if (result === "ok") {
+    return true;
+  }
+  return Array.isArray(result) && result.length === 1 && result[0] === "ok";
+}
+
+/**
+ * Decide whether a protocol-102 reply completes a pending request.
+ *
+ * Only a secure request answered with a bare acknowledgement keeps waiting —
+ * its real payload arrives on protocol 301. Everything else resolves here,
+ * including a secure request that came back with an error, which would
+ * otherwise hang until the request timeout.
+ *
+ * @param {{secure?: boolean}|undefined} pending
+ * @param {unknown} result
+ * @returns {boolean}
+ */
+function shouldResolveOn102(pending, result) {
+  if (!pending) {
+    return false;
+  }
+  return !(pending.secure === true && isOkAcknowledgement(result));
+}
+
 function payloadStartsWith(payload, value) {
   return (
     Buffer.isBuffer(payload) &&
@@ -76,6 +109,7 @@ class roborock_mqtt_connector {
     this.adapter = adapter;
 
     this.connected = false;
+    this.initialConnectTimeout = null;
 
     // NOTE: this class previously generated its own RSA-2048 keypair here,
     // but nothing ever read it — the protocol keypair lives in message.js
@@ -101,9 +135,27 @@ class roborock_mqtt_connector {
   }
 
   async initMQTT_Subscribe() {
-    const timeout = setTimeout(async () => {
-      this.adapter.restart();
+    // This used to invoke a `restart` method on the adapter, which the
+    // Roborock class has never had — so on the one path it was written for
+    // (the broker
+    // neither connecting nor emitting `reconnect` within 30 s, e.g. a Pi that
+    // boots before the network is up, or a SYN black-holed by a firewall) it
+    // threw a TypeError inside an async timer. That is an unhandled rejection,
+    // which terminates the Homebridge process under Node's default policy —
+    // the exact opposite of the intended recovery. mqtt.js already retries on
+    // its own reconnectPeriod, so the correct behaviour here is to say so
+    // clearly and let it keep trying. The handle is stored and unref'd so
+    // shutdown can cancel it instead of firing into a torn-down adapter.
+    this.clearInitialConnectTimeout();
+    this.initialConnectTimeout = setTimeout(() => {
+      this.initialConnectTimeout = null;
+      this.logConnectionIssue(
+        `The Roborock MQTT broker has not answered within 30 seconds of startup. The client keeps reconnecting in the background; robots stay on cloud fallback until the session is up.`
+      );
     }, 30000);
+    if (typeof this.initialConnectTimeout?.unref === "function") {
+      this.initialConnectTimeout.unref();
+    }
 
     await client.on("connect", (result) => {
       if (typeof result != "undefined") {
@@ -114,7 +166,7 @@ class roborock_mqtt_connector {
             );
           }
         });
-        clearTimeout(timeout);
+        this.clearInitialConnectTimeout();
 
         this.connected = true;
         if (this._connectionIssueActive) {
@@ -157,7 +209,7 @@ class roborock_mqtt_connector {
           );
         }
       });
-      clearTimeout(timeout);
+      this.clearInitialConnectTimeout();
       this.adapter.log.debug(`MQTT connection reconnect attempt.`);
     });
 
@@ -167,6 +219,17 @@ class roborock_mqtt_connector {
         `Roborock MQTT connection is offline. The client keeps reconnecting automatically.`
       );
     });
+  }
+
+  /**
+   * Cancel the startup watchdog. Safe to call when it is not armed, and
+   * called from shutdown so the timer cannot outlive the adapter.
+   */
+  clearInitialConnectTimeout() {
+    if (this.initialConnectTimeout) {
+      clearTimeout(this.initialConnectTimeout);
+      this.initialConnectTimeout = null;
+    }
   }
 
   /**
@@ -306,16 +369,23 @@ class roborock_mqtt_connector {
             }
           }
 
-          // special check for secure request like get_map_v1 etc. Don't process if result is OK. Instead wait for the actual response for protocol 301
-          if (dps.result != "ok") {
-            if (this.adapter.pendingRequests.has(dps.id)) {
-              const { resolve, timeout } = this.adapter.pendingRequests.get(
-                dps.id
-              );
-              this.adapter.clearTimeout(timeout);
-              this.adapter.pendingRequests.delete(dps.id);
-              resolve(dps.result);
-            }
+          // Secure requests (get_map_v1 and friends) answer protocol 102 with
+          // a bare acknowledgement and deliver the real payload on protocol
+          // 301, so those must stay pending. Everything else is resolved here.
+          //
+          // This used to be `if (dps.result != "ok")`, which is always true:
+          // the wire format is the ARRAY ["ok"], and `["ok"] != "ok"` is false
+          // only after ToPrimitive — so the guard never fired for the case it
+          // was written for, and instead swallowed the completion of every
+          // ordinary cloud command that answers ["ok"] (app_start, app_stop,
+          // app_pause, app_charge, set_custom_mode, app_segment_clean, ...).
+          // Those requests then sat until the 10 s timeout and failed in Apple
+          // Home even though the robot had already carried them out.
+          const pending = this.adapter.pendingRequests.get(dps.id);
+          if (shouldResolveOn102(pending, dps.result)) {
+            this.adapter.clearTimeout(pending.timeout);
+            this.adapter.pendingRequests.delete(dps.id);
+            pending.resolve(dps.result);
           }
           // protocol 300 seems to be for get_photo 0 only. get_photo 0 is for large images. 1 is for small images.
         } else if (data.protocol == 300) {
@@ -606,4 +676,6 @@ module.exports = {
   parseProtocol301Header,
   parsePhotoPayload,
   payloadStartsWith,
+  isOkAcknowledgement,
+  shouldResolveOn102,
 };

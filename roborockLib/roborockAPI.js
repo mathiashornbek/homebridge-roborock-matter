@@ -1410,6 +1410,18 @@ class Roborock {
           const homedata = await this.api.get(`v2/user/homes/${homeId}`);
           const homedataResult = homedata.data.result;
 
+          // Guard the persisted copy the same way updateHomeData already does.
+          // Roborock occasionally answers 200 with an envelope that carries no
+          // `result` (maintenance windows, rate limiting). Writing that through
+          // stores `{"ack":true}` over the cached device list on disk, so the
+          // next restart starts from a destroyed HomeData as well — turning a
+          // transient cloud hiccup into a persistent failure.
+          if (!homedataResult) {
+            throw new Error(
+              `The Roborock cloud returned no home data for home ${homeId}. Keeping the previously cached device list.`
+            );
+          }
+
           await this.setStateAsync("HomeData", {
             val: JSON.stringify(homedataResult),
             ack: true,
@@ -2108,15 +2120,32 @@ class Roborock {
     if (
       this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
     ) {
+      // These used to go through startCommand(), whose SIMPLE_VACUUM_COMMANDS
+      // allow-list contains neither `set_clean_type` nor `set_custom_mode` —
+      // so both fell through to `Command ... not found.` and nothing was ever
+      // sent to the robot. Mathias' own Homebridge log has carried that line
+      // since 2026-07-13. runMatterSettingCommand is the same path the classic
+      // (non-B01) branch below already uses: it goes straight to
+      // vacuum.command and reports unsupported results as errors.
+      //
+      // The value stays wrapped in an array on purpose. Matter clean mode 0 is
+      // a valid selection (vacuum), and vacuum.command's default branch tests
+      // `if (value && ...)` — a bare 0 is falsy and would silently be sent as
+      // an empty parameter list, which b01Q7Adapter then drops entirely.
       if (Number.isInteger(settings?.cleanMode)) {
         try {
-          await this.startCommand(
+          await this.runMatterSettingCommand(
             duid,
             "set_clean_type",
             [settings.cleanMode],
             commandOptions
           );
         } catch (error) {
+          this.rememberUnsupportedMatterSettingCommand(
+            duid,
+            "set_clean_type",
+            error
+          );
           this.log.debug(
             `B01 clean-type command failed for ${duid}; continuing with the start command. ${error.message || error}`
           );
@@ -2126,13 +2155,18 @@ class Roborock {
       const fanPower = settings?.fanPower;
       if (Number.isInteger(fanPower) && fanPower !== 105) {
         try {
-          await this.startCommand(
+          await this.runMatterSettingCommand(
             duid,
             "set_custom_mode",
             [fanPower],
             commandOptions
           );
         } catch (error) {
+          this.rememberUnsupportedMatterSettingCommand(
+            duid,
+            "set_custom_mode",
+            error
+          );
           this.log.debug(
             `B01 suction command failed for ${duid}; continuing with the start command. ${error.message || error}`
           );
@@ -2769,6 +2803,10 @@ class Roborock {
     }
 
     this.localConnector.clearLocalDevicedTimeout();
+
+    // The MQTT startup watchdog is armed in initMQTT_Subscribe and would
+    // otherwise survive shutdown and fire into a torn-down adapter.
+    this.rr_mqtt_connector?.clearInitialConnectTimeout?.();
 
     for (const duid in this.vacuums) {
       this.clearInterval(this.vacuums[duid].getStatusIntervalHandle);

@@ -560,15 +560,21 @@ describe("Q7 mop/vacuum mode switching", () => {
     api.getVacuumDeviceInfo = jest.fn((duid, attr) =>
       attr === "pv" ? "B01" : ""
     );
-    api.startCommand = jest.fn().mockResolvedValue(undefined);
+    // Mock at the vacuum boundary, NOT at api.startCommand. Mocking the
+    // dispatcher was how the "Command set_clean_type not found." bug survived
+    // for a month: the test asserted the call was made and never exercised the
+    // code that decides whether to forward it.
+    const command = jest.fn().mockResolvedValue(["ok"]);
+    api.vacuums["duid-1"] = { command };
+    api.isInited = () => true;
 
     // Matter Mop selection: v1 builds fanPower=105 (off) — must not be sent.
     await api.applyMatterCleanModeSettings("duid-1", {
       cleanMode: 1,
       fanPower: 105,
     });
-    expect(api.startCommand).toHaveBeenCalledTimes(1);
-    expect(api.startCommand).toHaveBeenCalledWith(
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith(
       "duid-1",
       "set_clean_type",
       [1],
@@ -576,23 +582,63 @@ describe("Q7 mop/vacuum mode switching", () => {
     );
 
     // Vacuum selection with a real suction level: both commands go out.
-    api.startCommand.mockClear();
+    command.mockClear();
     await api.applyMatterCleanModeSettings("duid-1", {
       cleanMode: 0,
       fanPower: 102,
     });
-    expect(api.startCommand).toHaveBeenCalledWith(
+    expect(command).toHaveBeenCalledWith(
       "duid-1",
       "set_clean_type",
       [0],
       expect.anything()
     );
-    expect(api.startCommand).toHaveBeenCalledWith(
+    expect(command).toHaveBeenCalledWith(
       "duid-1",
       "set_custom_mode",
       [102],
       expect.anything()
     );
+  });
+
+  test("Q7 clean mode and suction are never dropped by the command dispatcher", async () => {
+    const log = createLog();
+    const api = new Roborock({
+      log,
+      storagePath: fs.mkdtempSync(path.join(os.tmpdir(), "b01-dispatch-")),
+    });
+    api.getVacuumDeviceInfo = jest.fn((duid, attr) =>
+      attr === "pv" ? "B01" : ""
+    );
+    api.isInited = () => true;
+
+    const sent = [];
+    api.vacuums["duid-1"] = {
+      command: jest.fn(async (duid, method, params) => {
+        sent.push({ method, params });
+        return ["ok"];
+      }),
+    };
+
+    await api.applyMatterCleanModeSettings("duid-1", {
+      cleanMode: 0, // Matter "Vacuum" — falsy, and must survive as [0]
+      fanPower: 103,
+    });
+
+    expect(sent).toEqual([
+      { method: "set_clean_type", params: [0] },
+      { method: "set_custom_mode", params: [103] },
+    ]);
+
+    // The regression signature from the real Homebridge log.
+    const warnings = log.warn.mock.calls.map((call) => String(call[0]));
+    expect(warnings.join("\n")).not.toMatch(/Command .* not found/);
+
+    // And the parameters must survive translation to the Q7 wire format.
+    expect(b01.translateOutgoing("set_clean_type", [0])).toEqual({
+      method: "prop.set",
+      params: { mode: 0 },
+    });
   });
 
   test("B01 Matter accessory exposes Vacuum, Mop, and Vacuum + Mop modes", () => {

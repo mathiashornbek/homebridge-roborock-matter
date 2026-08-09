@@ -811,10 +811,22 @@ class deviceFeatures {
       ].includes(robotModel),
       // this isn't the correct way to use this. This code must be from a different robot
       // isVoiceControlSupported: !!(parseInt(`0x${this.featuresStr || "0"}`.slice(-10, -9)) & 2),
+      // These two were written as bare arrays while every other model list in
+      // this object ends in `.includes(robotModel)`. An array is truthy in JS
+      // — an EMPTY array included — and the gate below is
+      // `if (featureList[feature])`, so both were unconditionally true for
+      // every robot. isElectronicWaterBoxSupported feeds isSupportedWaterMode,
+      // which is what makes canMop and canControlWater true, so Apple Home
+      // offered Mop and Vacuum + Mop plus a water-level control on dry-only
+      // robots (S4, S4 Max, S5, S6 Pure) and fired set_water_box_custom_mode
+      // at hardware with no tank. The three model allowlists above exist
+      // precisely to prevent that.
       isVoiceControlSupported: [
         "roborock.vacuum.a27", // S7 MaxV (Ultra)
-      ],
-      isElectronicWaterBoxSupported: [], // nothing for now. If this is needed, add the models here
+      ].includes(robotModel),
+      // No model is known to need this yet. Add models to the array and keep
+      // the .includes(robotModel) call if that changes.
+      isElectronicWaterBoxSupported: [].includes(robotModel),
       isCleanRouteFastModeSupported:
         this.featuresStr &&
         !!(256 & parseInt("0x" + this.featuresStr.slice(-8))),

@@ -103,9 +103,22 @@ class localConnector {
   scheduleReconnect(duid, ip, delayMs = LOCAL_RECONNECT_DELAY_MS) {
     this.clearReconnectTimer(duid);
     const { setTimer } = getTimerFns(this.adapter);
-    const timer = setTimer(async () => {
+    // createClient can reject before its own try/catch takes over (the
+    // awaited diagnostics write happens first, and the failure handler awaits
+    // more of them). A bare timer callback that rejects is an unhandled
+    // rejection, which Node terminates the process for by default — so a full
+    // SD card at the moment a reconnect fires would take Homebridge down.
+    // Reconnect failures are expected and already logged inside createClient;
+    // swallowing them here only prevents the crash.
+    const timer = setTimer(() => {
       this.reconnectTimers.delete(duid);
-      await this.createClient(duid, ip);
+      Promise.resolve()
+        .then(() => this.createClient(duid, ip))
+        .catch((error) => {
+          this.adapter.log.debug(
+            `Local reconnect attempt for ${duid} failed: ${error?.message || error}`
+          );
+        });
     }, delayMs);
     this.reconnectTimers.set(duid, timer);
   }
@@ -508,19 +521,37 @@ class localConnector {
     return new Promise((resolve, reject) => {
       const devices = {};
 
+      // The discovery socket is bound to 0.0.0.0 and receives whatever any
+      // host on the LAN broadcasts to this port — the Roborock phone app doing
+      // its own discovery, a port scanner, a malformed retransmit. Neither
+      // `localMessageParser.parse` (binary-parser throws RangeError on a short
+      // or over-declared buffer) nor `JSON.parse` is total, and a synchronous
+      // throw inside a dgram handler is an uncaught exception that takes
+      // Homebridge down with it. One stray datagram must never do that, so
+      // every unparseable packet is skipped instead.
       server.on("message", (msg) => {
-        const parsedMessage = localMessageParser.parse(msg);
-        const decodedMessage = this.decryptECB(
-          parsedMessage.payload,
-          BROADCAST_TOKEN
-        ); // this might be decryptCBC for A01. Haven't checked this yet
+        let parsedDecodedMessage;
 
-        if (decodedMessage == null) {
-          this.adapter.log.debug(`getLocalDevices: decodedMessage is null`);
+        try {
+          const parsedMessage = localMessageParser.parse(msg);
+          const decodedMessage = this.decryptECB(
+            parsedMessage.payload,
+            BROADCAST_TOKEN
+          ); // this might be decryptCBC for A01. Haven't checked this yet
+
+          if (decodedMessage == null) {
+            this.adapter.log.debug(`getLocalDevices: decodedMessage is null`);
+            return;
+          }
+
+          parsedDecodedMessage = JSON.parse(decodedMessage);
+        } catch (error) {
+          this.adapter.log.debug(
+            `getLocalDevices: ignoring a malformed discovery datagram (${msg?.length ?? 0} bytes): ${error?.message || error}`
+          );
           return;
         }
 
-        const parsedDecodedMessage = JSON.parse(decodedMessage);
         this.adapter.log.debug(
           `getLocalDevices parsedDecodedMessage: ${JSON.stringify(parsedDecodedMessage)}`
         );
@@ -604,7 +635,7 @@ class localConnector {
         decipher.update(input),
         decipher.final(),
       ]);
-      const unpadded = safeRemovePkcs7(decryptedBuf);
+      const unpadded = this.safeRemovePkcs7(decryptedBuf);
 
       // 若原協定內容是 UTF-8，這裡再轉字串；否則直接回傳 Buffer 讓上層處理
       return unpadded.toString("utf8");
