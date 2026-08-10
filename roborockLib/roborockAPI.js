@@ -201,6 +201,7 @@ class Roborock {
     // repeated warnings for requests they will never answer.
     this.unsupportedPollCommands = new Set();
     this.loggedPollProfiles = new Set();
+    this.skippedDialectPolls = new Set();
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -2470,6 +2471,29 @@ class Roborock {
     return true;
   }
 
+  /**
+   * Poll one v1 parameter, unless the robot speaks a dialect that has no
+   * answer for it. Every periodic probe goes through here so the rule holds
+   * for probes added later, not just the three that were reported.
+   * @param {string} duid @param {any} vacuum @param {string} method
+   * @param {boolean} isB01
+   * @returns {Promise<any>}
+   */
+  async pollParameter(duid, vacuum, method, isB01) {
+    if (isB01 && !b01Q7Adapter.canAnswerV1Method(method)) {
+      const key = `${duid}:${method}`;
+      if (!this.skippedDialectPolls.has(key)) {
+        this.skippedDialectPolls.add(key);
+        this.log.debug(
+          `Not polling '${method}' for ${this.describeDevice(duid)}: the Q7/B01 dialect has no equivalent request, so the robot could only ever reject it.`
+        );
+      }
+      return undefined;
+    }
+
+    return vacuum.getParameter(duid, method);
+  }
+
   startMainUpdateInterval(duid, online) {
     if (!this.hasInitializedVacuum(duid)) {
       return;
@@ -2628,18 +2652,26 @@ class Roborock {
     this.log.debug(`Latest data requested`);
 
     if (this.isSupportedVacuumModel(robotModel)) {
+      // Q7-series robots speak the B01 dialect, where a good half of the v1
+      // poll chain has no equivalent request at all. Asking anyway produced
+      // an "unsupported" notice per robot per restart for a request the
+      // plugin itself rejected before it ever reached the robot.
+      const isB01 = b01Q7Adapter.isB01Protocol(
+        await this.getRobotVersion(duid)
+      );
+
       const refreshedServiceAreaRooms =
         await this.refreshMatterServiceAreaRoomMappings(duid, vacuum);
 
       if (!refreshedServiceAreaRooms) {
-        await vacuum.getParameter(duid, "get_room_mapping");
+        await this.pollParameter(duid, vacuum, "get_room_mapping", isB01);
       }
 
-      await vacuum.getParameter(duid, "get_consumable");
+      await this.pollParameter(duid, vacuum, "get_consumable", isB01);
 
-      await vacuum.getParameter(duid, "get_server_timer");
+      await this.pollParameter(duid, vacuum, "get_server_timer", isB01);
 
-      await vacuum.getParameter(duid, "get_timer");
+      await this.pollParameter(duid, vacuum, "get_timer", isB01);
 
       await this.checkForNewFirmware(duid);
 
@@ -2657,13 +2689,28 @@ class Roborock {
           //do nothing
           break;
         case "roborock.vacuum.s6":
-          await vacuum.getParameter(duid, "get_carpet_mode");
+          await this.pollParameter(duid, vacuum, "get_carpet_mode", isB01);
           break;
         case "roborock.vacuum.a27":
-          await vacuum.getParameter(duid, "get_dust_collection_switch_status");
-          await vacuum.getParameter(duid, "get_wash_towel_mode");
-          await vacuum.getParameter(duid, "get_smart_wash_params");
-          await vacuum.getParameter(duid, "app_get_dryer_setting");
+          await this.pollParameter(
+            duid,
+            vacuum,
+            "get_dust_collection_switch_status",
+            isB01
+          );
+          await this.pollParameter(duid, vacuum, "get_wash_towel_mode", isB01);
+          await this.pollParameter(
+            duid,
+            vacuum,
+            "get_smart_wash_params",
+            isB01
+          );
+          await this.pollParameter(
+            duid,
+            vacuum,
+            "app_get_dryer_setting",
+            isB01
+          );
           break;
         default: {
           // No dedicated poll profile for this model: derive it from the
@@ -2675,18 +2722,31 @@ class Roborock {
           const carpetSupported = featureList
             ? Boolean(featureList.isCarpetSupported)
             : true;
+          const waterBoxProbe =
+            !isB01 ||
+            b01Q7Adapter.canAnswerV1Method("get_water_box_custom_mode");
           const profileKey = `${duid}:${robotModel}`;
           if (!this.loggedPollProfiles.has(profileKey)) {
             this.loggedPollProfiles.add(profileKey);
             this.log.info(
-              `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=yes). Requests the robot reports as unsupported are disabled automatically. If states look wrong for this model, please open a model report issue on GitHub.`
+              `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=${waterBoxProbe ? "yes" : "no, the Q7/B01 dialect has no such request"}). Requests the robot reports as unsupported are disabled automatically. If states look wrong for this model, please open a model report issue on GitHub.`
             );
           }
           if (carpetSupported) {
-            await vacuum.getParameter(duid, "get_carpet_mode");
-            await vacuum.getParameter(duid, "get_carpet_clean_mode");
+            await this.pollParameter(duid, vacuum, "get_carpet_mode", isB01);
+            await this.pollParameter(
+              duid,
+              vacuum,
+              "get_carpet_clean_mode",
+              isB01
+            );
           }
-          await vacuum.getParameter(duid, "get_water_box_custom_mode");
+          await this.pollParameter(
+            duid,
+            vacuum,
+            "get_water_box_custom_mode",
+            isB01
+          );
         }
       }
     } else {

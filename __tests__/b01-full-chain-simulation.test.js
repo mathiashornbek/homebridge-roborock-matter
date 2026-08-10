@@ -282,5 +282,12 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
     ]);
 
     api.clearTimersAndIntervals();
-  });
+    // Explicit timeout: this one test boots two robots through the real
+    // decode chain (AES + inflate + protobuf), builds real Matter
+    // accessories and drives ~2 minutes of simulated time, so it runs for
+    // several wall-clock seconds and longer when the rest of the suite is
+    // competing for the CPU. Jest's 5s default made suite-wide load an
+    // implicit assertion, and it failed the moment a new test file was
+    // added — with a timeout, not with anything this test actually checks.
+  }, 60000);
 });

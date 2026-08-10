@@ -715,6 +715,31 @@ function neutralResponse(method) {
 }
 
 /**
+ * True when a v1-shaped request has *any* answer on a Q7 robot — a real
+ * translation or a neutral placeholder. Everything else is rejected by the
+ * send choke point in messageQueueHandler with a B01_METHOD_UNSUPPORTED
+ * error, so the periodic poller can consult this instead of asking for
+ * something the plugin already knows will fail.
+ *
+ * Derived from the same two sources the choke point uses, deliberately: a
+ * separate hand-written list would drift the first time a translation is
+ * added, and the drift would only show up as noise in a user's log.
+ * @param {string} method
+ * @returns {boolean}
+ */
+function canAnswerV1Method(method) {
+  if (NEUTRAL_RESPONSES.has(method)) {
+    return true;
+  }
+
+  try {
+    return Boolean(translateOutgoing(method, []));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Map a Q7 `prop.get` status payload to v1-shaped status fields.
  * Fixture reference: {"status":4,"quantity":87,"fault":0,...}
  * @param {any} data
@@ -796,5 +821,6 @@ module.exports = {
   createB01MessageId,
   translateOutgoing,
   neutralResponse,
+  canAnswerV1Method,
   mapStatusToV1,
 };

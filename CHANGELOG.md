@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.4.2
+
+**Q7-series robots are no longer asked for things they cannot answer.** Every restart, each Q7-generation robot (`roborock.vacuum.sc05`, `ss07`, and the rest of the B01 family) logged an unsupported-method notice — most visibly for `get_water_box_custom_mode`, and also for `get_timer` and `get_carpet_clean_mode`. The message blamed the robot, and the robot was never involved: the plugin's own send path rejects v1-only requests for B01 devices before anything reaches the network, and the poller then recorded that self-rejection as though the robot had answered it.
+
+- **The periodic poller now consults the dialect before asking.** For a B01 robot it skips exactly the requests that have neither a Q7 translation nor a neutral placeholder, and says so once per robot at debug level instead of once per robot as a notice. Classic S- and Q-series robots poll precisely as before.
+- **The check derives from the translation table itself**, not from a hand-written list of method names — a second list would drift the first time a translation was added, and the drift would only ever show up as noise in somebody's log.
+- **The poll-profile line stops promising a water-box probe it will not perform** on a robot whose water tank is filled by hand and has no electronic level to read.
+- **A test enumerates the rule rather than the three reported methods:** for a B01 robot, no periodic poll may be one the dialect cannot answer. Probes added later are covered without anyone having to remember this.
+- Also fixed: the B01 full-chain simulation ran under Jest's 5-second default, which quietly made suite-wide CPU load an implicit assertion — it began failing on an unrelated new test file. Its wall-clock time was never what it set out to verify.
+
 ## 3.4.1
 
 **The Matter fault attribute is withdrawn.** Wazza151 ran three controlled tests on an S8 Pro Ultra with a genuinely empty clean water tank ([#5](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/5)) and the result was unambiguous: Apple Home drew no warning with the fault published beside a Charging state, drew no warning with it published beside a forced Error state either, and the tile went into a stuck "Updating…" that needed a manual poke to clear. Everything off, and the tile behaved perfectly.
