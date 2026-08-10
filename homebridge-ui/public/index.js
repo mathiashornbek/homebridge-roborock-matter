@@ -252,20 +252,63 @@ function getCloudOnlyMode() {
  *
  * @returns {Promise<string>}
  */
-async function describeEnabledMatterFeatures() {
-  let config = null;
+/**
+ * The plugin config as SAVED, or null when it cannot be read.
+ *
+ * Every settings-derived line in the diagnostic report goes through here. The
+ * form is only ever consulted afterwards, to warn that it disagrees.
+ *
+ * @returns {Promise<Record<string, any> | null>}
+ */
+async function readSavedPluginConfig() {
   try {
     const configs =
       window.homebridge &&
       typeof window.homebridge.getPluginConfig === "function"
         ? await window.homebridge.getPluginConfig()
         : null;
-    config = configs
-      ? configs.find((entry) => entry.platform === "RoborockVacuumPlatform")
+    return configs
+      ? configs.find((entry) => entry.platform === "RoborockVacuumPlatform") ||
+          null
       : null;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Cloud-only mode as the RUNNING plugin has it.
+ *
+ * This read the checkbox until 3.4.6, which is the same trap the matterFeatures
+ * line was fixed for one line below — fixing the line in front of me instead of
+ * the rule. A user who had tried cloud-only mode and switched it off again got
+ * a report whose settings line said `disabled` while the device below it said
+ * "Cloud only", and spent an evening hunting a ghost setting.
+ *
+ * @returns {Promise<string>}
+ */
+async function describeSavedCloudOnlyMode() {
+  const config = await readSavedPluginConfig();
+  if (!config) {
     return "unavailable";
   }
+
+  const label = config.cloudOnlyMode === true ? "enabled" : "disabled";
+  return hasUnsavedCloudOnlyEdit(config)
+    ? `${label} (WARNING: the settings form has unsaved changes; this is the value the plugin is running)`
+    : label;
+}
+
+/** True when the cloud-only checkbox differs from what is saved in the config. */
+function hasUnsavedCloudOnlyEdit(config) {
+  return (
+    Boolean(elements.cloudOnlyMode && elements.cloudOnlyMode.checked) !==
+    (config.cloudOnlyMode === true)
+  );
+}
+
+async function describeEnabledMatterFeatures() {
+  const config = await readSavedPluginConfig();
 
   if (!config) {
     return "unavailable";
@@ -1114,7 +1157,7 @@ async function buildDiagnosticsReport(result) {
     `nodeVersion: ${result.nodeVersion || "unknown"}`,
     `token: ${hasToken ? "present" : "missing"}`,
     `homeData: ${result.hasHomeData ? "present" : "missing"}`,
-    `cloudOnlyMode: ${getCloudOnlyMode() ? "enabled" : "disabled"}`,
+    `cloudOnlyMode: ${await describeSavedCloudOnlyMode()}`,
     // Which Apple Home features are switched on decides what the plugin is
     // even allowed to publish, so a report that omits them cannot answer
     // "why doesn't Apple Home show X?" — the first question every one of

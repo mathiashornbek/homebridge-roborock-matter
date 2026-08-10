@@ -38,6 +38,27 @@ const B01_LIVE_ROOM_FETCH_V1_STATES = new Set([5, 11, 16, 17, 18]);
 // cached live room is cleared so a later run starts fresh.
 const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
 
+// The transport-diagnostics fields cloud-only mode owns, and the marker value
+// it writes into each.
+//
+// These diagnostics are persisted, so the markers outlive the setting unless
+// something puts them back. `tcpConnectionState` is the one that stuck: it is
+// only rewritten when a LAN connection is actually attempted, and none is
+// attempted for a robot no local IP was ever discovered for. A user who tried
+// cloud-only mode once and switched it off again kept "Cloud only" on the
+// device card through restarts, re-pairs and a full plugin reinstall, and the
+// diagnostic report told them cloud-only mode was enabled two lines under its
+// own `cloudOnlyMode: disabled`.
+//
+// Setting and clearing both derive from this table on purpose. A hand-written
+// list of fields to clear is the same mistake as a hand-written list of files
+// or log lines one level up: it is correct until someone adds a fourth marker.
+const CLOUD_ONLY_TRANSPORT_MARKERS = Object.freeze({
+  lastTransportReason: "cloud-only-mode",
+  localDiscoveryState: "disabled",
+  tcpConnectionState: "disabled",
+});
+
 // Minimum gap between live-room map fetch attempts while cleaning. The map
 // payload is an order of magnitude heavier than get_status, so it rides a
 // slower cadence than the active status polls — but 20s meant a robot could
@@ -896,6 +917,49 @@ class Roborock {
     });
   }
 
+  /**
+   * Reconcile one robot's cloud-only transport markers with the mode as it is
+   * configured right now.
+   *
+   * Enabling stamps every marker in CLOUD_ONLY_TRANSPORT_MARKERS. Disabling
+   * clears exactly those fields that still hold the marker value, so a LAN
+   * connection that came up in the meantime is never stomped, and a robot that
+   * has no diagnostics yet is not given any.
+   *
+   * @param {string} duid
+   * @param {boolean} cloudOnly
+   */
+  async syncCloudOnlyTransportMarkers(duid, cloudOnly) {
+    if (!duid) {
+      return;
+    }
+
+    if (cloudOnly) {
+      await this.updateTransportDiagnostics(duid, {
+        ...CLOUD_ONLY_TRANSPORT_MARKERS,
+      });
+      return;
+    }
+
+    const entry = this.getTransportDiagnostics()[duid];
+    if (!entry || typeof entry != "object") {
+      return;
+    }
+
+    const cleared = {};
+    for (const [field, marker] of Object.entries(
+      CLOUD_ONLY_TRANSPORT_MARKERS
+    )) {
+      if (entry[field] === marker) {
+        cleared[field] = null;
+      }
+    }
+
+    if (Object.keys(cleared).length) {
+      await this.updateTransportDiagnostics(duid, cleared);
+    }
+  }
+
   getTransportDiagnostics() {
     const diagnostics = this.getStateAsync("TransportDiagnostics");
     if (diagnostics && typeof diagnostics.val == "string") {
@@ -1518,29 +1582,30 @@ class Roborock {
             ignoredSet
           );
 
-          if (this.isCloudOnlyModeEnabled()) {
+          const cloudOnly = this.isCloudOnlyModeEnabled();
+          if (cloudOnly) {
             this.log.info(
               "Roborock cloud-only mode is enabled; local LAN discovery and TCP connections will be skipped."
             );
+          }
 
-            for (const device of managedDevicesForDiagnostics) {
+          for (const device of managedDevicesForDiagnostics) {
+            if (cloudOnly) {
               await this.updateTransportDiagnostics(device.duid, {
                 lastTransport: "cloud",
-                lastTransportReason: "cloud-only-mode",
                 localIp: null,
-                localDiscoveryState: "disabled",
-                tcpConnectionState: "disabled",
+              });
+            } else if (!device.localKey) {
+              await this.updateTransportDiagnostics(device.duid, {
+                lastTransport: "cloud",
+                lastTransportReason: "missing-local-key",
               });
             }
-          } else {
-            for (const device of managedDevicesForDiagnostics) {
-              if (!device.localKey) {
-                await this.updateTransportDiagnostics(device.duid, {
-                  lastTransport: "cloud",
-                  lastTransportReason: "missing-local-key",
-                });
-              }
-            }
+
+            // Runs in BOTH directions: switching the mode off has to retract
+            // the markers it wrote, or they stay on disk for good and the
+            // device keeps reporting itself as cloud-only.
+            await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
           }
 
           // this.adapter.log.debug(`initUser test: ${JSON.stringify(Array.from(this.adapter.localKeys.entries()))}`);
@@ -4505,6 +4570,6 @@ class Roborock {
   }
 }
 
-module.exports = { Roborock };
+module.exports = { Roborock, CLOUD_ONLY_TRANSPORT_MARKERS };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
