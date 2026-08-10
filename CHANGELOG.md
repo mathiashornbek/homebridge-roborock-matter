@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.4.1
+
+**The Matter fault attribute is withdrawn.** Wazza151 ran three controlled tests on an S8 Pro Ultra with a genuinely empty clean water tank ([#5](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/5)) and the result was unambiguous: Apple Home drew no warning with the fault published beside a Charging state, drew no warning with it published beside a forced Error state either, and the tile went into a stuck "Updating…" that needed a manual poke to clear. Everything off, and the tile behaved perfectly.
+
+So the feature cost people their tile and never once delivered the thing it promised. Apple Home does not appear to render Matter vacuum faults from a bridged accessory at all — the same conclusion 1.4.61 reached when it removed the original write. Rather than keep a switch that can only do harm, it is gone.
+
+- **`operationalError` is no longer published in any configuration**, and a test pins that it stays that way. The mapping tables from Roborock error and dock codes to Matter error states are removed with it; they were accurate and they were useless.
+- **The 3.4.0 setting Show Dock & Tank Warnings as Errors is removed.** If it is still in your `config.json` it now does nothing — a stale key cannot resurrect the behaviour.
+- **Report Faults in Apple Home keeps its worthwhile half.** A robot that has genuinely halted — stuck, blocked brush or wheel, missing dust bin, flat battery, unreachable dock — still reports the Matter **Error** state instead of Ready. Apple renders operational states perfectly well; the same robot shows Charging, Docked, Emptying and Washing correctly. That was always the valuable part.
+- **The diagnostics report's `matterFeatures` line now reads the saved plugin config rather than the checkboxes on screen.** A tick that has not been saved and had the bridge restarted is not in effect, and a report claiming otherwise sends everyone chasing behaviour the plugin was never exhibiting. If the form has unsaved edits, the report now says so.
+
 ## 3.4.0
 
 **If you turned on Report Faults in Apple Home in 3.3.0, update.** Field testing on an S8 Pro Ultra found that the feature could leave the Apple Home tile stuck on "Updating…", needing a manual poke to come back — and the same robot behaved perfectly the moment the setting was switched off. That is fixed here, and the reason it happened has changed how the feature works.

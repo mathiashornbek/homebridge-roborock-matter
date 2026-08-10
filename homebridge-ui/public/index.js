@@ -29,9 +29,6 @@ const elements = {
   enableMatterFaultReporting: document.getElementById(
     "enable-matter-fault-reporting"
   ),
-  enableMatterDockFaultsAsError: document.getElementById(
-    "enable-matter-dock-faults-as-error"
-  ),
   matterChargedBatteryThreshold: document.getElementById(
     "matter-charged-battery-threshold"
   ),
@@ -184,11 +181,6 @@ async function loadConfig() {
         config.enableMatterFaultReporting
       );
     }
-    if (elements.enableMatterDockFaultsAsError) {
-      elements.enableMatterDockFaultsAsError.checked = Boolean(
-        config.enableMatterDockFaultsAsError
-      );
-    }
     if (elements.matterChargedBatteryThreshold) {
       elements.matterChargedBatteryThreshold.value =
         config.matterChargedBatteryThreshold != null
@@ -249,26 +241,96 @@ function getCloudOnlyMode() {
 }
 
 /**
- * The Apple Home features currently switched on, as a compact list for the
- * diagnostics report. Read from the live checkboxes so it reflects what is
- * actually saved rather than what the plugin defaults to.
+ * The Apple Home features the RUNNING plugin has switched on.
+ *
+ * This deliberately reads the saved plugin config rather than the checkboxes
+ * on screen. A tick that has not been saved and had the bridge restarted is
+ * not in effect, and a report that says otherwise sends the reader chasing a
+ * behaviour the plugin was never exhibiting — which is exactly what happened
+ * when a user toggled a setting, exported a report and we both read it as
+ * proof the feature was live.
+ *
+ * @returns {Promise<string>}
  */
-function describeEnabledMatterFeatures() {
+async function describeEnabledMatterFeatures() {
+  let config = null;
+  try {
+    const configs =
+      window.homebridge &&
+      typeof window.homebridge.getPluginConfig === "function"
+        ? await window.homebridge.getPluginConfig()
+        : null;
+    config = configs
+      ? configs.find((entry) => entry.platform === "RoborockVacuumPlatform")
+      : null;
+  } catch {
+    return "unavailable";
+  }
+
+  if (!config) {
+    return "unavailable";
+  }
+
+  // Defaults matter here: several of these are on unless explicitly disabled.
   const enabled = [
-    ["serviceArea", elements.enableMatterServiceArea],
-    ["liveRoomTracking", elements.enableLiveRoomTracking],
-    ["cleanMode", elements.enableMatterCleanMode],
-    ["fanPowerCleanModes", elements.enableFanPowerCleanModes],
-    ["powerSource", elements.enableMatterPowerSource],
-    ["extendedOperationalStates", elements.enableMatterExtendedStates],
-    ["chargingDockedStates", elements.enableMatterChargingDocked],
-    ["faultReporting", elements.enableMatterFaultReporting],
-    ["dockFaultsAsError", elements.enableMatterDockFaultsAsError],
+    ["serviceArea", config.enableMatterServiceArea !== false],
+    ["liveRoomTracking", config.enableLiveRoomTracking !== false],
+    ["cleanMode", config.enableMatterCleanMode !== false],
+    ["powerSource", config.enableMatterPowerSource !== false],
+    ["fanPowerCleanModes", config.enableFanPowerCleanModes === true],
+    [
+      "extendedOperationalStates",
+      config.enableMatterExtendedOperationalStates === true,
+    ],
+    ["chargingDockedStates", config.enableMatterChargingDockedStates === true],
+    ["faultReporting", config.enableMatterFaultReporting === true],
   ]
-    .filter(([, element]) => Boolean(element?.checked))
+    .filter(([, on]) => on)
     .map(([name]) => name);
 
-  return enabled.length ? enabled.join(", ") : "none enabled";
+  const saved = enabled.length ? enabled.join(", ") : "none enabled";
+
+  // Unsaved edits are the other half of the same trap.
+  return hasUnsavedMatterFeatureEdits(config)
+    ? `${saved} (WARNING: the settings form has unsaved changes; these are the values the plugin is running)`
+    : saved;
+}
+
+/** True when a feature checkbox differs from what is saved in the config. */
+function hasUnsavedMatterFeatureEdits(config) {
+  const comparisons = [
+    [
+      elements.enableMatterServiceArea,
+      config.enableMatterServiceArea !== false,
+    ],
+    [elements.enableLiveRoomTracking, config.enableLiveRoomTracking !== false],
+    [elements.enableMatterCleanMode, config.enableMatterCleanMode !== false],
+    [
+      elements.enableMatterPowerSource,
+      config.enableMatterPowerSource !== false,
+    ],
+    [
+      elements.enableFanPowerCleanModes,
+      config.enableFanPowerCleanModes === true,
+    ],
+    [
+      elements.enableMatterExtendedStates,
+      config.enableMatterExtendedOperationalStates === true,
+    ],
+    [
+      elements.enableMatterChargingDocked,
+      config.enableMatterChargingDockedStates === true,
+    ],
+    [
+      elements.enableMatterFaultReporting,
+      config.enableMatterFaultReporting === true,
+    ],
+  ];
+
+  return comparisons.some(
+    ([element, savedValue]) =>
+      element && Boolean(element.checked) !== savedValue
+  );
 }
 
 function getTransientWarningThrottleHours() {
@@ -311,9 +373,6 @@ function getFormValues() {
     ),
     enableMatterFaultReporting: Boolean(
       elements.enableMatterFaultReporting?.checked
-    ),
-    enableMatterDockFaultsAsError: Boolean(
-      elements.enableMatterDockFaultsAsError?.checked
     ),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
@@ -1042,11 +1101,11 @@ async function copyDiagnosticsReport() {
     return;
   }
 
-  await writeClipboard(buildDiagnosticsReport(diagnostics));
+  await writeClipboard(await buildDiagnosticsReport(diagnostics));
   showToast("success", "Redacted diagnostic report copied.");
 }
 
-function buildDiagnosticsReport(result) {
+async function buildDiagnosticsReport(result) {
   const hasToken = Boolean(result.hasEncryptedToken || state.hasEncryptedToken);
   const lines = [
     "homebridge-roborock-matter diagnostic report",
@@ -1061,7 +1120,7 @@ function buildDiagnosticsReport(result) {
     // "why doesn't Apple Home show X?" — the first question every one of
     // these reports is sent to answer. Guessing cost a full round-trip with
     // a user who had done the test correctly.
-    `matterFeatures: ${describeEnabledMatterFeatures()}`,
+    `matterFeatures: ${await describeEnabledMatterFeatures()}`,
     `deviceCount: ${result.deviceCount ?? "unknown"}`,
     "",
   ];

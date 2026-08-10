@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 386 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 378 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -111,20 +111,17 @@ Everything is configurable from the Homebridge UI. The essentials:
 | `enableMatterCleanMode`         | `true`  | Vacuum / Mop / Vacuum + Mop mode selection                                                                                                                                    |
 | `enableFanPowerCleanModes`      | `false` | Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) suction modes to the Matter mode list. **Re-pair the robot once after toggling** — Matter locks the mode list at pairing |
 | `enableMatterPowerSource`       | `true`  | Battery cluster                                                                                                                                                               |
-| `enableMatterFaultReporting`    | `false` | Say why the robot needs attention instead of showing Ready — stuck, blocked brush, missing dust bin, flat battery ([details](#why-the-robot-needs-attention))                 |
-| `enableMatterDockFaultsAsError` | `false` | Also raise dock and tank conditions to the Error state, which is the only way Apple Home appears to draw them ([details](#why-the-robot-needs-attention))                     |
+| `enableMatterFaultReporting`    | `false` | Report a robot that has genuinely halted as Error instead of Ready ([details](#why-the-robot-needs-attention))                                                                |
 | `cloudOnlyMode`                 | `false` | Skip local TCP entirely and use the cloud for everything                                                                                                                      |
 | `transientWarningThrottleHours` | `6`     | How often recurring transient-timeout warnings may repeat (0 = only in debug)                                                                                                 |
 
 ## Why the robot needs attention
 
-By default a robot that has stopped for any reason shows as **Ready** in Apple Home — whether it finished the job or is wedged under the sofa. Turning on **Report faults in Apple Home** changes that: a robot that is stuck, has a blocked brush or wheel, a missing dust bin, a flat battery or a dock it cannot reach reports the Matter Error state with the Roborock description attached, so the Home app can say what is wrong rather than just that something is.
+By default a robot that has stopped for any reason shows as **Ready** in Apple Home — whether it finished the job or is wedged under the sofa. Turning on **Report faults in Apple Home** changes that: a robot that is stuck, has a blocked brush or wheel, a missing dust bin, a flat battery or a dock it cannot reach reports the Matter **Error** state instead of Ready. It is off by default because a robot in Error may be refused a Start command by Apple Home.
 
-Dock and tank conditions — an empty clean-water tank, a full waste-water tank, a missing dust bag, a blocked air duct — are a separate switch, **Show dock & tank warnings as errors**, and it is worth understanding why. The plugin reads all of these from Roborock and can report them accurately. But field testing on an S8 Pro Ultra showed that Apple Home draws a fault only when the accessory is also in the Error state: a robot sitting on the dock, charging normally, with an empty water tank produced no warning at all — and publishing the fault alongside a non-Error state put the tile into a permanent "Updating…". So the choice is a real one. Leave the switch off and a dock condition is simply not shown; turn it on and it is shown, at the cost of a robot that Apple Home may refuse to start even though it could still vacuum.
+**Dock and tank conditions are deliberately not reported, and this is worth explaining.** The plugin can read them all accurately — empty clean-water tank, full waste-water tank, missing dust bag, blocked air duct — and two releases tried to surface them through Matter's fault attribute (`OperationalError`). Three controlled tests on an S8 Pro Ultra with a genuinely empty tank showed it does not work: Apple Home drew no warning when the fault was published beside a Charging state, drew no warning when it was published beside a forced Error state either, and the tile went into a stuck "Updating…" that needed a manual poke to clear. **Apple Home does not appear to render Matter vacuum faults from a bridged accessory at all** — which is also why an earlier version removed the same write back in 1.4.61. Reporting them was therefore pure cost, and the attribute is no longer published in any configuration.
 
-What is deliberately **never** reported: a detached water tank or mop pad. That is the normal, correct configuration for a vacuum-only run, so treating it as a fault would leave a permanent warning on every dry robot's tile.
-
-Both settings are off by default. A robot with nothing wrong sends exactly what it sent before the feature existed, and if Matter ever refuses the fault attribute the plugin drops it by itself and logs a warning rather than letting it freeze the tile.
+A detached water tank or mop pad is never treated as a fault either: that is the normal, correct configuration for a vacuum-only run.
 
 ## Battery percentage in Apple Home
 
