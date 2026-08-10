@@ -1197,8 +1197,10 @@ describe("Battery resync nudge (stuck-controller-cache defense)", () => {
     expect(powerPublishes[0].attributes.batPercentRemaining).toBeNull();
     expect(powerPublishes[0].attributes.batChargeState).toBe(0);
     expect(powerPublishes[1].attributes.batPercentRemaining).toBe(200);
+    // Named, not duid'd: this line sat directly above a "Matter publish for
+    // Garage" line in a field log and printed a raw identifier instead.
     expect(platform.log.info).toHaveBeenCalledWith(
-      expect.stringContaining("Battery resync for duid-q7")
+      expect.stringContaining("Battery resync for Q7 Test")
     );
 
     // A second, IDENTICAL live update publishes nothing at all (publish

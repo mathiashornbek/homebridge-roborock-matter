@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.3.2
+
+- **Finished a job 3.3.1 only half did.** That release converted the B01 log lines to use the robot's name and missed eleven others, including the live-room line for classic S/Q-series robots and the battery resync line — which then appeared in a field log directly above a line that did use the name: `Battery resync for 3tELc5hUekaTlOJEW3YetI` followed by `Matter publish for Garage`. Every user-visible log line now names the robot, and a test enumerates the rule rather than the instances, so the next line written cannot reintroduce it.
+
 ## 3.3.1
 
 Two field reports arrived within an hour of 3.3.0 and both came down to the same thing: the log and the diagnostics report were answering questions nobody had asked while staying silent on the one that mattered. This release is almost entirely about making the plugin legible.

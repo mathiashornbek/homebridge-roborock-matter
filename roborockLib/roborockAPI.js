@@ -1949,7 +1949,7 @@ class Roborock {
       // model must start with "roborock.vacuum."
       if (!this.isSupportedVacuumModel(robotModel)) {
         this.log.warn(
-          `Unsupported vacuum model '${robotModel || "unknown"}' for device ${duid}; skipping initialization.`
+          `Unsupported vacuum model '${robotModel || "unknown"}' for device ${this.describeDevice(duid)}; skipping initialization.`
         );
         continue;
       }
@@ -2691,7 +2691,7 @@ class Roborock {
       }
     } else {
       this.log.warn(
-        `Model lookup mismatch for ${duid}: HomeData reports '${robotModel || "unknown"}', which does not look like a Roborock vacuum model string. Skipping the periodic data update for this device. If this is a real vacuum, please open a model report issue on GitHub with a diagnostics export from the plugin settings.`
+        `Model lookup mismatch for ${this.describeDevice(duid)}: HomeData reports '${robotModel || "unknown"}', which does not look like a Roborock vacuum model string. Skipping the periodic data update for this device. If this is a real vacuum, please open a model report issue on GitHub with a diagnostics export from the plugin settings.`
       );
     }
   }
@@ -2789,7 +2789,7 @@ class Roborock {
             await vacuum.getParameter(duid, "get_room_mapping");
           } else {
             this.log.info(
-              `Loading Roborock map '${map.name}' for ${duid} to cache Matter Service Area rooms.`
+              `Loading Roborock map '${map.name}' for ${this.describeDevice(duid)} to cache Matter Service Area rooms.`
             );
             await vacuum.command(duid, "load_multi_map", map.mapId, {
               throwOnError: true,
@@ -2806,7 +2806,7 @@ class Roborock {
 
         if (this.getRoomMappingsForMap(duid, map.mapId).length === 0) {
           this.log.info(
-            `Roborock map '${map.name}' for ${duid} did not return room mappings. It will appear in Matter once Roborock reports room segment IDs for that saved map.`
+            `Roborock map '${map.name}' for ${this.describeDevice(duid)} did not return room mappings. It will appear in Matter once Roborock reports room segment IDs for that saved map.`
           );
         }
       }
@@ -2851,7 +2851,7 @@ class Roborock {
 
     const originalMap = maps.find((map) => map.mapId === originalMapId);
     this.log.info(
-      `Restoring Roborock map '${originalMap?.name || originalMapId}' for ${duid} after caching Matter Service Area rooms.`
+      `Restoring Roborock map '${originalMap?.name || originalMapId}' for ${this.describeDevice(duid)} after caching Matter Service Area rooms.`
     );
 
     try {
@@ -2860,7 +2860,7 @@ class Roborock {
       });
     } catch (error) {
       this.log.warn(
-        `Failed to restore Roborock map '${originalMap?.name || originalMapId}' for ${duid} after caching Matter Service Area rooms: ${error.message || error}. The robot may stay on another saved map until the next refresh.`
+        `Failed to restore Roborock map '${originalMap?.name || originalMapId}' for ${this.describeDevice(duid)} after caching Matter Service Area rooms: ${error.message || error}. The robot may stay on another saved map until the next refresh.`
       );
     }
   }
@@ -3469,7 +3469,7 @@ class Roborock {
       // those; log the message as-is instead.
       const hasContext = attribute !== undefined || duid !== undefined;
       const message = hasContext
-        ? `Failed to execute ${attribute} on robot ${duid} (${model || "unknown model"}): ${error}`
+        ? `Failed to execute ${attribute} on robot ${this.describeDevice(duid)} (${model || "unknown model"}): ${error}`
         : String(error);
 
       if (transientErrorKind) {
@@ -3491,7 +3491,7 @@ class Roborock {
       } else {
         this.log.error(
           hasContext
-            ? `Failed to execute ${attribute} on robot ${duid} (${model || "unknown model"}): ${error.stack || error}`
+            ? `Failed to execute ${attribute} on robot ${this.describeDevice(duid)} (${model || "unknown model"}): ${error.stack || error}`
             : String(error.stack || error)
         );
       }
@@ -3783,7 +3783,7 @@ class Roborock {
         const message = error?.message || String(error);
         if (refreshState.consecutiveFailures % 10 === 0) {
           this.log.warn(
-            `B01 status has failed ${refreshState.consecutiveFailures} times in a row for ${duid}. Last error: ${message}`
+            `B01 status has failed ${refreshState.consecutiveFailures} times in a row for ${this.describeDevice(duid)}. Last error: ${message}`
           );
         } else {
           this.log.debug(
@@ -4119,7 +4119,7 @@ class Roborock {
         const message = error?.message || String(error);
         if (liveState.consecutiveFailures % 5 === 0) {
           this.log.warn(
-            `Live-room map fetch has failed ${liveState.consecutiveFailures} times in a row for ${duid}. Last error: ${message}`
+            `Live-room map fetch has failed ${liveState.consecutiveFailures} times in a row for ${this.describeDevice(duid)}. Last error: ${message}`
           );
         } else {
           this.log.debug(
@@ -4291,7 +4291,7 @@ class Roborock {
 
         if (!previous || previous.segmentId !== segmentId) {
           this.log.info(
-            `Live room for ${duid}: ${roomName} (${segmentId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}.`
+            `Live room for ${this.describeDevice(duid)}: ${roomName} (${segmentId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}.`
           );
           if (this.deviceNotify && Number.isInteger(liveState.lastV1State)) {
             this.deviceNotify("CloudMessage", {
@@ -4307,7 +4307,7 @@ class Roborock {
         const message = error?.message || String(error);
         if (liveState.consecutiveFailures % 5 === 0) {
           this.log.warn(
-            `Live-room map fetch has failed ${liveState.consecutiveFailures} times in a row for ${duid}. Last error: ${message}`
+            `Live-room map fetch has failed ${liveState.consecutiveFailures} times in a row for ${this.describeDevice(duid)}. Last error: ${message}`
           );
         } else {
           this.log.debug(

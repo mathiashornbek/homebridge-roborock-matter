@@ -1284,7 +1284,7 @@ export default class RoborockMatterVacuumAccessory {
     if (updated && resyncEligible) {
       this.powerSourceResyncDone = true;
       this.platform.log.info(
-        `Battery resync for ${this.accessory.context?.duid ?? this.accessory.UUID}: forced a fresh Matter attribute report (battery=${(power.batPercentRemaining as number) / 2}%).`
+        `Battery resync for ${this.getVacuumName()}: forced a fresh Matter attribute report (battery=${(power.batPercentRemaining as number) / 2}%).`
       );
     }
 
