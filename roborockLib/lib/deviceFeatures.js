@@ -153,6 +153,27 @@ const deviceStates = {
   rdt: "number",
   camera_status: "number",
   distance_off: "number",
+  // Reported by the Saros 10 (roborock.vacuum.a144) and siblings. Added from
+  // skmzwanke's field report in issue #8, which is exactly the round trip the
+  // "no mapping for" log line asks for: 3.4.3 named the nine fields once, he
+  // pasted the line, and they are now known.
+  //
+  // None of them drive behaviour — control, battery, rooms and state come
+  // from a model-agnostic path — so mapping them is about not pestering the
+  // owner of a brand-new model about fields the plugin simply had not met
+  // yet.
+  home_sec_status: "number",
+  home_sec_enable_password: "number",
+  voice_chat_status: "number",
+  sterilize_status: "number",
+  exit_dock: "number",
+  extra_time: "number",
+  seq_type: "number",
+  rst: "number",
+  // An object: {target_segment_id, segment_id, fan_power, water_box_mode, ...}
+  // — the same convention as adbumper_status and events, which are also
+  // non-scalar.
+  cleaning_info: "string",
 };
 
 // Shared shape for the work-time consumables that both consumablesInt and

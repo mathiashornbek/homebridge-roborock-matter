@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.4.4
+
+- **Nine Saros 10 status fields are now mapped.** 3.4.3 started naming unknown `get_status` fields once instead of once a minute, and asked owners to paste that line into a model report. skmzwanke did exactly that for his `roborock.vacuum.a144` ([#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8)), so `home_sec_status`, `voice_chat_status`, `home_sec_enable_password`, `extra_time`, `sterilize_status`, `rst`, `cleaning_info`, `exit_dock` and `seq_type` are known from now on and his log is quiet. None of them drive behaviour — control, battery, rooms and state come from a model-agnostic path — so this is purely about not pestering the owner of a new model about fields the plugin had simply never met.
+
 ## 3.4.3
 
 **A robot with no model profile no longer fills your log with the same request forever.** Models the plugin has no dedicated profile for — the Saros 10 in [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8), the Qrevo CurvX in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6) — run on the capability-derived path, which works, but every status field the profile did not name produced its own `Unsupported attribute … Please contact the dev` warning on every status poll. For the Saros 10 that is eight warnings a minute: about 11,500 requests a day to report the same eight fields. Both issues were promised this would be quietened.
