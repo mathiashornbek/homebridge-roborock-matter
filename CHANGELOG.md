@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.0
+
+**If you turned on Report Faults in Apple Home in 3.3.0, update.** Field testing on an S8 Pro Ultra found that the feature could leave the Apple Home tile stuck on "Updating…", needing a manual poke to come back — and the same robot behaved perfectly the moment the setting was switched off. That is fixed here, and the reason it happened has changed how the feature works.
+
+- **A fault is now only ever published alongside the Error state.** 3.3.0 wrote the attribute continuously — the live fault while one existed, NoError otherwise — so a robot sitting on the dock reported "Charging" and "clean water tank empty" in the same breath. A robot cannot be both, and the Matter specification agrees: OperationalError describes the condition "when the OperationalState attribute is populated with Error". A healthy robot's payload now contains no fault attribute at all, byte-identical to running with the feature off, and a cleared fault sends exactly one all-clear rather than attaching NoError to every snapshot forever.
+- **Dock and tank conditions moved behind their own switch, Show Dock & Tank Warnings as Errors.** The same test established the other half of the picture: with the fault published but the tile not in Error, Apple Home drew nothing. So reporting a dock condition without raising Error is all cost and no benefit. The new switch raises it — which makes the warning visible, at the price of a robot Apple Home may refuse to start even though it could still vacuum. That trade-off is now the user's to make, stated plainly in both settings screens. Off by default, and it does nothing unless fault reporting is on too.
+- **Robot faults are unchanged and still work:** stuck, blocked brush or wheel, missing dust bin, flat battery, unreachable dock. Those genuinely halt the robot, so state and fault agree and there is no contradiction to confuse a controller.
+
 ## 3.3.2
 
 - **Finished a job 3.3.1 only half did.** That release converted the B01 log lines to use the robot's name and missed eleven others, including the live-room line for classic S/Q-series robots and the battery resync line — which then appeared in a field log directly above a line that did use the name: `Battery resync for 3tELc5hUekaTlOJEW3YetI` followed by `Matter publish for Garage`. Every user-visible log line now names the robot, and a test enumerates the rule rather than the instances, so the next line written cannot reintroduce it.

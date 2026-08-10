@@ -208,8 +208,16 @@ describe("the robot's own faults reach the Apple Home tile", () => {
   });
 });
 
-describe("dock conditions (issue #5)", () => {
-  test("an empty clean water tank is reported without making the robot look broken", async () => {
+describe("dock conditions do not touch a healthy tile (field regression)", () => {
+  // Wazza151 emptied his clean water tank to force a test, with fault
+  // reporting on. Roborock reported dock_error_status 38 and the robot sat on
+  // the dock charging. Apple Home showed no warning at all — and went into a
+  // permanent "Updating..." that needed a manual poke to clear. Switching the
+  // setting off fixed the tile. A robot cannot be both charging normally and
+  // in error, and the Matter spec says OperationalError describes the state
+  // "when the OperationalState attribute is populated with Error".
+
+  test("a charging robot with an empty tank publishes no fault at all", async () => {
     const matterUpdates = [];
     const platform = createPlatform({
       status: {
@@ -225,16 +233,60 @@ describe("dock conditions (issue #5)", () => {
     await publishSnapshot(vacuum);
 
     const cluster = lastOperationalStateCluster(matterUpdates);
+    expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
+    // Absent, not NoError: the payload of a healthy robot must be
+    // byte-identical to running with the feature switched off.
+    expect(cluster).not.toHaveProperty("operationalError");
+  });
+
+  test("the escalation switch is what makes a tank condition visible", async () => {
+    const matterUpdates = [];
+    const platform = createPlatform({
+      status: {
+        state: ROBOROCK_STATE_CHARGING,
+        error_code: 0,
+        dock_error_status: 38,
+        battery: 100,
+      },
+      matterUpdates,
+    });
+    platform.platformConfig.enableMatterDockFaultsAsError = true;
+    const { vacuum } = createAccessory(platform);
+
+    await publishSnapshot(vacuum);
+
+    const cluster = lastOperationalStateCluster(matterUpdates);
+    // State and fault agree, which is the only combination Apple appears to
+    // render — at the cost of a robot that may be refused a Start command.
+    expect(cluster.operationalState).toBe(RVC_OPERATIONAL_STATE_ERROR);
     expect(cluster.operationalError).toEqual({
       errorStateId: ERROR_STATE_WATER_TANK_EMPTY,
       errorStateDetails: "Clean water tank empty",
     });
-    // The robot can still vacuum, and a controller may refuse Start to an
-    // accessory in Error — so a dock consumable must not seize the tile.
-    expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
   });
 
-  test("a full waste water tank is reported as a container needing emptying", async () => {
+  test("the escalation switch does nothing without the main setting", async () => {
+    const matterUpdates = [];
+    const platform = createPlatform({
+      status: {
+        state: ROBOROCK_STATE_CHARGING,
+        dock_error_status: 39,
+        battery: 100,
+      },
+      matterUpdates,
+      enableMatterFaultReporting: false,
+    });
+    platform.platformConfig.enableMatterDockFaultsAsError = true;
+    const { vacuum } = createAccessory(platform);
+
+    await publishSnapshot(vacuum);
+
+    const cluster = lastOperationalStateCluster(matterUpdates);
+    expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
+    expect(cluster).not.toHaveProperty("operationalError");
+  });
+
+  test("a full waste water tank is named correctly once escalation is on", async () => {
     const matterUpdates = [];
     const platform = createPlatform({
       status: {
@@ -244,6 +296,7 @@ describe("dock conditions (issue #5)", () => {
       },
       matterUpdates,
     });
+    platform.platformConfig.enableMatterDockFaultsAsError = true;
     const { vacuum } = createAccessory(platform);
 
     await publishSnapshot(vacuum);
@@ -258,6 +311,31 @@ describe("dock conditions (issue #5)", () => {
     expect(cluster.operationalError.errorStateDetails).toBe(
       "Waste water tank full"
     );
+  });
+
+  test("a detached tank and mop pad on a dry run are never a fault", async () => {
+    const matterUpdates = [];
+    const platform = createPlatform({
+      status: {
+        state: ROBOROCK_STATE_CHARGING,
+        error_code: 0,
+        dock_error_status: 0,
+        // Normal and correct for a vacuum-only run.
+        water_box_status: 0,
+        water_box_carriage_status: 0,
+        water_shortage_status: 0,
+        battery: 100,
+      },
+      matterUpdates,
+    });
+    platform.platformConfig.enableMatterDockFaultsAsError = true;
+    const { vacuum } = createAccessory(platform);
+
+    await publishSnapshot(vacuum);
+
+    const cluster = lastOperationalStateCluster(matterUpdates);
+    expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
+    expect(cluster).not.toHaveProperty("operationalError");
   });
 
   test("the robot's own fault outranks a dock consumable", async () => {
@@ -279,55 +357,15 @@ describe("dock conditions (issue #5)", () => {
       lastOperationalStateCluster(matterUpdates).operationalError.errorStateId
     ).toBe(ERROR_STATE_STUCK);
   });
-
-  test("a detached tank and mop pad on a dry run are not faults", async () => {
-    const matterUpdates = [];
-    const platform = createPlatform({
-      status: {
-        state: ROBOROCK_STATE_CHARGING,
-        error_code: 0,
-        dock_error_status: 0,
-        // Normal and correct for a vacuum-only run. Reporting these would put
-        // a permanent warning on every dry robot's tile.
-        water_box_status: 0,
-        water_box_carriage_status: 0,
-        water_shortage_status: 0,
-        battery: 100,
-      },
-      matterUpdates,
-    });
-    const { vacuum } = createAccessory(platform);
-
-    await publishSnapshot(vacuum);
-
-    expect(lastOperationalStateCluster(matterUpdates).operationalError).toEqual(
-      { errorStateId: ERROR_STATE_NO_ERROR }
-    );
-  });
-
-  test("an onboard tank that ran dry mid-mop is a fault", async () => {
-    const matterUpdates = [];
-    const platform = createPlatform({
-      status: { state: 5, water_shortage_status: 1, battery: 70 },
-      matterUpdates,
-    });
-    const { vacuum } = createAccessory(platform);
-
-    await publishSnapshot(vacuum);
-
-    expect(
-      lastOperationalStateCluster(matterUpdates).operationalError.errorStateId
-    ).toBe(ERROR_STATE_WATER_TANK_EMPTY);
-  });
 });
 
 describe("the fault attribute is safe to publish", () => {
-  test("a cleared fault is published as NoError, not dropped", async () => {
+  test("a fault that clears is followed by exactly one NoError, then silence", async () => {
     const matterUpdates = [];
     const status = {
-      state: ROBOROCK_STATE_CHARGING,
-      dock_error_status: 38,
-      battery: 100,
+      state: ROBOROCK_STATE_IN_ERROR,
+      error_code: 8,
+      battery: 50,
     };
     const platform = createPlatform({ status, matterUpdates });
     const { vacuum } = createAccessory(platform);
@@ -335,16 +373,27 @@ describe("the fault attribute is safe to publish", () => {
     await publishSnapshot(vacuum);
     expect(
       lastOperationalStateCluster(matterUpdates).operationalError.errorStateId
-    ).toBe(ERROR_STATE_WATER_TANK_EMPTY);
+    ).toBe(ERROR_STATE_STUCK);
 
-    // The user refills the tank. An attribute that is simply omitted leaves
-    // the controller showing the stale fault forever.
-    status.dock_error_status = 0;
+    // The user frees the robot. An attribute that is simply omitted leaves the
+    // controller showing the stale fault forever, so the all-clear must go out.
+    status.state = ROBOROCK_STATE_CHARGING;
+    status.error_code = 0;
     await publishSnapshot(vacuum);
+    expect(lastOperationalStateCluster(matterUpdates).operationalError).toEqual(
+      { errorStateId: ERROR_STATE_NO_ERROR }
+    );
 
-    expect(
-      lastOperationalStateCluster(matterUpdates).operationalError.errorStateId
-    ).toBe(ERROR_STATE_NO_ERROR);
+    // ...but only once. Every later snapshot is back to carrying nothing,
+    // which is the state that kept Apple Home happy.
+    const countBefore = matterUpdates.length;
+    await vacuum.updateMatterStateFromRoborock("later");
+    const after = matterUpdates
+      .slice(countBefore)
+      .filter((update) => update.cluster === "rvcOperationalState");
+    for (const update of after) {
+      expect(update.attributes).not.toHaveProperty("operationalError");
+    }
   });
 
   test("the error struct never carries a label", async () => {

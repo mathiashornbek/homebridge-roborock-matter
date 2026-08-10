@@ -512,6 +512,10 @@ export default class RoborockMatterVacuumAccessory {
   // included — for as long as the setting stays on. One rejection is enough
   // to drop the attribute for the rest of this run.
   private faultReportingRejected = false;
+  // Whether a real fault has been published and not yet cleared. Keeps the
+  // "all clear" write to the one moment it is needed instead of attaching a
+  // NoError to every snapshot a healthy robot sends.
+  private publishedNonZeroOperationalError = false;
   private returnToDockRetryPending = false;
   private matterStateHeartbeatTimer: ReturnType<typeof nodeSetTimeout> | null =
     null;
@@ -1865,18 +1869,40 @@ export default class RoborockMatterVacuumAccessory {
     };
 
     if (this.isFaultReportingEnabled()) {
-      // Always write the attribute while the feature is on, never just when
-      // something is wrong: an error that is published but never cleared
+      // A fault only ever accompanies the ERROR state.
+      //
+      // 3.3.0 published it continuously — the live fault while one existed,
+      // NoError otherwise — reasoning that an error which is never cleared
       // leaves the tile complaining about a tank the user refilled an hour
-      // ago. NO_ERROR is the "all clear".
-      const operationalError = this.buildOperationalError();
-      cluster.operationalError =
-        operationalError ??
-        (operationalState === RVC_OPERATIONAL_STATE.ERROR
-          ? // The robot says it has halted but named no code. Saying
-            // "error, but no error" is worse than a truthful vague answer.
-            { errorStateId: RVC_ERROR_STATE.UNABLE_TO_COMPLETE_OPERATION }
-          : { errorStateId: RVC_ERROR_STATE.NO_ERROR });
+      // ago. In the field that turned out to cost the tile: an S8 Pro Ultra
+      // reporting Charging while also carrying "clean water tank empty" put
+      // Apple Home into a permanent "Updating…" that needed a manual poke,
+      // and the same robot behaved perfectly the moment the setting was
+      // switched off. A robot cannot be both charging normally and in error,
+      // and the Matter specification says as much: OperationalError describes
+      // the condition "when the OperationalState attribute is populated with
+      // Error".
+      //
+      // So the attribute is absent from a healthy robot's payload entirely —
+      // byte-identical to running with the feature off — and appears only
+      // while the robot really is in ERROR, plus exactly one NoError write to
+      // clear a fault that was previously published.
+      const operationalError =
+        operationalState === RVC_OPERATIONAL_STATE.ERROR
+          ? this.buildOperationalError() ?? {
+              // The robot says it has halted but named no code. Saying
+              // "error, but no error" is worse than a truthful vague answer.
+              errorStateId: RVC_ERROR_STATE.UNABLE_TO_COMPLETE_OPERATION,
+            }
+          : null;
+
+      if (operationalError) {
+        cluster.operationalError = operationalError;
+        this.publishedNonZeroOperationalError = true;
+      } else if (this.publishedNonZeroOperationalError) {
+        cluster.operationalError = { errorStateId: RVC_ERROR_STATE.NO_ERROR };
+        this.publishedNonZeroOperationalError = false;
+      }
     }
 
     return cluster;
@@ -2723,6 +2749,15 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
+   * Opt-in on top of fault reporting: let a dock or tank condition raise the
+   * tile to ERROR. Separate from the main switch because it is the one that
+   * can make a working robot unstartable from Apple Home.
+   */
+  private isDockFaultEscalationEnabled(): boolean {
+    return this.platform.platformConfig.enableMatterDockFaultsAsError === true;
+  }
+
+  /**
    * Map the robot's current condition onto a Matter ErrorStateStruct, or null
    * when nothing is wrong.
    *
@@ -2889,8 +2924,26 @@ export default class RoborockMatterVacuumAccessory {
       state,
       chargeStatus
     );
+    const controllerState = this.toControllerOperationalState(operationalState);
 
-    return this.toControllerOperationalState(operationalState);
+    // A dock or tank condition does not stop the robot, so by default it does
+    // not raise ERROR — a robot that can still vacuum must stay startable.
+    // The cost of that choice is that the condition is never shown: Apple
+    // Home appears to surface a fault only alongside the ERROR state, which
+    // is what the field test on an S8 Pro Ultra with an empty clean water
+    // tank showed. This switch trades the other way for people who would
+    // rather see the warning, and it is the only way the tank indicator can
+    // reach the tile at all.
+    if (
+      controllerState !== RVC_OPERATIONAL_STATE.ERROR &&
+      this.isFaultReportingEnabled() &&
+      this.isDockFaultEscalationEnabled() &&
+      this.buildOperationalError() !== null
+    ) {
+      return RVC_OPERATIONAL_STATE.ERROR;
+    }
+
+    return controllerState;
   }
 
   private getRoborockOperationalState(

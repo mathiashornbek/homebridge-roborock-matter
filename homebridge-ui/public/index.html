@@ -235,12 +235,25 @@
       <span>
         Report faults in Apple Home
         <small
-          >Says why the robot needs attention instead of leaving it as Ready: a
-          stuck robot reports Error, and conditions like an empty clean-water
-          tank, a full waste-water tank or a missing dust bag are published as a
-          Matter fault. Dock conditions never force the Error state, so a robot
-          that can still vacuum stays startable. Off by default because a robot
-          in Error may refuse a Start command from Apple Home.</small
+          >Says why the robot needs attention instead of leaving it as Ready. A
+          robot that is stuck, has a blocked brush, a missing dust bin or a flat
+          battery reports Error with the reason attached. Off by default because
+          a robot in Error may be refused a Start command by Apple Home.</small
+        >
+      </span>
+    </label>
+
+    <label class="checkbox">
+      <input id="enable-matter-dock-faults-as-error" type="checkbox" />
+      <span>
+        Show dock &amp; tank warnings as errors
+        <small
+          >Requires the setting above. Lets an empty clean-water tank, a full
+          waste-water tank or a missing dust bag put the robot into Error. Apple
+          Home appears to draw a fault only alongside the Error state, so
+          without this the warning is sent but never shown &mdash; and with it,
+          a robot that could still vacuum may be refused a Start command. Off by
+          default.</small
         >
       </span>
     </label>
