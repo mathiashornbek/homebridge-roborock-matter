@@ -206,11 +206,15 @@
     <label class="checkbox">
       <input id="enable-matter-extended-states" type="checkbox" />
       <span>
-        Returning status
+        Dock &amp; Returning status
         <small
-          >Shows the extended Matter Returning state while the robot heads back
-          to the dock. Off by default for maximum Apple Home
-          compatibility.</small
+          >Shows the extended Matter states: Returning to the dock, Emptying the
+          dust bin, Washing the mop, and Updating maps. Requires removing and
+          re-pairing the robot in Apple Home once. Which of them Apple Home
+          draws is Apple's decision, and Emptying/Washing only appear while the
+          dock is actually doing that. Mop drying has no equivalent in the
+          Matter vacuum specification, so it cannot be reported. Off by default
+          for maximum Apple Home compatibility.</small
         >
       </span>
     </label>

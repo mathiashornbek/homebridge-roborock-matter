@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.1
+
+- **The Apple Home Features checkbox still said "Returning status".** 3.1.0 renamed the setting in the config schema but not in the plugin's own settings UI, which is the one most people actually see — so the first person to install it reasonably wondered whether the update had applied at all. Both now read **Dock & Returning status**, and the description spells out that Emptying and Washing only appear while the dock is genuinely doing that, and that mop drying has no Matter equivalent.
+
 ## 3.1.0
 
 Driven by two open model reports, plus the parts of the 3.0.2 audit that were too large to rush. Nothing here requires re-pairing unless you turn on the dock statuses below.
