@@ -475,24 +475,64 @@ function parseScMapLiveState(buffer) {
  * @returns {number | null}
  */
 function resolveLiveRoomId(liveState) {
+  return describeLiveRoomResolution(liveState).roomId;
+}
+
+/**
+ * Same resolution as `resolveLiveRoomId`, but says WHY it failed.
+ *
+ * A bare null collapses four very different situations into one, and the log
+ * line built on it asserted a single cause — "the robot's position did not
+ * fall inside any known room outline". In the field a Q7 produced fifty of
+ * those in a day, and there was no way to tell whether its pose was missing
+ * from the payload, whether the payload carried no outlines at all, or
+ * whether the point-in-polygon test genuinely rejected the position. Those
+ * three call for three different fixes.
+ *
+ * @param {{head?: {minX: number, minY: number, resolution: number} | null,
+ *          pose?: {x: number, y: number} | null,
+ *          roomChains?: Array<{roomId: number, points: Array<{x: number, y: number}>}>} | null} liveState
+ * @returns {{roomId: number | null,
+ *            reason: "resolved" | "no-map-header" | "no-pose" | "no-room-outlines" | "pose-outside-outlines",
+ *            outlineCount: number,
+ *            cell: {x: number, y: number} | null}}
+ */
+function describeLiveRoomResolution(liveState) {
   const head = liveState?.head;
   const pose = liveState?.pose;
   const chains = Array.isArray(liveState?.roomChains)
     ? liveState.roomChains
     : [];
-  if (!head || !pose || !chains.length) {
-    return null;
+  const outlineCount = chains.length;
+
+  if (!head) {
+    return { roomId: null, reason: "no-map-header", outlineCount, cell: null };
   }
+  if (!pose) {
+    return { roomId: null, reason: "no-pose", outlineCount, cell: null };
+  }
+
   const resolution = head.resolution > 0 ? head.resolution : 0.05;
   const cellX = (pose.x - head.minX) / resolution;
   const cellY = (pose.y - head.minY) / resolution;
+  const cell = { x: cellX, y: cellY };
+
+  if (!outlineCount) {
+    return { roomId: null, reason: "no-room-outlines", outlineCount, cell };
+  }
 
   for (const chain of chains) {
     if (pointInPolygon(cellX, cellY, chain.points)) {
-      return chain.roomId;
+      return { roomId: chain.roomId, reason: "resolved", outlineCount, cell };
     }
   }
-  return null;
+
+  return {
+    roomId: null,
+    reason: "pose-outside-outlines",
+    outlineCount,
+    cell,
+  };
 }
 
 /**
@@ -743,6 +783,7 @@ module.exports = {
   parseRoomsFromScMap,
   parseScMapLiveState,
   resolveLiveRoomId,
+  describeLiveRoomResolution,
   findCurrentMapId,
   MATTER_TO_Q7_CLEAN_TYPE,
   Q7_CLEAN_TYPE_TO_MATTER,

@@ -119,10 +119,15 @@ describe("B01 live-room responsiveness", () => {
     const gap = Number(
       /const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = (\d+);/.exec(source)[1]
     );
+    // Read the named constant rather than the shape of the expression that
+    // uses it: this assertion used to match the literals inline and broke the
+    // moment they were given names, which is a change it should not have had
+    // an opinion about.
     const idle = Number(
-      /const minimumGapMs = options\.force \? 1500 : isActive \? 12000 : (\d+);/.exec(
-        source
-      )[1]
+      /const B01_STATUS_IDLE_GAP_MS = (\d+);/.exec(source)[1]
+    );
+    const active = Number(
+      /const B01_STATUS_ACTIVE_GAP_MS = (\d+);/.exec(source)[1]
     );
 
     // A room the robot has already left is worse than no room at all.
@@ -131,5 +136,7 @@ describe("B01 live-room responsiveness", () => {
     expect(idle).toBeLessThanOrEqual(25000);
     // ...but not so eager that an parked robot is polled constantly.
     expect(idle).toBeGreaterThanOrEqual(15000);
+    // A running robot must never be polled less often than a parked one.
+    expect(active).toBeLessThan(idle);
   });
 });

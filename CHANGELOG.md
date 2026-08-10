@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.3.1
+
+Two field reports arrived within an hour of 3.3.0 and both came down to the same thing: the log and the diagnostics report were answering questions nobody had asked while staying silent on the one that mattered. This release is almost entirely about making the plugin legible.
+
+- **The live-room log said "the robot may be between rooms" for four different problems.** The resolver returns nothing when the map payload has no header, when it carries no robot position, when it carries no room outlines, or when the position genuinely falls outside every outline — and only the last of those is "between rooms". A day of field logs produced 51 of these messages, every one of them asserting a cause that may not have been the cause. Each case is now named, with the number of outlines in the map and the computed position cell, so a coordinate problem is visible in the log instead of needing a debug build.
+- **The message identifying a misbehaving robot was the one you could not read.** The failure line printed a raw 22-character duid while the success line beside it printed the robot's name. In a three-robot house that is the difference between a usable log and a wall of identifiers. The live-room, B01 status and B01 room lines all use the name now.
+- **The attempt counter appeared to reset at random.** A robot resolving back into the room it was already in silently zeroed the miss counter without logging anything, so "attempt 15" was followed by "attempt 5" with nothing in between. Re-entering a known room after a run of misses now says so.
+- **The startup line announced a cadence the code stopped using.** 3.2.0 changed the at-rest B01 poll from 45 s to 25 s and left the message advertising 45 s — misleading in exactly the area it was meant to explain. The cadence values are named constants now and the message is derived from them, so they cannot drift apart again.
+- **The diagnostics report now lists which Apple Home features are switched on.** A report that omits them cannot answer "why doesn't Apple Home show this?", which is the first question most of them are sent to answer — and it cost a full round-trip with a user who had run the test correctly.
+- **The Matter publish line names the robot, and reports a fault when one is being published.** Previously it printed a duid and said nothing about faults, so there was no way to tell whether Apple Home was showing nothing because the plugin sent nothing.
+- **`operationalError` is no longer part of the accessory's registration snapshot.** It is published on the first runtime update instead, seconds later. Matter commissions the endpoint from that snapshot, and 1.4.61 removed the plugin's fault write precisely because Apple Home reacted badly to it there — so a robot that happens to be faulted when Homebridge starts can no longer change what gets commissioned. The mandatory Matter default covers the gap.
+
 ## 3.3.0
 
 A robot that has stopped because it is wedged under the sofa has always looked exactly like a robot that finished the job: **Ready**. This release lets the plugin say what is actually wrong — asked for by Wazza151 in [#5](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/5), whose previous Matter bridge showed him when the clean-water tank ran empty.

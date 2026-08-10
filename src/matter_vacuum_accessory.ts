@@ -640,7 +640,15 @@ export default class RoborockMatterVacuumAccessory {
       this.accessory.context = {};
     }
     this.accessory.context.duid = duid;
-    this.accessory.clusters = this.buildClusters();
+    // The registration snapshot is the payload Matter commissions the
+    // endpoint from, and 1.4.61 removed the plugin's `operationalError` write
+    // precisely because Apple Home reacted badly to it there. Keep the
+    // declaration byte-identical to a build without fault reporting and let
+    // the attribute arrive on the first runtime publish a few seconds later
+    // — matter.js supplies the mandatory NoError default in the meantime, so
+    // nothing is missing, and a robot that happens to be faulted at
+    // Homebridge start can no longer change what gets commissioned.
+    this.accessory.clusters = this.stripOperationalError(this.buildClusters());
     this.accessory.handlers = this.buildHandlers();
     this.accessory.getState = async (cluster, attribute) => {
       const clusterState = this.buildCluster(cluster);
@@ -702,8 +710,19 @@ export default class RoborockMatterVacuumAccessory {
         const cleanMode = clusters.rvcCleanMode as
           | Record<string, unknown>
           | undefined;
+        // A fault only appears here when one is actually being published, so
+        // an unremarkable line stays unremarkable — but when a user reports
+        // "Apple Home shows nothing", this is what says whether the plugin
+        // sent anything to show.
+        const fault = opState?.operationalError as
+          | { errorStateId?: number; errorStateDetails?: string }
+          | undefined;
+        const faultSummary =
+          fault && fault.errorStateId
+            ? `, fault=${fault.errorStateId}${fault.errorStateDetails ? ` (${fault.errorStateDetails})` : ""}`
+            : "";
         this.platform.log.info(
-          `Matter publish for ${this.accessory.context?.duid ?? this.accessory.UUID}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}.`
+          `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultSummary}.`
         );
       }
       this.ensureMatterStateHeartbeat();
@@ -1397,6 +1416,26 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     return this.applyOptimisticState(clusters);
+  }
+
+  /**
+   * A copy of a cluster snapshot with the optional fault attribute removed,
+   * for the one payload where its presence is a commissioning risk rather
+   * than useful information.
+   */
+  private stripOperationalError(
+    clusters: MatterClusterState
+  ): MatterClusterState {
+    const operationalState = clusters.rvcOperationalState as
+      | Record<string, unknown>
+      | undefined;
+    if (!operationalState || !("operationalError" in operationalState)) {
+      return clusters;
+    }
+
+    const { operationalError: _omitted, ...rest } = operationalState;
+
+    return { ...clusters, rvcOperationalState: rest };
   }
 
   private buildCluster(cluster: string): Record<string, unknown> | undefined {

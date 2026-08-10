@@ -46,6 +46,31 @@ const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
 // modest while making the room track the robot closely enough to be useful.
 const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 10000;
 
+// B01/Q7 status cadence. These were literals in three places — the two gap
+// values, the loop interval, and a hand-written startup line quoting all
+// three. 3.2.0 changed the idle gap from 45s to 25s and the startup line kept
+// announcing 45s, so the log contradicted the code for anyone reading it to
+// work out why a run took so long to show up. Naming them makes the message
+// derivable and the drift impossible.
+// Plain-language wording for each way a live-room lookup can come back empty.
+// "Between rooms" is only one of them, and it was the only one the log used
+// to name — which sent every investigation down the same wrong path.
+const B01_LIVE_ROOM_MISS_REASONS = {
+  "no-map-header":
+    "the map payload had no header, so the position could not be placed on the map",
+  "no-pose":
+    "the map payload carried no robot position (the robot may not have started moving yet)",
+  "no-room-outlines":
+    "the map payload carried no room outlines, so there was nothing to match the position against",
+  "pose-outside-outlines":
+    "the robot's position did not fall inside any known room outline (it may be between rooms, or the map may still be building)",
+};
+
+const B01_STATUS_TICK_MS = 15000;
+const B01_STATUS_FORCED_GAP_MS = 1500;
+const B01_STATUS_ACTIVE_GAP_MS = 12000;
+const B01_STATUS_IDLE_GAP_MS = 25000;
+
 // How many keys of an arbitrary diagnostic object survive compaction.
 const DIAGNOSTIC_KEY_LIMIT = 30;
 
@@ -3679,7 +3704,11 @@ class Roborock {
     // invisible to the plugin until the next poll gets through. 25s halves
     // that worst case for one extra request per robot per minute while
     // parked, which is negligible next to the active cadence.
-    const minimumGapMs = options.force ? 1500 : isActive ? 12000 : 25000;
+    const minimumGapMs = options.force
+      ? B01_STATUS_FORCED_GAP_MS
+      : isActive
+        ? B01_STATUS_ACTIVE_GAP_MS
+        : B01_STATUS_IDLE_GAP_MS;
     if (Date.now() - refreshState.lastAttemptAt < minimumGapMs) {
       return null;
     }
@@ -3715,7 +3744,7 @@ class Roborock {
 
         if (refreshState.consecutiveFailures > 0) {
           this.log.info(
-            `B01 status for ${duid} recovered after ${refreshState.consecutiveFailures} failed attempt(s).`
+            `B01 status for ${this.describeDevice(duid)} recovered after ${refreshState.consecutiveFailures} failed attempt(s).`
           );
         }
         refreshState.consecutiveFailures = 0;
@@ -3723,7 +3752,7 @@ class Roborock {
         if (!refreshState.firstSuccessLogged) {
           refreshState.firstSuccessLogged = true;
           this.log.info(
-            `B01 status online for ${duid}: state=${v1Status.state}, battery=${v1Status.battery ?? "?"}%, charging=${v1Status.charge_status === 1 ? "yes" : "no"}.`
+            `B01 status online for ${this.describeDevice(duid)}: state=${v1Status.state}, battery=${v1Status.battery ?? "?"}%, charging=${v1Status.charge_status === 1 ? "yes" : "no"}.`
           );
         }
 
@@ -3811,7 +3840,7 @@ class Roborock {
     }
 
     this.log.info(
-      "Starting the dedicated B01/Q7 status loop (15s tick; ~12s effective cadence while active, ~45s at rest)."
+      `Starting the dedicated B01/Q7 status loop (${B01_STATUS_TICK_MS / 1000}s tick; ~${B01_STATUS_ACTIVE_GAP_MS / 1000}s effective cadence while active, ~${B01_STATUS_IDLE_GAP_MS / 1000}s at rest).`
     );
     const pollAllB01 = (options) => {
       for (const duid of this.initializedVacuumDuids) {
@@ -3828,7 +3857,7 @@ class Roborock {
     // registration snapshot (HomeData fallback), and the sooner the real
     // values land, the sooner controllers receive a genuine change report.
     pollAllB01({ force: true });
-    this.b01StatusLoopHandle = this.setInterval(pollAllB01, 15000);
+    this.b01StatusLoopHandle = this.setInterval(pollAllB01, B01_STATUS_TICK_MS);
     if (typeof this.b01StatusLoopHandle?.unref === "function") {
       this.b01StatusLoopHandle.unref();
     }
@@ -3901,7 +3930,7 @@ class Roborock {
     this._b01RoomRefreshAt.set(duid, Date.now());
     await this.setB01RoomCache(duid, rooms);
     this.log.info(
-      `B01 rooms for ${duid}: ${rooms.length ? rooms.map((room) => `${room.roomName || "?"} (${room.roomId})`).join(", ") : "none reported"}.`
+      `B01 rooms for ${this.describeDevice(duid)}: ${rooms.length ? rooms.map((room) => `${room.roomName || "?"} (${room.roomId})`).join(", ") : "none reported"}.`
     );
     return rooms;
   }
@@ -4030,7 +4059,8 @@ class Roborock {
           }
         }
 
-        const roomId = b01Q7Adapter.resolveLiveRoomId(parsed);
+        const resolution2 = b01Q7Adapter.describeLiveRoomResolution(parsed);
+        const roomId = resolution2.roomId;
         liveState.consecutiveFailures = 0;
 
         if (roomId === null) {
@@ -4040,10 +4070,11 @@ class Roborock {
           // attempt in between resolved to nothing and said so only at debug
           // level. Count the misses and say something at a level the user
           // actually sees, so "no room yet" is distinguishable from "the
-          // feature is broken".
+          // feature is broken" — and say WHICH of the four causes it was,
+          // because they call for different fixes.
           liveState.unresolvedPoseCount =
             (liveState.unresolvedPoseCount || 0) + 1;
-          const message = `Live room for ${duid}: the robot's position did not fall inside any known room outline (attempt ${liveState.unresolvedPoseCount} this run). The map may still be building, or the robot may be between rooms.`;
+          const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}).`;
           if (liveState.unresolvedPoseCount % 5 === 0) {
             this.log.info(message);
           } else {
@@ -4051,6 +4082,7 @@ class Roborock {
           }
           return liveState.current;
         }
+        const missedBeforeThis = liveState.unresolvedPoseCount || 0;
         liveState.unresolvedPoseCount = 0;
 
         const roomName =
@@ -4059,9 +4091,18 @@ class Roborock {
         const previous = liveState.current;
         liveState.current = { segmentId: roomId, roomName, at: Date.now() };
 
+        if (previous && previous.segmentId === roomId && missedBeforeThis > 0) {
+          // Re-entering the room it was already in resets the miss counter
+          // without printing anything, which made the "attempt N" numbers look
+          // as if they reset at random. Say it happened.
+          this.log.info(
+            `Live room for ${this.describeDevice(duid)}: back in ${roomName} (${roomId}) after ${missedBeforeThis} unresolved position(s).`
+          );
+        }
+
         if (!previous || previous.segmentId !== roomId) {
           this.log.info(
-            `Live room for ${duid}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}.`
+            `Live room for ${this.describeDevice(duid)}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}${missedBeforeThis > 0 ? ` (after ${missedBeforeThis} unresolved position(s))` : ""}.`
           );
           const lastV1Status = this._b01StatusState?.get(duid)?.lastV1Status;
           if (this.deviceNotify && lastV1Status) {
@@ -4110,7 +4151,7 @@ class Roborock {
     const liveState = this._b01LiveRoomState?.get(duid);
     if (liveState?.current) {
       this.log.debug(
-        `Cleared live room for ${duid} (${liveState.current.roomName}).`
+        `Cleared live room for ${this.describeDevice(duid)} (${liveState.current.roomName}).`
       );
       liveState.current = null;
     }
@@ -4157,7 +4198,7 @@ class Roborock {
     const liveState = this._classicLiveRoomState?.get(duid);
     if (liveState?.current) {
       this.log.debug(
-        `Cleared live room for ${duid} (${liveState.current.roomName}).`
+        `Cleared live room for ${this.describeDevice(duid)} (${liveState.current.roomName}).`
       );
       liveState.current = null;
     }
@@ -4316,6 +4357,24 @@ class Roborock {
     } else {
       return "";
     }
+  }
+
+  /**
+   * A device's name for log messages, falling back to the duid.
+   *
+   * The live-room success line already used the friendly name while the
+   * failure line printed a raw 22-character duid — so the one message written
+   * specifically to identify a misbehaving robot was the one you could not
+   * read. In a three-robot house that is the difference between a usable log
+   * and a wall of identifiers.
+   *
+   * @param {string} duid
+   * @returns {string}
+   */
+  describeDevice(duid) {
+    const name = this.getVacuumDeviceInfo(duid, "name");
+
+    return typeof name === "string" && name.length > 0 ? name : String(duid);
   }
 
   /**

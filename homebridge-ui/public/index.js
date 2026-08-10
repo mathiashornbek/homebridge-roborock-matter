@@ -240,6 +240,28 @@ function getCloudOnlyMode() {
   return Boolean(elements.cloudOnlyMode.checked);
 }
 
+/**
+ * The Apple Home features currently switched on, as a compact list for the
+ * diagnostics report. Read from the live checkboxes so it reflects what is
+ * actually saved rather than what the plugin defaults to.
+ */
+function describeEnabledMatterFeatures() {
+  const enabled = [
+    ["serviceArea", elements.enableMatterServiceArea],
+    ["liveRoomTracking", elements.enableLiveRoomTracking],
+    ["cleanMode", elements.enableMatterCleanMode],
+    ["fanPowerCleanModes", elements.enableFanPowerCleanModes],
+    ["powerSource", elements.enableMatterPowerSource],
+    ["extendedOperationalStates", elements.enableMatterExtendedStates],
+    ["chargingDockedStates", elements.enableMatterChargingDocked],
+    ["faultReporting", elements.enableMatterFaultReporting],
+  ]
+    .filter(([, element]) => Boolean(element?.checked))
+    .map(([name]) => name);
+
+  return enabled.length ? enabled.join(", ") : "none enabled";
+}
+
 function getTransientWarningThrottleHours() {
   const value = elements.transientWarningThrottleHours.value.trim();
   if (value === "") {
@@ -1022,6 +1044,12 @@ function buildDiagnosticsReport(result) {
     `token: ${hasToken ? "present" : "missing"}`,
     `homeData: ${result.hasHomeData ? "present" : "missing"}`,
     `cloudOnlyMode: ${getCloudOnlyMode() ? "enabled" : "disabled"}`,
+    // Which Apple Home features are switched on decides what the plugin is
+    // even allowed to publish, so a report that omits them cannot answer
+    // "why doesn't Apple Home show X?" — the first question every one of
+    // these reports is sent to answer. Guessing cost a full round-trip with
+    // a user who had done the test correctly.
+    `matterFeatures: ${describeEnabledMatterFeatures()}`,
     `deviceCount: ${result.deviceCount ?? "unknown"}`,
     "",
   ];

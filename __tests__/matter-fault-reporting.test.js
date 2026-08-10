@@ -98,6 +98,39 @@ async function publishSnapshot(vacuum) {
   await vacuum.updateMatterStateFromRoborock("test");
 }
 
+describe("commissioning is not affected by the setting", () => {
+  test("the registration snapshot never carries the fault attribute", async () => {
+    const platform = createPlatform({
+      // Faulted at the exact moment Homebridge starts — the worst case.
+      status: { state: ROBOROCK_STATE_IN_ERROR, error_code: 8, battery: 42 },
+      enableMatterFaultReporting: true,
+    });
+    const { accessory, vacuum } = createAccessory(platform);
+
+    // Matter commissions the endpoint from this payload, and 1.4.61 removed
+    // the plugin's operationalError write precisely because Apple Home
+    // reacted badly to it here. It must look identical to a build with the
+    // feature switched off.
+    expect(accessory.clusters.rvcOperationalState).not.toHaveProperty(
+      "operationalError"
+    );
+
+    // ...and the attribute must still arrive on the first runtime publish,
+    // or the feature would silently do nothing.
+    const matterUpdates = [];
+    platform.getMatterApi = () => ({
+      updateAccessoryState: async (uuid, cluster, attributes) => {
+        matterUpdates.push({ cluster, attributes });
+      },
+    });
+    await publishSnapshot(vacuum);
+
+    expect(
+      lastOperationalStateCluster(matterUpdates).operationalError.errorStateId
+    ).toBe(ERROR_STATE_STUCK);
+  });
+});
+
 describe("the robot's own faults reach the Apple Home tile", () => {
   test("a robot that reports it has halted is published as Error, not Ready", async () => {
     const matterUpdates = [];
