@@ -377,8 +377,11 @@ export default class RoborockMatterVacuumAccessory {
   private roomCleaningAreaConfirmed = false;
   private lastServiceAreaSummary = "";
   private liveStatusUpdatedAt = 0;
-  private initialPublishLogged = false;
-  private lastLoggedBatteryHalfPercent: number | null = null;
+  // The last "Matter publish for …" line actually written to the log. The
+  // emit decision compares rendered lines rather than a hand-picked field
+  // list, so every value the line names — and every value added to it later —
+  // triggers it by construction.
+  private lastLoggedMatterPublishLine: string | null = null;
   private powerSourceResyncDone = false;
   private serviceAreaCurrentArea: number | null = null;
   // Area ids in which the robot was actually DETECTED via live map-position
@@ -469,6 +472,9 @@ export default class RoborockMatterVacuumAccessory {
     this.registered = true;
     // Fresh registration: nothing is published on the new node yet.
     this.lastPublishedClusterJson.clear();
+    // …and nothing has been stated about it either, so the evidence line is
+    // restated for the new node instead of being suppressed as unchanged.
+    this.lastLoggedMatterPublishLine = null;
   }
 
   /**
@@ -568,48 +574,66 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
 
-    const clusters = this.buildClusters();
     const updated = await this.publishRoborockSnapshot(
-      clusters,
+      this.buildClusters(),
       "Roborock state refresh"
     );
     if (updated) {
-      const power = clusters.powerSource as Record<string, unknown> | undefined;
-      const halfPercent = power?.batPercentRemaining;
-      const batteryChanged =
-        typeof halfPercent === "number" &&
-        halfPercent !== this.lastLoggedBatteryHalfPercent;
-      if (!this.initialPublishLogged || batteryChanged) {
-        this.initialPublishLogged = true;
-        if (typeof halfPercent === "number") {
-          this.lastLoggedBatteryHalfPercent = halfPercent;
-        }
-        const opState = clusters.rvcOperationalState as
-          | Record<string, unknown>
-          | undefined;
-        const runMode = clusters.rvcRunMode as
-          | Record<string, unknown>
-          | undefined;
-        const cleanMode = clusters.rvcCleanMode as
-          | Record<string, unknown>
-          | undefined;
-        // A fault only appears here when one is actually being published, so
-        // an unremarkable line stays unremarkable — but when a user reports
-        // "Apple Home shows nothing", this is what says whether the plugin
-        // sent anything to show.
-        const fault = opState?.operationalError as
-          | { errorStateId?: number; errorStateDetails?: string }
-          | undefined;
-        const faultSummary =
-          fault && fault.errorStateId
-            ? `, fault=${fault.errorStateId}${fault.errorStateDetails ? ` (${fault.errorStateDetails})` : ""}`
-            : "";
-        this.platform.log.info(
-          `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultSummary}.`
-        );
-      }
       this.ensureMatterStateHeartbeat();
     }
+  }
+
+  /**
+   * Render the publish evidence line for a full cluster snapshot.
+   *
+   * A fault only appears here when one is actually being published, so an
+   * unremarkable line stays unremarkable — but when a user reports "Apple
+   * Home shows nothing", this is what says whether the plugin sent anything
+   * to show.
+   */
+  private buildMatterPublishLogLine(clusters: MatterClusterState): string {
+    const power = clusters.powerSource as Record<string, unknown> | undefined;
+    const halfPercent = power?.batPercentRemaining;
+    const opState = clusters.rvcOperationalState as
+      | Record<string, unknown>
+      | undefined;
+    const runMode = clusters.rvcRunMode as Record<string, unknown> | undefined;
+    const cleanMode = clusters.rvcCleanMode as
+      | Record<string, unknown>
+      | undefined;
+    const fault = opState?.operationalError as
+      | { errorStateId?: number; errorStateDetails?: string }
+      | undefined;
+    const faultSummary =
+      fault && fault.errorStateId
+        ? `, fault=${fault.errorStateId}${fault.errorStateDetails ? ` (${fault.errorStateDetails})` : ""}`
+        : "";
+
+    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultSummary}.`;
+  }
+
+  /**
+   * Log the publish evidence line whenever it would read differently from the
+   * last one written.
+   *
+   * The line's stated purpose is to make an Apple Home display problem
+   * diagnosable from a single log excerpt. It was emitted only when the
+   * BATTERY value changed, which defeated that: a user in issue #8 sent a log
+   * spanning a whole cleaning run in which every operational-state transition
+   * was invisible, because the line only appeared on the four polls where the
+   * battery happened to tick down. Comparing rendered lines — rather than a
+   * hand-written list of interesting fields — means any value the line names
+   * triggers it, including one added to the message later. A heartbeat's
+   * forced republish of unchanged values still says nothing new, so the
+   * self-healing full write stays silent.
+   */
+  private logMatterPublishIfChanged(clusters: MatterClusterState): void {
+    const line = this.buildMatterPublishLogLine(clusters);
+    if (line === this.lastLoggedMatterPublishLine) {
+      return;
+    }
+    this.lastLoggedMatterPublishLine = line;
+    this.platform.log.info(line);
   }
 
   private buildHandlers(): Record<string, Record<string, unknown>> {
@@ -1040,15 +1064,22 @@ export default class RoborockMatterVacuumAccessory {
 
   /**
    * Publish a full Roborock cluster snapshot, performing a one-time battery
-   * resync per boot first. Matter controllers filter attribute reports by
-   * cluster data version, and matter.js suppresses no-op writes — so a
-   * battery that sits at the same value forever never generates a new report
-   * for a controller whose cache missed one (observed in the field as Apple
-   * Home stuck on a pairing-day percentage across server restarts).
-   * Publishing the battery attributes as briefly unknown and then with their
-   * real values forces two genuine store changes, bumping the data version
-   * so every subscribed controller receives a fresh report — no hub restart
-   * or re-pairing required.
+   * resync per boot first: the battery attributes are published as briefly
+   * unknown and then with their real values, which makes two genuine store
+   * changes and bumps the cluster data version, so a controller that reads
+   * the cluster sees a new version instead of a value that has sat unchanged
+   * since pairing day.
+   *
+   * It does NOT push the new percentage to a subscriber, and no bridge-side
+   * write can. `PowerSource.batPercentRemaining` carries the Matter "changes
+   * omitted" (C) quality, and the spec is explicit: such an attribute "SHALL
+   * NOT have delta changes published as part of a Subscribe interaction".
+   * matter.js implements that faithfully and closed the request to opt out of
+   * it as works-as-intended (matter.js#4163, 28 July 2026), with the
+   * maintainer noting that ecosystems are expected to poll these attributes
+   * themselves. Apple Home does not, which is why the tile can hold the
+   * percentage it was paired with. That is an Apple-side gap to report
+   * through Apple's feedback process — do not reintroduce a workaround here.
    */
   private async publishRoborockSnapshot(
     clusters: MatterClusterState,
@@ -1060,6 +1091,10 @@ export default class RoborockMatterVacuumAccessory {
     // unchanged clusters per robot through the Homebridge/matter.js stack.
     // The heartbeat passes force=true, keeping a periodic full write as the
     // self-healing safety net.
+    // The full snapshot as built, kept across the diff below so the evidence
+    // line always reports every value — not just the clusters that changed.
+    const snapshot = clusters;
+
     if (options.force !== true) {
       const changed: MatterClusterState = {};
       for (const [cluster, attributes] of Object.entries(clusters)) {
@@ -1072,6 +1107,7 @@ export default class RoborockMatterVacuumAccessory {
       }
       if (Object.keys(changed).length === 0) {
         // Everything already published: a no-op is a successful publish.
+        this.logMatterPublishIfChanged(snapshot);
         return true;
       }
       clusters = changed;
@@ -1098,10 +1134,13 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     const updated = await this.updateMatterState(clusters, reason);
+    if (updated) {
+      this.logMatterPublishIfChanged(snapshot);
+    }
     if (updated && resyncEligible) {
       this.powerSourceResyncDone = true;
       this.platform.log.info(
-        `Battery resync for ${this.getVacuumName()}: forced a fresh Matter attribute report (battery=${(power.batPercentRemaining as number) / 2}%).`
+        `Battery resync for ${this.getVacuumName()}: republished the battery attributes to bump their Matter data version (battery=${(power.batPercentRemaining as number) / 2}%).`
       );
     }
 
