@@ -12,11 +12,44 @@
 // not touched. This test enumerates the class instead of the instances: no
 // user-visible log line may interpolate a bare duid. That is checkable in one
 // pass over the source, which is exactly what I failed to do by hand.
+//
+// It then shipped half-enumerated. The rule listed three files by hand, and
+// the two it left out — vacuum.js and roborock_mqtt_connector.js — had ten
+// bare-duid lines between them, including `Device <duid> is offline.`, which
+// is precisely the line a user quotes when asking why a robot dropped out. A
+// hand-written file list is the same failure mode as a hand-written line list,
+// one level up. The list is now discovered from the tree, so a new source file
+// is covered the moment it exists.
 
 const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
+
+// Every shipped source file, discovered rather than listed. `dist` is build
+// output and `node_modules` is not ours.
+function sourceFiles(dir = ".") {
+  const entries = fs.readdirSync(path.join(ROOT, dir), {
+    withFileTypes: true,
+  });
+  const found = [];
+
+  for (const entry of entries) {
+    const relative = path.posix.join(dir === "." ? "" : dir, entry.name);
+
+    if (entry.isDirectory()) {
+      if (["node_modules", "dist", ".git", "__tests__"].includes(entry.name)) {
+        continue;
+      }
+
+      found.push(...sourceFiles(relative));
+    } else if (/\.(js|ts)$/.test(entry.name)) {
+      found.push(relative);
+    }
+  }
+
+  return found;
+}
 
 /**
  * Every template literal in a file that is passed to log.info/warn/error,
@@ -45,12 +78,9 @@ const BARE_DUID =
   /\$\{\s*duid\s*\}|\$\{\s*String\(duid\)\s*\}|\$\{\s*this\.accessory\.context\??\.?\.duid[^}]*\}/;
 
 describe("log lines identify robots by name", () => {
-  test.each([
-    "roborockLib/roborockAPI.js",
-    "src/matter_vacuum_accessory.ts",
-    "src/platform.ts",
-  ])("%s has no info/warn/error line printing a bare duid", (file) => {
-    const offenders = userVisibleLogTemplates(file)
+  test("no info/warn/error line in any source file prints a bare duid", () => {
+    const offenders = sourceFiles()
+      .flatMap((file) => userVisibleLogTemplates(file))
       .filter((entry) => BARE_DUID.test(entry.template))
       .map(
         (entry) => `${entry.file}:${entry.line} ${entry.template.slice(0, 90)}`
@@ -60,6 +90,19 @@ describe("log lines identify robots by name", () => {
     // the reader nothing, and these are the messages people are asked to send
     // in when something is wrong. Use describeDevice(duid) / getVacuumName().
     expect(offenders).toEqual([]);
+  });
+
+  test("the file list is discovered, not hardcoded, and covers the whole plugin", () => {
+    const files = sourceFiles();
+
+    // Guards the guard: if the walk silently stopped finding files, the rule
+    // above would pass by looking at nothing.
+    expect(files).toContain("roborockLib/roborockAPI.js");
+    expect(files).toContain("roborockLib/lib/vacuum.js");
+    expect(files).toContain("roborockLib/lib/roborock_mqtt_connector.js");
+    expect(files).toContain("src/matter_vacuum_accessory.ts");
+    expect(files).toContain("src/platform.ts");
+    expect(files.length).toBeGreaterThan(15);
   });
 
   test("the sanctioned wrappers are actually used, so the rule above is not vacuous", () => {

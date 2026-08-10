@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const CRC32 = require("crc-32");
 const Parser = require("binary-parser").Parser;
 const roborockCrypto = require("./roborockCrypto");
+const { describeDevice } = require("./describeDevice");
 
 let seq = 1;
 let random = 4711; // Should be initialized with a number 0 - 1999?
@@ -243,7 +244,7 @@ class message {
         if (!this.missingLocalKeyWarnings.has(duid)) {
           this.missingLocalKeyWarnings.add(duid);
           this.adapter.log.warn(
-            `Skipping MQTT message for device ${duid}: no localKey available.`
+            `Skipping MQTT message for ${describeDevice(this.adapter, duid)}: no localKey available.`
           );
         }
 
@@ -321,7 +322,7 @@ class message {
         .toString("hex");
       const reason = error && error.message ? error.message : String(error);
       this.adapter.log.error(
-        `failed to _decodeMsg for ${duid}: ${reason} (len=${message.length}, preview=${preview})`
+        `failed to _decodeMsg for ${describeDevice(this.adapter, duid)}: ${reason} (len=${message.length}, preview=${preview})`
       );
       // this.adapter.catchError(error, "_decodeMessage", "none");
       return null;

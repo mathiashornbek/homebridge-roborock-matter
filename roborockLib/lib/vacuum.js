@@ -4,11 +4,44 @@ const rrMessage = require("./message").message;
 const RRMapParser = require("./RRMapParser");
 const fs = require("fs");
 const zlib = require("zlib");
+const { describeDevice } = require("./describeDevice");
 
 // Minimum spacing between periodic (non-forced) get_status polls per robot.
 // MQTT push remains the primary live channel; this is the safety net that
 // catches a dropped push long before the 3-minute full refresh would.
 const STATUS_POLL_MIN_INTERVAL_MS = 60 * 1000;
+
+// Longest rendering of a single unmapped attribute value in the report line
+// below. `cleaning_info` is an object, and one robot's status can carry a
+// nested blob big enough to bury the rest of the message.
+const MAX_REPORTED_STATUS_VALUE_LENGTH = 60;
+
+/**
+ * Render a `get_status` value for a log line. The old per-attribute warning
+ * interpolated the raw value, so an object arrived as the useless
+ * `[object Object]` — visible in skmzwanke's log for `cleaning_info`, which is
+ * the one field where the shape was the interesting part.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describeStatusValue(value) {
+  let text;
+
+  if (value === null || typeof value !== "object") {
+    text = String(value);
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = "[unserialisable]";
+    }
+  }
+
+  return text.length > MAX_REPORTED_STATUS_VALUE_LENGTH
+    ? `${text.slice(0, MAX_REPORTED_STATUS_VALUE_LENGTH)}…`
+    : text;
+}
 
 const mappedCleanSummary = {
   0: "clean_time",
@@ -55,6 +88,41 @@ class vacuum {
 
     /** @type {Map<string, number>} last periodic status poll, per duid */
     this.lastStatusPollAt = new Map();
+
+    /**
+     * `get_status` attributes with no mapping in the robot's feature profile
+     * that have already been reported, per duid. The set of unmapped fields a
+     * given robot sends is fixed by its firmware, so reporting it once says
+     * everything a repeat would; a time-based throttle would still bring the
+     * message back forever, which is the complaint, not the fix.
+     *
+     * @type {Map<string, Set<string>>}
+     */
+    this.reportedUnmappedStatusAttributes = new Map();
+  }
+
+  /**
+   * Record that an unmapped `get_status` attribute is about to be reported for
+   * a robot, and say whether this is the initial sighting.
+   *
+   * @param {string} duid
+   * @param {string} attribute
+   * @returns {boolean} true only the one time the pair has not been seen before
+   */
+  rememberUnmappedStatusAttribute(duid, attribute) {
+    let reported = this.reportedUnmappedStatusAttributes.get(duid);
+
+    if (!reported) {
+      reported = new Set();
+      this.reportedUnmappedStatusAttributes.set(duid, reported);
+    }
+
+    if (reported.has(attribute)) {
+      return false;
+    }
+
+    reported.add(attribute);
+    return true;
   }
 
   /**
@@ -182,7 +250,7 @@ class vacuum {
 
           if (roomList.segments.length === 0) {
             this.adapter.log.warn(
-              `No room segments supplied for app_segment_clean_by_ids on ${duid}.`
+              `No room segments supplied for app_segment_clean_by_ids on ${describeDevice(this.adapter, duid)}.`
             );
             break;
           }
@@ -221,7 +289,7 @@ class vacuum {
           const mapId = Number(value);
           if (!Number.isInteger(mapId) || mapId < 0) {
             this.adapter.log.warn(
-              `Invalid map id '${value}' supplied for load_multi_map on ${duid}.`
+              `Invalid map id '${value}' supplied for load_multi_map on ${describeDevice(this.adapter, duid)}.`
             );
             break;
           }
@@ -391,6 +459,12 @@ class vacuum {
             status: deviceStatus[0] || null,
           });
 
+          // Collected across the whole poll and reported as one line. Eight
+          // separate warnings, once a minute, was ~11,500 identical requests a
+          // day to contact the dev about the same eight fields (#8).
+          /** @type {string[]} */
+          const newlyUnmappedAttributes = [];
+
           for (const attribute in deviceStatus[0]) {
             const isCleaning = this.adapter.isCleaning(
               deviceStatus[0]["state"]
@@ -412,9 +486,15 @@ class vacuum {
                 this.adapter.log.debug(
                   `Skipping known get_status attribute without a Homebridge state object: ${attribute}. Model: ${this.robotModel}`
                 );
+              } else if (
+                this.rememberUnmappedStatusAttribute(duid, attribute)
+              ) {
+                newlyUnmappedAttributes.push(
+                  `${attribute}=${describeStatusValue(deviceStatus[0][attribute])}`
+                );
               } else {
-                this.adapter.log.warn(
-                  `Unsupported attribute: ${attribute} of get_status with value ${deviceStatus[0][attribute]}. Please contact the dev to add the newly found attribute of your robot. Model: ${this.robotModel}`
+                this.adapter.log.debug(
+                  `Unmapped get_status attribute ${attribute}=${describeStatusValue(deviceStatus[0][attribute])} for ${describeDevice(this.adapter, duid)}; already reported, not repeating.`
                 );
               }
               continue; // skip unsupported attributes
@@ -511,6 +591,13 @@ class vacuum {
               { val: deviceStatus[0][attribute], ack: true }
             );
           }
+
+          if (newlyUnmappedAttributes.length > 0) {
+            this.adapter.log.warn(
+              `${describeDevice(this.adapter, duid)} (${this.robotModel}) sends ${newlyUnmappedAttributes.length} get_status field(s) this plugin has no mapping for: ${newlyUnmappedAttributes.join(", ")}. Control, battery, rooms and state come from a model-agnostic path and do not depend on them, so nothing is broken — but a model report issue on GitHub quoting this line is how they get added. Logged once per field per robot, so it will not repeat.`
+            );
+          }
+
           this.adapter.manageDeviceIntervals(duid);
         }
       } else if (parameter == "get_room_mapping") {
@@ -536,7 +623,7 @@ class vacuum {
         // if no rooms have been named, processing them can't work
         if (!Array.isArray(mappedRooms) || mappedRooms.length < 1) {
           this.adapter.log.info(
-            `No room mappings returned for ${duid}. Room-based controls will stay unavailable until the Roborock app exposes named rooms.`
+            `No room mappings returned for ${describeDevice(this.adapter, duid)}. Room-based controls will stay unavailable until the Roborock app exposes named rooms.`
           );
         } else {
           let unnamedRooms = 0;
@@ -566,7 +653,7 @@ class vacuum {
 
           if (unnamedRooms > 0) {
             this.adapter.log.info(
-              `${unnamedRooms} room(s) for ${duid} were missing names from HomeData. Using fallback labels like 'Room <id>' until the Roborock app syncs names.`
+              `${unnamedRooms} room(s) for ${describeDevice(this.adapter, duid)} were missing names from HomeData. Using fallback labels like 'Room <id>' until the Roborock app syncs names.`
             );
           }
         }

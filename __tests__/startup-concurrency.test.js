@@ -29,6 +29,46 @@ function delay(ms) {
 // tests pin the concurrency down: a regression that re-serializes them would
 // silently add seconds to every Homebridge restart, which is exactly the kind
 // of slowdown nobody notices in review.
+//
+// They pin it *structurally*, not by the clock. Both tests used to assert
+// `elapsed < PROBE_MS * robots` alongside the peak-concurrency check, and that
+// comparison could only ever fail for a reason it was not testing: measured on
+// a quiet machine the probes finish in ~65 ms against a 180 ms budget, but a
+// scheduling hiccup pushes a run past 250 ms with the concurrency itself
+// perfectly correct. That is the same defect 3.4.2 removed from the B01
+// full-chain simulation — a test whose wall-clock time was never the thing it
+// set out to verify — and here it was outright redundant: serialized probes
+// give a peak concurrency of 1, which `peakConcurrent` already catches
+// exactly, deterministically, on any machine under any load.
+//
+// `probeOrder` states the property directly instead: every probe must have
+// started before the first one finished. Nothing else is what "at once" means.
+
+/**
+ * Records probe start/finish events so a test can assert that the starts all
+ * happened before any finish.
+ */
+function createProbeOrder() {
+  /** @type {string[]} */
+  const events = [];
+
+  return {
+    events,
+    start: (duid) => events.push(`start:${duid}`),
+    finish: (duid) => events.push(`finish:${duid}`),
+    /** True when every start precedes the earliest finish. */
+    fullyOverlapped(count) {
+      const firstFinish = events.findIndex((event) =>
+        event.startsWith("finish:")
+      );
+      const startsBeforeFirstFinish = (
+        firstFinish === -1 ? events : events.slice(0, firstFinish)
+      ).filter((event) => event.startsWith("start:")).length;
+
+      return startsBeforeFirstFinish === count;
+    },
+  };
+}
 
 describe("startup: per-robot probes run concurrently", () => {
   test("getNetworkInfo probes every robot at once, not one after another", async () => {
@@ -37,6 +77,7 @@ describe("startup: per-robot probes run concurrently", () => {
     const duids = ["duid-a", "duid-b", "duid-c"];
     let concurrent = 0;
     let peakConcurrent = 0;
+    const order = createProbeOrder();
 
     api.devices = duids.map((duid) => ({ duid }));
     for (const duid of duids) {
@@ -45,19 +86,19 @@ describe("startup: per-robot probes run concurrently", () => {
         getParameter: jest.fn(async () => {
           concurrent += 1;
           peakConcurrent = Math.max(peakConcurrent, concurrent);
+          order.start(duid);
           await delay(PROBE_MS);
+          order.finish(duid);
           concurrent -= 1;
         }),
       };
     }
 
-    const started = Date.now();
     await api.getNetworkInfo();
-    const elapsed = Date.now() - started;
 
     expect(peakConcurrent).toBe(duids.length);
-    // Sequential would take 3x PROBE_MS; allow generous slack for slow CI.
-    expect(elapsed).toBeLessThan(PROBE_MS * duids.length);
+    // Serialized probes would start the second only after the first finished.
+    expect(order.fullyOverlapped(duids.length)).toBe(true);
     for (const duid of duids) {
       expect(api.vacuums[duid].getParameter).toHaveBeenCalledWith(
         duid,
@@ -90,13 +131,16 @@ describe("startup: per-robot probes run concurrently", () => {
     const duids = ["duid-a", "duid-b", "duid-c"];
     let concurrent = 0;
     let peakConcurrent = 0;
+    const order = createProbeOrder();
 
     api.devices = duids.map((duid) => ({ duid, online: true }));
     api.getProductAttribute = jest.fn(() => "roborock.vacuum.a999");
-    api.updateDataMinimumData = jest.fn(async () => {
+    api.updateDataMinimumData = jest.fn(async (duid) => {
       concurrent += 1;
       peakConcurrent = Math.max(peakConcurrent, concurrent);
+      order.start(duid);
       await delay(POLL_MS);
+      order.finish(duid);
       concurrent -= 1;
     });
     for (const duid of duids) {
@@ -104,13 +148,11 @@ describe("startup: per-robot probes run concurrently", () => {
       api.vacuums[duid] = {};
     }
 
-    const started = Date.now();
     await api.initializeDeviceUpdates();
-    const elapsed = Date.now() - started;
 
     expect(api.updateDataMinimumData).toHaveBeenCalledTimes(duids.length);
     expect(peakConcurrent).toBe(duids.length);
-    expect(elapsed).toBeLessThan(POLL_MS * duids.length);
+    expect(order.fullyOverlapped(duids.length)).toBe(true);
 
     // The recurring timers must still be wired up for every robot.
     for (const duid of duids) {

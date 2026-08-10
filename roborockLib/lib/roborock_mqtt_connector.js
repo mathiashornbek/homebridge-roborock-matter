@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const Parser = require("binary-parser").Parser;
 const zlib = require("zlib");
 const roborockCrypto = require("./roborockCrypto");
+const { describeDevice } = require("./describeDevice");
 
 const PHOTO_MAGIC = "ROBOROCK";
 const PHOTO_HEADER_MIN_LENGTH = 9;
@@ -499,7 +500,7 @@ class roborock_mqtt_connector {
           } catch (error) {
             // If parsing fails, the data might be corrupted or in an unexpected format
             this.adapter.log.warn(
-              `Unable to parse message for ${duid}. Error: ${error.message}. Data: ${dataString}`
+              `Unable to parse message for ${describeDevice(this.adapter, duid)}. Error: ${error.message}. Data: ${dataString}`
             );
             return;
           }
@@ -507,10 +508,10 @@ class roborock_mqtt_connector {
           // Check if the device is online
           if (parsedData.online == false) {
             this.adapter.log.info(
-              `Couldn't process message. The device ${duid} is offline.`
+              `Couldn't process message. ${describeDevice(this.adapter, duid)} is offline.`
             );
           } else if (parsedData.online == true) {
-            // this.adapter.log.info(`Device ${duid} is online.`);
+            // this.adapter.log.info(`${describeDevice(this.adapter, duid)} is online.`);
           } else if (
             // Check for firmware update information
             parsedData.mqttOtaData
@@ -521,19 +522,19 @@ class roborock_mqtt_connector {
 
             if (otaStatus) {
               this.adapter.log.info(
-                `Device ${duid} firmware update status: ${otaStatus}`
+                `${describeDevice(this.adapter, duid)} firmware update status: ${otaStatus}`
               );
             }
 
             if (otaProgress !== undefined) {
               this.adapter.log.info(
-                `Device ${duid} firmware update progress: ${otaProgress}%`
+                `${describeDevice(this.adapter, duid)} firmware update progress: ${otaProgress}%`
               );
             }
           } else {
             // Received an unrecognized message
             this.adapter.log.warn(
-              `Received an unrecognized message for ${duid}. Data: ${dataString}`
+              `Received an unrecognized message for ${describeDevice(this.adapter, duid)}. Data: ${dataString}`
             );
           }
         } else {
