@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.0
+
+Field feedback on the Q7 series: the live room in Apple Home lagged badly behind the robot. One run took 90 seconds to name the first room; another took seven minutes.
+
+- **The first room of a run now appears as soon as the robot is seen cleaning.** Two throttles were stacking. The status poll backed off to 45 seconds while the robot looked idle, so a clean started from the Roborock app or a schedule was invisible for up to that long; then the live-room map fetch applied its own 20-second gap on top, counted from the last attempt rather than from the start of the run. The idle poll is now 25 seconds, the map gap is 10 seconds, and the transition from idle to cleaning clears the gap so the first fetch goes out immediately. Steady-state pacing during a run is unchanged in spirit — the map payload is still an order of magnitude heavier than a status read and is still paced deliberately.
+- **A robot that cannot place itself on the map now says so.** When the robot's position doesn't fall inside any known room outline, the plugin used to return silently at debug level. That is the most likely explanation for a run going minutes without a room — in the field a Q7 spent seven minutes doing exactly this — and it was indistinguishable from the feature being broken. Repeated misses are now reported at a level you can actually see, with a count.
+
 ## 3.1.1
 
 - **The Apple Home Features checkbox still said "Returning status".** 3.1.0 renamed the setting in the config schema but not in the plugin's own settings UI, which is the one most people actually see — so the first person to install it reasonably wondered whether the update had applied at all. Both now read **Dock & Returning status**, and the description spells out that Emptying and Washing only appear while the dock is genuinely doing that, and that mop drying has no Matter equivalent.

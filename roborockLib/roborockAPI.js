@@ -39,8 +39,11 @@ const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
 
 // Minimum gap between live-room map fetch attempts while cleaning. The map
 // payload is an order of magnitude heavier than get_status, so it rides a
-// slower cadence than the ~12s active status polls.
-const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 20000;
+// slower cadence than the active status polls — but 20s meant a robot could
+// walk through a whole small room before Apple Home named it, which is the
+// opposite of what a "live" room display is for. 10s keeps the map traffic
+// modest while making the room track the robot closely enough to be useful.
+const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 10000;
 
 // Scheduler granularity for the classic (v1-protocol) status refresh. The
 // refresh itself is throttled per robot inside vacuum.getParameter, so this
@@ -3605,7 +3608,8 @@ class Roborock {
     //
     // The 1-second poll tick relies on getParameter's internal throttling for
     // classic robots; this path must throttle itself or every tick becomes a
-    // cloud request. Periodic refreshes run at most every 45s, forced
+    // cloud request. Periodic refreshes are paced by the adaptive cadence
+    // below, forced
     // refreshes (post-command, robot pushes) at most every 1.5s, and
     // concurrent callers share one in-flight request.
     if (!this._b01StatusState) {
@@ -3630,9 +3634,14 @@ class Roborock {
     // Adaptive cadence: while the robot is actively working (cleaning,
     // returning, docking) every 15s loop tick is allowed through so state
     // transitions reach Matter controllers within seconds; at rest the
-    // conservative 45s cloud cadence applies.
+    // conservative cadence below applies.
     const isActive = B01_ACTIVE_V1_STATES.has(refreshState.lastKnownV1State);
-    const minimumGapMs = options.force ? 1500 : isActive ? 12000 : 45000;
+    // 45s while idle was the dominant part of the delay before a run showed
+    // up at all: a clean started from the Roborock app or a schedule is
+    // invisible to the plugin until the next poll gets through. 25s halves
+    // that worst case for one extra request per robot per minute while
+    // parked, which is negligible next to the active cadence.
+    const minimumGapMs = options.force ? 1500 : isActive ? 12000 : 25000;
     if (Date.now() - refreshState.lastAttemptAt < minimumGapMs) {
       return null;
     }
@@ -3646,6 +3655,23 @@ class Roborock {
           []
         );
         const v1Status = b01Q7Adapter.mapStatusToV1(data);
+        // A run that has just started is the moment the user is watching, and
+        // it was also the slowest: the live-room fetch below rides its own
+        // throttle, counted from the last attempt, so the first room of a run
+        // could wait a further gap on top of the poll that noticed the robot
+        // at all. Clearing the stamp on the idle -> active transition makes
+        // that first fetch immediate; the throttle still paces every fetch
+        // after it.
+        const wasFetching = B01_LIVE_ROOM_FETCH_V1_STATES.has(
+          refreshState.lastKnownV1State
+        );
+        const isFetching = B01_LIVE_ROOM_FETCH_V1_STATES.has(v1Status.state);
+        if (isFetching && !wasFetching) {
+          const liveState = this._b01LiveRoomState?.get(duid);
+          if (liveState) {
+            liveState.lastAttemptAt = 0;
+          }
+        }
         refreshState.lastKnownV1State = v1Status.state;
         refreshState.lastV1Status = v1Status;
 
@@ -3970,11 +3996,24 @@ class Roborock {
         liveState.consecutiveFailures = 0;
 
         if (roomId === null) {
-          this.log.debug(
-            `Live room for ${duid}: robot pose is outside every room outline (or pose/geometry missing from the map payload).`
-          );
+          // Debug-only used to make this invisible, and it is the single most
+          // likely reason a run goes minutes without naming a room: in the
+          // field a Q7 took 7 minutes to report its first room while every
+          // attempt in between resolved to nothing and said so only at debug
+          // level. Count the misses and say something at a level the user
+          // actually sees, so "no room yet" is distinguishable from "the
+          // feature is broken".
+          liveState.unresolvedPoseCount =
+            (liveState.unresolvedPoseCount || 0) + 1;
+          const message = `Live room for ${duid}: the robot's position did not fall inside any known room outline (attempt ${liveState.unresolvedPoseCount} this run). The map may still be building, or the robot may be between rooms.`;
+          if (liveState.unresolvedPoseCount % 5 === 0) {
+            this.log.info(message);
+          } else {
+            this.log.debug(message);
+          }
           return liveState.current;
         }
+        liveState.unresolvedPoseCount = 0;
 
         const roomName =
           parsed.rooms.find((room) => room.roomId === roomId)?.roomName ||
