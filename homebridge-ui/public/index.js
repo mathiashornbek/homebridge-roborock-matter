@@ -26,6 +26,9 @@ const elements = {
   enableMatterChargingDocked: document.getElementById(
     "enable-matter-charging-docked"
   ),
+  enableMatterFaultReporting: document.getElementById(
+    "enable-matter-fault-reporting"
+  ),
   matterChargedBatteryThreshold: document.getElementById(
     "matter-charged-battery-threshold"
   ),
@@ -173,6 +176,11 @@ async function loadConfig() {
         config.enableMatterChargingDockedStates
       );
     }
+    if (elements.enableMatterFaultReporting) {
+      elements.enableMatterFaultReporting.checked = Boolean(
+        config.enableMatterFaultReporting
+      );
+    }
     if (elements.matterChargedBatteryThreshold) {
       elements.matterChargedBatteryThreshold.value =
         config.matterChargedBatteryThreshold != null
@@ -269,6 +277,9 @@ function getFormValues() {
     ),
     enableMatterChargingDockedStates: Boolean(
       elements.enableMatterChargingDocked?.checked
+    ),
+    enableMatterFaultReporting: Boolean(
+      elements.enableMatterFaultReporting?.checked
     ),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),

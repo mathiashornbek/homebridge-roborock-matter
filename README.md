@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 279 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 371 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -75,7 +75,7 @@ Progress stays honest: a room is only shown as _completed_ once the robot was ac
 <details>
 <summary>How it works under the hood</summary>
 
-While a robot is actively cleaning, the plugin fetches its live position from the map channel (throttled to ~20 s, active runs only, nothing while docked or paused) and publishes the room it is inside as the Matter Service Area `currentArea`. Both robot generations are covered: **B01/Q7** robots via the encrypted SCMap protobuf (position ray-cast against per-room boundary outlines), **classic S/Q-series** robots via the RRMap segment grid (position resolved against per-pixel room segments — a single-byte lookup on the raw map buffer, ~1 µs per check).
+While a robot is actively cleaning, the plugin fetches its live position from the map channel (the first room of a run goes out immediately, then ~10 s apart, active runs only, nothing while docked or paused) and publishes the room it is inside as the Matter Service Area `currentArea`. Both robot generations are covered: **B01/Q7** robots via the encrypted SCMap protobuf (position ray-cast against per-room boundary outlines), **classic S/Q-series** robots via the RRMap segment grid (position resolved against per-pixel room segments — a single-byte lookup on the raw map buffer, ~1 µs per check).
 
 </details>
 
@@ -102,17 +102,31 @@ The clean mode follows the robot as well: start a vacuum+mop or mop-only clean f
 
 Everything is configurable from the Homebridge UI. The essentials:
 
-| Option                          | Default | What it does                                                                                                                                                                  |
-| ------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `email` / password              | —       | Your Roborock app account (2FA handled in the UI; the session token is stored encrypted)                                                                                      |
-| `skipDevices`                   | —       | Comma-separated device IDs the plugin should ignore                                                                                                                           |
-| `enableMatterServiceArea`       | `true`  | Room/map selection in Apple Home                                                                                                                                              |
-| `enableLiveRoomTracking`        | `true`  | Live current-room from the robot's map position while cleaning                                                                                                                |
-| `enableMatterCleanMode`         | `true`  | Vacuum / Mop / Vacuum + Mop mode selection                                                                                                                                    |
-| `enableFanPowerCleanModes`      | `false` | Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) suction modes to the Matter mode list. **Re-pair the robot once after toggling** — Matter locks the mode list at pairing |
-| `enableMatterPowerSource`       | `true`  | Battery cluster                                                                                                                                                               |
-| `cloudOnlyMode`                 | `false` | Skip local TCP entirely and use the cloud for everything                                                                                                                      |
-| `transientWarningThrottleHours` | `6`     | How often recurring transient-timeout warnings may repeat (0 = only in debug)                                                                                                 |
+| Option                          | Default | What it does                                                                                                                                                                    |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `email` / password              | —       | Your Roborock app account (2FA handled in the UI; the session token is stored encrypted)                                                                                        |
+| `skipDevices`                   | —       | Comma-separated device IDs the plugin should ignore                                                                                                                             |
+| `enableMatterServiceArea`       | `true`  | Room/map selection in Apple Home                                                                                                                                                |
+| `enableLiveRoomTracking`        | `true`  | Live current-room from the robot's map position while cleaning                                                                                                                  |
+| `enableMatterCleanMode`         | `true`  | Vacuum / Mop / Vacuum + Mop mode selection                                                                                                                                      |
+| `enableFanPowerCleanModes`      | `false` | Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) suction modes to the Matter mode list. **Re-pair the robot once after toggling** — Matter locks the mode list at pairing   |
+| `enableMatterPowerSource`       | `true`  | Battery cluster                                                                                                                                                                 |
+| `enableMatterFaultReporting`    | `false` | Say why the robot needs attention instead of showing Ready — stuck, empty clean-water tank, full waste-water tank, missing dust bag ([details](#why-the-robot-needs-attention)) |
+| `cloudOnlyMode`                 | `false` | Skip local TCP entirely and use the cloud for everything                                                                                                                        |
+| `transientWarningThrottleHours` | `6`     | How often recurring transient-timeout warnings may repeat (0 = only in debug)                                                                                                   |
+
+## Why the robot needs attention
+
+By default a robot that has stopped for any reason shows as **Ready** in Apple Home — whether it finished the job or is wedged under the sofa. Turning on **Report faults in Apple Home** changes that: the robot's own faults are published as the Matter Error state, and the condition behind them is published as a Matter fault so the Home app can say what is wrong rather than just that something is.
+
+What gets reported:
+
+- **The robot's own faults** — stuck, a blocked brush or wheel, a missing dust bin, a flat battery, a dock it cannot reach. These put the tile into Error, because the robot genuinely cannot work.
+- **Dock and tank conditions** — an empty clean-water tank, a full waste-water tank, a missing dust bag, a blocked air duct, a mop-wash tank that needs emptying. These are reported as a fault but deliberately **do not** put the tile into Error: a robot whose waste-water tank is full can still vacuum, and an accessory in Error may be refused a Start command by the controller.
+
+What is deliberately **not** reported: a detached water tank or mop pad. That is the normal, correct configuration for a vacuum-only run, so treating it as a fault would leave a permanent warning on every dry robot's tile.
+
+It is off by default for two reasons: a robot reporting Error may be refused a Start command from Apple Home, and the fault attribute has a history with Apple Home commissioning. If Matter ever refuses the attribute, the plugin drops it by itself and logs a warning rather than letting it freeze the tile. How much of this Apple Home actually draws, and in what words, is Apple's decision.
 
 ## Battery percentage in Apple Home
 

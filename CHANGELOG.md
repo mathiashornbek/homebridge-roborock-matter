@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.3.0
+
+A robot that has stopped because it is wedged under the sofa has always looked exactly like a robot that finished the job: **Ready**. This release lets the plugin say what is actually wrong — asked for by Wazza151 in [#5](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/5), whose previous Matter bridge showed him when the clean-water tank ran empty.
+
+- **New setting: Report faults in Apple Home** (off by default). The robot's own faults — stuck, blocked brush or wheel, missing dust bin, flat battery, unreachable dock — are published as the Matter Error state with the Roborock description attached, instead of being flattened to Ready. Dock and tank conditions — clean-water tank empty, waste-water tank full, dust bag missing, air duct blocked, mop-wash tank full — are published as a Matter fault too, but deliberately do **not** force the Error state: a robot whose waste-water tank is full can still vacuum, and an accessory in Error may be refused a Start command by the controller.
+- **The Error state was never gated for a reason.** `ERROR` (3) is a member of even the basic advertised operational state list, so publishing it was always legal — it was being rewritten to `STOPPED` alongside the states that genuinely did need a gate. That is why no released version has ever shown a Roborock fault in Apple Home.
+- **A detached water tank or mop pad is not a fault.** Both are the normal, correct configuration for a vacuum-only run, so reporting them would leave a permanent warning on every dry robot's tile. They are read, and deliberately ignored.
+- **The fault detail can never cost you the tile.** `operationalError` travels in the same cluster payload as the operational state, so a Matter build that refuses the attribute would otherwise freeze Cleaning/Docked along with it — the reason the explicit write was removed back in 1.4.61. If the write is rejected, the plugin immediately re-publishes without it, logs a warning naming the reason, and stops sending it for the rest of the session. An endpoint that is merely still starting up keeps its normal retry and does not disable the feature.
+- **Diagnostics no longer truncate away the answer.** A Roborock status payload runs to about fifty fields and the export kept the first thirty — which are largely housekeeping, while the twenty it dropped included `dock_error_status`, the single field a question about the dock's water tanks turns on. The fields that matter for a fault report are now always kept, however far down the payload they sit, with the size cap otherwise unchanged and secret redaction untouched.
+
 ## 3.2.0
 
 Field feedback on the Q7 series: the live room in Apple Home lagged badly behind the robot. One run took 90 seconds to name the first room; another took seven minutes.

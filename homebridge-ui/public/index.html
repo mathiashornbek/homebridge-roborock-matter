@@ -163,7 +163,7 @@
         <small
           >While cleaning, the robot's map position is resolved to the room it
           is physically inside and shown as the current room in Apple Home
-          (fetched every ~20 s during active runs only).</small
+          (first room immediately, then every ~10 s, active runs only).</small
         >
       </span>
     </label>
@@ -227,6 +227,20 @@
           >Reports real Matter Charging and Docked states instead of Ready while
           on the dock. Requires a recent iOS/tvOS; turn off and restart the
           bridge if the tile misbehaves.</small
+        >
+      </span>
+    </label>
+    <label class="checkbox">
+      <input id="enable-matter-fault-reporting" type="checkbox" />
+      <span>
+        Report faults in Apple Home
+        <small
+          >Says why the robot needs attention instead of leaving it as Ready: a
+          stuck robot reports Error, and conditions like an empty clean-water
+          tank, a full waste-water tank or a missing dust bag are published as a
+          Matter fault. Dock conditions never force the Error state, so a robot
+          that can still vacuum stays startable. Off by default because a robot
+          in Error may refuse a Start command from Apple Home.</small
         >
       </span>
     </label>

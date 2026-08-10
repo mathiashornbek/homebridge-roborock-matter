@@ -110,6 +110,12 @@
         "type": "boolean",
         "default": false
       },
+      "enableMatterFaultReporting": {
+        "title": "Report Faults in Apple Home",
+        "description": "Show why the robot needs attention instead of leaving it as Ready: a stuck robot reports Error, and conditions such as an empty clean-water tank, a full waste-water tank, a missing dust bag or a blocked brush are published as a Matter fault. Which of them Apple Home renders, and how, is Apple's decision. Off by default because a robot reporting Error may refuse a Start command from Apple Home. Dock conditions never force the Error state, so a robot that can still vacuum stays startable. If Matter refuses the fault attribute, the plugin drops it automatically and logs a warning rather than freezing the tile.",
+        "type": "boolean",
+        "default": false
+      },
       "matterChargedBatteryThreshold": {
         "title": "Charged Battery Threshold (%)",
         "description": "Battery percentage at which a docked robot switches from Charging to Docked on the Apple Home tile. Default 100. Lower it (e.g. 90) if a worn battery makes the robot report fully charged early.",

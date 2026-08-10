@@ -16,6 +16,7 @@ const vacuum_class = require("./lib/vacuum").vacuum;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
 const supportsMaxPlusFanPower =
   require("./lib/deviceFeatures").supportsMaxPlusFanPower;
+const errorCodes = require("./lib/deviceFeatures").errorCodes;
 const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
@@ -44,6 +45,32 @@ const B01_LIVE_ROOM_CLEAR_V1_STATES = new Set([3, 8]);
 // opposite of what a "live" room display is for. 10s keeps the map traffic
 // modest while making the room track the robot closely enough to be useful.
 const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 10000;
+
+// How many keys of an arbitrary diagnostic object survive compaction.
+const DIAGNOSTIC_KEY_LIMIT = 30;
+
+// Keys that are always kept, however far down the payload they sit. These are
+// the ones a support round-trip actually turns on: what the robot is doing,
+// what it thinks is wrong, and the state of the dock's consumables.
+const DIAGNOSTIC_PRIORITY_KEYS = new Set([
+  "state",
+  "error_code",
+  "fault",
+  "dock_error_status",
+  "dock_type",
+  "battery",
+  "charge_status",
+  "water_box_status",
+  "water_box_carriage_status",
+  "water_shortage_status",
+  "water_box_mode",
+  "dust_collection_status",
+  "mop_mode",
+  "in_cleaning",
+  "in_returning",
+  "map_present",
+  "fan_power",
+]);
 
 // Scheduler granularity for the classic (v1-protocol) status refresh. The
 // refresh itself is throttled per robot inside vacuum.getParameter, so this
@@ -948,7 +975,18 @@ class Roborock {
 
     const compactObject = {};
     const entries = Object.entries(value);
-    for (const [key, entryValue] of entries.slice(0, 30)) {
+    let kept = 0;
+    for (const [key, entryValue] of entries) {
+      // A get_status payload runs to about 50 keys, and the first 30 are
+      // mostly housekeeping — so the flat cap used to drop dock_error_status,
+      // water_shortage_status and friends, i.e. exactly the fields a fault
+      // report is about. Keep the cap for everything else, but never let it
+      // truncate away the ones diagnostics exist to answer.
+      if (kept >= DIAGNOSTIC_KEY_LIMIT && !DIAGNOSTIC_PRIORITY_KEYS.has(key)) {
+        continue;
+      }
+      kept += 1;
+
       if (this.isSensitiveDiagnosticKey(key)) {
         compactObject[key] = "[redacted]";
         continue;
@@ -4278,6 +4316,20 @@ class Roborock {
     } else {
       return "";
     }
+  }
+
+  /**
+   * Human-readable text for a Roborock `error_code`, from the same table the
+   * plugin already uses to label the value elsewhere. Returns "" for unknown
+   * codes so callers can fall back to something of their own.
+   *
+   * @param {number} errorCode
+   * @returns {string}
+   */
+  getErrorCodeDescription(errorCode) {
+    const description = errorCodes[errorCode];
+
+    return typeof description === "string" ? description : "";
   }
 
   getVacuumDeviceStatus(duid, property) {

@@ -15,6 +15,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableFanPowerCleanModes?: boolean;
   enableMatterExtendedOperationalStates?: boolean;
   enableMatterChargingDockedStates?: boolean;
+  enableMatterFaultReporting?: boolean;
   matterChargedBatteryThreshold?: number;
   cloudOnlyMode?: boolean;
   preferCloudForMatterCommands?: boolean;
