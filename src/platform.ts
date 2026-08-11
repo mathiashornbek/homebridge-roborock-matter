@@ -459,7 +459,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       if (!this.matterUnavailableLogged) {
         this.matterUnavailableLogged = true;
         this.log.info(
-          "Matter vacuum exposure is enabled in plugin settings, but Matter is not enabled for this Homebridge bridge. The existing HomeKit accessory will continue to work."
+          "Matter vacuum exposure is enabled in plugin settings, but Matter is not enabled for this Homebridge bridge, so no vacuum will appear in Apple Home. This plugin is Matter-only — there is no HomeKit accessory to fall back to. Enable Matter for this bridge in the Homebridge UI (Settings -> Matter) and restart."
         );
       }
 

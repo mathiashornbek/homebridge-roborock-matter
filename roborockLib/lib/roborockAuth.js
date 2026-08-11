@@ -170,7 +170,6 @@ async function loginByPassword(loginApi, { email, password, k, s }) {
 module.exports = {
   createLoginApi,
   getRegionConfig,
-  normalizeBaseURL,
   signRequest,
   requestEmailCode,
   loginWithCode,

@@ -31,8 +31,6 @@ const zlib = require("zlib");
  */
 
 const B01_PROTOCOL_VERSION = "B01";
-const B01_REQUEST_DPS = 10000;
-const B01_RESPONSE_DPS = 10001;
 
 // Why a B01 robot is routed over the Roborock cloud. The dialect has no LAN
 // request surface at all, so these robots are marked remote at startup and the
@@ -627,22 +625,13 @@ function parseScMapLiveState(buffer) {
 }
 
 /**
- * Resolve which room the robot is physically inside from a parsed SCMap
- * live state: the world-coordinate pose (meters) is converted to grid-cell
- * coordinates ((pose - min) / resolution, the inverse of the chain-point
- * mapping world = min + cell * resolution) and ray-cast against each room's
- * boundary chain. Returns the roomId or null when the pose is unknown, the
- * geometry is missing, or the robot is outside every room outline (e.g.
- * sitting on a dock placed in an unassigned hallway).
- * @param {ReturnType<typeof parseScMapLiveState>} liveState
- * @returns {number | null}
- */
-function resolveLiveRoomId(liveState) {
-  return describeLiveRoomResolution(liveState).roomId;
-}
-
-/**
- * Same resolution as `resolveLiveRoomId`, but says WHY it failed.
+ * Resolve which room the robot is physically inside, and say WHY when it
+ * cannot be resolved.
+ *
+ * The world-coordinate pose (meters) is converted to grid-cell coordinates —
+ * `(pose - min) / resolution`, the inverse of the chain-point mapping
+ * `world = min + cell * resolution` — and ray-cast against each room's
+ * boundary chain.
  *
  * A bare null collapses four very different situations into one, and the log
  * line built on it asserted a single cause — "the robot's position did not
@@ -1007,14 +996,11 @@ module.exports = {
   decodeMapPayload,
   parseRoomsFromScMap,
   parseScMapLiveState,
-  resolveLiveRoomId,
   describeLiveRoomResolution,
   findCurrentMapId,
   MATTER_TO_Q7_CLEAN_TYPE,
   Q7_CLEAN_TYPE_TO_MATTER,
   B01_PROTOCOL_VERSION,
-  B01_REQUEST_DPS,
-  B01_RESPONSE_DPS,
   B01_STATUS_PROPS,
   B01_STATUS_TO_V1_STATE,
   isB01Protocol,

@@ -1432,7 +1432,6 @@ function supportsMaxPlusFanPower(model) {
 
 module.exports = {
   deviceFeatures,
-  stateCodes,
   errorCodes,
   supportsMaxPlusFanPower,
 };

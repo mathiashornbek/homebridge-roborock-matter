@@ -144,23 +144,22 @@ describe("the Matter publish line is emitted whenever what it says changes", () 
     );
   });
 
-  test("a published fault is part of the line and of the change decision", async () => {
+  test("the line says nothing about faults, because none are published", async () => {
+    // This test used to hand-build an operationalError and assert the line
+    // rendered `fault=4 (stuck)`. That cluster shape has been unreachable
+    // since 3.4.1 withdrew fault publishing, so the assertion was keeping a
+    // dead branch alive and contradicting matter-fault-reporting.test.js,
+    // which pins that operationalError is never published in any
+    // configuration. Two tests disagreeing about whether a feature exists is
+    // worse than either answer; the withdrawal is the one backed by field
+    // evidence, so the line follows it.
     const { instance, info } = createHarness();
     const base = snapshot({ operationalState: 3 });
     await publish(instance, base);
-    expect(publishLines(info)).toHaveLength(1);
 
-    const withFault = {
-      ...base,
-      rvcOperationalState: {
-        operationalState: 3,
-        operationalError: { errorStateId: 4, errorStateDetails: "stuck" },
-      },
-    };
-    await publish(instance, withFault);
     const lines = publishLines(info);
-    expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain("fault=4 (stuck)");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain("fault");
   });
 
   test("a forced heartbeat republish of unchanged values stays silent", async () => {

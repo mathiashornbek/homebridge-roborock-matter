@@ -203,30 +203,30 @@ describe("SCMap live-state parsing", () => {
     const inKitchen = b01.parseScMapLiveState(
       encodeRobotMap({ pose: cellToWorld(20, 20) })
     );
-    expect(b01.resolveLiveRoomId(inKitchen)).toBe(42);
+    expect(b01.describeLiveRoomResolution(inKitchen).roomId).toBe(42);
 
     const inLivingRoom = b01.parseScMapLiveState(
       encodeRobotMap({ pose: cellToWorld(70, 40) })
     );
-    expect(b01.resolveLiveRoomId(inLivingRoom)).toBe(7);
+    expect(b01.describeLiveRoomResolution(inLivingRoom).roomId).toBe(7);
   });
 
   test("returns null when the pose is outside every room outline", () => {
     const inCorridor = b01.parseScMapLiveState(
       encodeRobotMap({ pose: cellToWorld(45, 45) })
     );
-    expect(b01.resolveLiveRoomId(inCorridor)).toBeNull();
+    expect(b01.describeLiveRoomResolution(inCorridor).roomId).toBeNull();
   });
 
   test("returns null when pose or geometry is missing", () => {
     const noPose = b01.parseScMapLiveState(encodeRobotMap({ pose: null }));
     expect(noPose.pose).toBeNull();
-    expect(b01.resolveLiveRoomId(noPose)).toBeNull();
+    expect(b01.describeLiveRoomResolution(noPose).roomId).toBeNull();
 
     const noGeometry = b01.parseScMapLiveState(
       encodeRobotMap({ pose: cellToWorld(20, 20), includeGeometry: false })
     );
-    expect(b01.resolveLiveRoomId(noGeometry)).toBeNull();
+    expect(b01.describeLiveRoomResolution(noGeometry).roomId).toBeNull();
   });
 
   test("parseRoomsFromScMap keeps its original contract on the same payload", () => {

@@ -92,25 +92,34 @@ describe("a failed live-room lookup says which of the four things went wrong", (
     expect(result.cell).toEqual({ x: 400, y: 400 });
   });
 
-  test("the old boolean-ish entry point still behaves exactly as before", () => {
+  test("a bare room id is still recoverable from the diagnosis", () => {
+    // There used to be a second entry point, resolveLiveRoomId, that returned
+    // only the id. Nothing in the plugin called it — it was a one-line wrapper
+    // over this function, and two ways to ask the same question is how one of
+    // them drifts. It is gone; callers read .roomId. The behaviour it
+    // guaranteed has to survive the removal, so it is pinned here.
     const chains = [squareRoom(7, 0, 0, 100)];
 
     expect(
-      b01.resolveLiveRoomId({
+      b01.describeLiveRoomResolution({
         head: HEAD,
         pose: { x: 1, y: 1 },
         roomChains: chains,
-      })
+      }).roomId
     ).toBe(7);
     expect(
-      b01.resolveLiveRoomId({ head: HEAD, pose: null, roomChains: chains })
+      b01.describeLiveRoomResolution({
+        head: HEAD,
+        pose: null,
+        roomChains: chains,
+      }).roomId
     ).toBeNull();
     expect(
-      b01.resolveLiveRoomId({
+      b01.describeLiveRoomResolution({
         head: HEAD,
         pose: { x: 1, y: 1 },
         roomChains: [],
-      })
+      }).roomId
     ).toBeNull();
   });
 });

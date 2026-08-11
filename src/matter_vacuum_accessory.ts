@@ -118,7 +118,6 @@ interface RoborockApi {
     property: string
   ): string | null | undefined;
   getVacuumDeviceStatus(duid: string, property: string): unknown;
-  getErrorCodeDescription?(errorCode: number): string;
   app_start(duid: string, options?: RoborockCommandOptions): Promise<void>;
   app_stop(duid: string, options?: RoborockCommandOptions): Promise<void>;
   app_pause(duid: string, options?: RoborockCommandOptions): Promise<void>;
@@ -613,10 +612,8 @@ export default class RoborockMatterVacuumAccessory {
   /**
    * Render the publish evidence line for a full cluster snapshot.
    *
-   * A fault only appears here when one is actually being published, so an
-   * unremarkable line stays unremarkable — but when a user reports "Apple
-   * Home shows nothing", this is what says whether the plugin sent anything
-   * to show.
+   * When a user reports "Apple Home shows nothing", this is the line that
+   * says whether the plugin sent anything to show.
    */
   private buildMatterPublishLogLine(clusters: MatterClusterState): string {
     const power = clusters.powerSource as Record<string, unknown> | undefined;
@@ -628,15 +625,14 @@ export default class RoborockMatterVacuumAccessory {
     const cleanMode = clusters.rvcCleanMode as
       | Record<string, unknown>
       | undefined;
-    const fault = opState?.operationalError as
-      | { errorStateId?: number; errorStateDetails?: string }
-      | undefined;
-    const faultSummary =
-      fault && fault.errorStateId
-        ? `, fault=${fault.errorStateId}${fault.errorStateDetails ? ` (${fault.errorStateDetails})` : ""}`
-        : "";
-
-    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultSummary}.`;
+    // No fault field here on purpose. 3.4.0 published RVC OperationalError and
+    // 3.4.1 withdrew it after three controlled field tests showed Apple Home
+    // draws no Matter vacuum fault from a bridged accessory at all. The line
+    // kept rendering `fault=…` from an attribute that is now never published,
+    // so the branch was permanently dead — and worse, it read as evidence that
+    // the feature still existed. If faults ever come back, this line gets the
+    // field back with a test that publishes one for real.
+    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}.`;
   }
 
   /**

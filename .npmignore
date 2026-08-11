@@ -34,9 +34,10 @@ ROADMAP.md
 # Runtime data
 roborockLib/data/
 
-# Development/reverse-engineering tooling — never ship in the npm package
-roborockLib/lib/sniffing/
-roborockLib/lib/map/
+# 3.4.12 deleted roborockLib/lib/sniffing/ and roborockLib/lib/map/ outright —
+# an orphaned ioBroker map viewer and a MITM proxy script that nothing in the
+# tree referenced. They were excluded here rather than removed, which is how
+# they survived unnoticed: ignored by the package, invisible in review.
 __tests__/
 
 # Editor/repo metadata

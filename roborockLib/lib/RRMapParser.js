@@ -68,16 +68,6 @@ class RRMapParser {
     this.adapter = adapter;
   }
 
-  BytesToInt(buffer, offset, len) {
-    let result = 0;
-
-    for (let i = 0; i < len; i++) {
-      result |= (0x000000ff & parseInt(buffer[i + offset])) << (8 * i);
-    }
-
-    return result;
-  }
-
   async parsedata(buf) {
     const metaData = this.PARSE(buf);
     if (!metaData.map_index) {

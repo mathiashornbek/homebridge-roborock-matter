@@ -1,7 +1,41 @@
-# Homebridge Roborock Vacuum 2 Roadmap
+# homebridge-roborock-matter Roadmap
 
 ## Recently Completed
 
+- Repo cleanup (3.4.12): removed the ioBroker-era leftovers this fork never
+  used — the orphaned map viewer and MITM sniffing script, ten locale files no
+  code path could ever load, ten unreferenced functions, and the last dead
+  branch of the withdrawn fault subsystem. Two rules now guard the classes of
+  mistake behind them: a locale that ships must be selectable, and the README's
+  test count is checked against the suite instead of typed in by hand.
+- Live-room diagnosis for B01/Q7 (3.4.9, 3.4.10): the miss line now carries the
+  room-outline range, the map origin, and a full field survey of the map
+  payload. Measured on two Q7s mid-clean, the "position" came back as exactly
+  (1100.0, 1100.0) on both — a constant, not a place. **Live room tracking has
+  never worked on these models**, and the survey is how the right field gets
+  identified from a log instead of guessed a third time.
+- Never report a suction level the robot did not report (3.4.11).
+- Clean-mode prep no longer lets one timed-out command cancel another (3.4.8):
+  choosing Vacuum sends water-box OFF, and a fan-power timeout used to drop
+  that command entirely, so the robot mopped a room the user asked to vacuum.
+- Honest transport reporting for B01/Q7 (3.4.6, 3.4.7): the cloud-only marker
+  that survived re-pairs and reinstalls is reconciled at startup, and a robot
+  marked remote now records _why_ instead of the report inventing a failed LAN
+  connection for a protocol that has no LAN surface.
+- The Matter publish line is written on every change it reports (3.4.5), all
+  nine Saros 10 status fields are mapped (3.4.4), and an unmapped field is
+  reported once per robot rather than once a minute (3.4.3) — roughly 11,500
+  warnings a day removed for one reporter.
+- Withdrew the Matter fault attribute (3.4.0, 3.4.1): three controlled field
+  tests on an S8 Pro Ultra showed Apple Home draws no Matter vacuum fault from
+  a bridged accessory at all, and publishing one locked the tile in "Updating".
+  Operational _states_ render fine. **Do not attempt this a third time without
+  new evidence.**
+- Every log line names the robot instead of printing a raw duid (3.3.1, 3.3.2),
+  enforced by a test that enumerates the rule across the source tree.
+- Live room made genuinely live on Q7 robots (3.2.0), and the dock statuses
+  made real with the capability leak closed and the local channel hardened
+  (3.1.0).
 - Startup now completes in ~2 s (3.0.1): local transport attaches in the background, and the first cloud requests wait for the MQTT session instead of racing it.
 - Startup and refresh pass (3.0.0): LAN discovery now overlaps the rest of startup (~5 s faster restarts), per-robot probes run concurrently, the never-firing classic status refresh was repaired (60 s throttle), and the 1 s scheduler tick became 15 s.
 - Live clean-mode mirroring (2.9.9): cleans started from the Roborock app or the robot's buttons now show the correct Vacuum / Mop / Vacuum+Mop mode in Apple Home during the run (Q7 native clean-type reporting; classic robots derived from suction/water signals).
@@ -17,16 +51,15 @@
 - Added startup diagnostics auto-refresh and transport freshness timestamps.
 - Added a manual "Test Local Connection" action that runs a live LAN TCP probe from the admin UI.
 - Added clearer transport logs for local TCP connections, cloud fallback, local recovery, remote/shared devices, missing local credentials, and missing local IP discovery.
-- Added dedicated HomeKit controls for Pause Cleaning and Return to Dock so docking is no longer bundled into the main on/off control.
+- _(pre-Matter-only)_ Added dedicated HomeKit controls for Pause Cleaning and Return to Dock. Superseded: these HAP accessories were removed in the Matter-only rebuild — see "Superseded by the Matter-only design" below.
 - Clarified cloud-only transport logs so expected Roborock cloud calls are not described as local fallback.
 - Added configurable, per-vacuum throttling for recurring transient timeout warnings.
-- Added Phase 1 optional Matter robotic vacuum exposure for Homebridge 2 while preserving the existing HomeKit fan/switch accessory.
+- _(pre-Matter-only)_ Added Phase 1 optional Matter robotic vacuum exposure for Homebridge 2 alongside the HomeKit fan/switch accessory. The HomeKit half is gone; Matter is now the only surface.
 - Added capability-gated Matter clean modes for vacuum, mop, and vacuum + mop selection on mop-capable Roborock models.
 - Stabilized Matter publishing: serialized full-snapshot writes with no plugin-side change tracking, restored spec-conformant RVC operational state (null phases, no state labels), and removed synthetic identify/phase churn that left Apple Home stuck on "Updating…" (1.4.58).
-- Added acknowledgement waiting + timing logs to the HomeKit Pause/Return-to-Dock controls (1.4.59, issue #12).
+- _(pre-Matter-only)_ Added acknowledgement waiting + timing logs to the HomeKit Pause/Return-to-Dock controls (1.4.59, issue #12).
 - Fixed Matter Pause/Return-to-Dock being dropped on slow-syncing models (e.g. S8 / `roborock.vacuum.a51`) while the cached state still reads docked (1.4.60, issue #4).
 - Investigated the Apple Home Matter RVC "Updating…" tile, captured the upstream evidence, and later verified that a clean reset/re-pair can render the full RVC endpoint correctly (homebridge/homebridge#3951); see `docs/matter-rvc-updating-homebridge-report.md`.
-- Added an `AGENTS.md` handoff guide for AI coding agents.
 - Added live room tracking for B01/Q7: the robot's map position is resolved against room outlines while cleaning and published as the current Matter Service Area, with honest scope-aware progress transitions (2.4.0).
 - Hardened startup so a rejected login or unreachable Roborock cloud can never crash Homebridge: credential errors stop with clear guidance, network errors retry with backoff (2.4.2).
 - Removed node-forge (RSA keys now via Node's OpenSSL CSPRNG), removed the dead ioBroker-era package/image downloader and jszip, and moved the custom UI server to native ESM loading — eliminating the Socket.dev "uses eval", "obfuscated code", and ZIP-handling alerts at the source (2.5.0).
@@ -41,15 +74,21 @@
 
 ## In Progress
 
+- **Fix B01/Q7 live room tracking.** The field being read as the robot's
+  position is not the robot's position — measured, not suspected. The next
+  Q7 run produces two consecutive `scalars` lines in the log; the value that
+  changes while the robot drives is the position, and the field that grows is
+  the trail it leaves. The fix follows the measurement, not a guess.
 - Monitor homebridge/homebridge#3951 (Matter RVC "Updating…") — still open upstream but no recurrence reported since 2026-06-24; the clean reset/re-pair result has stayed stable so far.
-- Await the reporter retest on upstream issue applemanj#4 (S8 local timeouts) after the 1.4.60 fix. Upstream issue applemanj#12 (pause/dock) was confirmed fixed and closed on 2026-07-08.
 - Continue reducing the remaining known-model poll maps toward capability-based logic (the default path for unknown models is capability-derived as of 2.5.0; the dedicated known-model profiles are kept as verified behavior).
 
 ## Worth Doing Next
 
-- Await responses on homebridge/homebridge#3958 (frozen battery percentage) and the plugin verification final review (homebridge/plugins#1124, all automated checks passed).
-- Field-validate the classic S/Q-series live room tracking and the suction-level modes on real hardware (first run pending on the maintainer's own S8 Pro Ultra and Q7 fleet).
-- Continue validating Matter room/service-area selection, live room tracking, and clean-mode behavior across Apple Home and other controllers.
+- Enable GitHub 2FA before 2026-08-27, or the automated npm releases stop.
+- Await responses on homebridge/homebridge#3958 (frozen battery percentage). The battery-percentage freeze itself is settled and closed upstream as works-as-intended: `batPercentRemaining` carries Matter's "changes omitted" quality, and Apple's controller does not re-read it. It is not fixable from this side.
+- Confirm whether a Qrevo CurvX (`a185`) reports fan power 110 or 108 at fixed
+  highest suction before shipping a model table for it — upstream has no a185
+  profile, and `a288` is a sibling, not the same model.
 - Field-validate the capability-derived defaults on newly released models (Saros 10, Q5 Max+, QX Revo Plus, Q10 S5+) as model reports come in; unsupported requests are now detected and disabled automatically per device.
 - Review GitHub Issues regularly for new model reports, diagnostics exports, and feature requests (automated monitoring of issues, Socket.dev alerts, and homebridge#3951 is set up on the maintainer side).
 

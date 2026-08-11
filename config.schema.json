@@ -132,7 +132,7 @@
       },
       "preferCloudForMatterCommands": {
         "title": "Prefer Roborock Cloud for Matter Commands",
-        "description": "Sends Matter vacuum commands through the Roborock cloud when cloud transport is connected. This can avoid local LAN command timeouts on some models, such as S8, while keeping the legacy HomeKit accessories unchanged.",
+        "description": "Sends Matter vacuum commands through the Roborock cloud when cloud transport is connected. This can avoid local LAN command timeouts on some models, such as S8. Status reporting is unaffected.",
         "type": "boolean",
         "default": false
       }

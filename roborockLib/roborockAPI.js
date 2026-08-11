@@ -16,7 +16,6 @@ const vacuum_class = require("./lib/vacuum").vacuum;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
 const supportsMaxPlusFanPower =
   require("./lib/deviceFeatures").supportsMaxPlusFanPower;
-const errorCodes = require("./lib/deviceFeatures").errorCodes;
 const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
@@ -2237,27 +2236,6 @@ class Roborock {
     }
   }
 
-  /**
-   * Get the home ID from the login API
-   * @returns {Promise<string>} The home ID
-   */
-  async getHomeID() {
-    if (!this.loginApi) {
-      throw new Error("loginApi is not initialized. Call init() first.");
-    }
-
-    try {
-      const homeDetail = await this.loginApi.get("api/v1/getHomeDetail");
-      if (homeDetail && homeDetail.data && homeDetail.data.data) {
-        return homeDetail.data.data.rrHomeId;
-      }
-      throw new Error("Failed to get home ID from homeDetail response");
-    } catch (error) {
-      this.log.error(`Failed to get home ID: ${error.message}`);
-      throw error;
-    }
-  }
-
   getProductAttribute(duid, attribute) {
     const device = this.getVacuumDeviceData(duid);
     const deviceValue = this.getDeviceAttribute(device, attribute);
@@ -2710,31 +2688,6 @@ class Roborock {
     }
   }
 
-  decodeSniffedMessage(data, devices) {
-    const dataString = JSON.stringify(data);
-
-    const duidMatch = dataString.match(/\/(\w+)\.\w{3}'/);
-    if (duidMatch) {
-      const duidSniffed = duidMatch[1];
-
-      const device = devices.find((device) => device.duid === duidSniffed);
-      if (device) {
-        const localKey = device.localKey;
-
-        const payloadMatch = dataString.match(/'([a-fA-F0-9]+)'/);
-        if (payloadMatch) {
-          const hexPayload = payloadMatch[1];
-          const msg = Buffer.from(hexPayload, "hex");
-
-          const decodedMessage = this.message._decodeMsg(msg, localKey);
-          this.log.debug(
-            `Decoded sniffing message: ${JSON.stringify(JSON.parse(decodedMessage.payload))}`
-          );
-        }
-      }
-    }
-  }
-
   async onlineChecker(duid) {
     const homedataJSON = this.getStoredHomeData();
 
@@ -2844,16 +2797,6 @@ class Roborock {
         isRemote: false,
       });
       return false;
-    }
-  }
-
-  async getConnector(duid) {
-    const isRemote = await this.isRemoteDevice(duid);
-
-    if (isRemote) {
-      return this.rr_mqtt_connector;
-    } else {
-      return this.localConnector;
     }
   }
 
@@ -2995,17 +2938,6 @@ class Roborock {
     } else {
       this.log.warn(
         `Model lookup mismatch for ${this.describeDevice(duid)}: HomeData reports '${robotModel || "unknown"}', which does not look like a Roborock vacuum model string. Skipping the periodic data update for this device. If this is a real vacuum, please open a model report issue on GitHub with a diagnostics export from the plugin settings.`
-      );
-    }
-  }
-
-  async updateDataExtraData(duid, vacuum) {
-    try {
-      await vacuum.getParameter(duid, "get_fw_features");
-      await vacuum.getParameter(duid, "get_multi_maps_list");
-    } catch (error) {
-      this.log.error(
-        `Failed to get extra data for ${vacuum}: ${error.message}`
       );
     }
   }
@@ -3703,52 +3635,6 @@ class Roborock {
       this.idCounter = 0;
     }
     return this.idCounter++;
-  }
-
-  async setupBasicObjects() {
-    await this.setObjectAsync("Devices", {
-      type: "folder",
-      common: {
-        name: "Devices",
-      },
-      native: {},
-    });
-
-    await this.setObjectAsync("UserData", {
-      type: "state",
-      common: {
-        name: "UserData string",
-        type: "string",
-        role: "value",
-        read: true,
-        write: false,
-      },
-      native: {},
-    });
-
-    await this.setObjectAsync("HomeData", {
-      type: "state",
-      common: {
-        name: "HomeData string",
-        type: "string",
-        role: "value",
-        read: true,
-        write: false,
-      },
-      native: {},
-    });
-
-    await this.setObjectAsync("clientID", {
-      type: "state",
-      common: {
-        name: "Client ID",
-        type: "string",
-        role: "value",
-        read: true,
-        write: false,
-      },
-      native: {},
-    });
   }
 
   async catchError(error, attribute, duid, model) {
@@ -4678,20 +4564,6 @@ class Roborock {
     const name = this.getVacuumDeviceInfo(duid, "name");
 
     return typeof name === "string" && name.length > 0 ? name : String(duid);
-  }
-
-  /**
-   * Human-readable text for a Roborock `error_code`, from the same table the
-   * plugin already uses to label the value elsewhere. Returns "" for unknown
-   * codes so callers can fall back to something of their own.
-   *
-   * @param {number} errorCode
-   * @returns {string}
-   */
-  getErrorCodeDescription(errorCode) {
-    const description = errorCodes[errorCode];
-
-    return typeof description === "string" ? description : "";
   }
 
   getVacuumDeviceStatus(duid, property) {
