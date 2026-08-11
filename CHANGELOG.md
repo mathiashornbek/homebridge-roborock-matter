@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.4.9
+
+- **A live-room miss now says where the rooms actually are.** Two Q7s produced position cells around 22,000 while a Roborock map is a couple of thousand cells across at most — so those robots were never "between rooms", their computed position was nowhere near the map. One of them reported x exactly equal to y, which is arithmetic rather than a place a robot stood. The position on its own cannot separate a unit mismatch from a wrong origin, so the miss line now carries the range the room outlines occupy plus the map origin and resolution the transform used. This changes no behaviour; it turns the next log from a hypothesis into a measurement. The bounding box is computed only on the failure path, so a run that resolves every position pays nothing.
+
 ## 3.4.8
 
 **Selecting "Vacuum" and getting a vacuum-and-mop was not a display bug — one timed-out command cancelled the one that mattered.** skmzwanke reported in [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) that he selected Vacuum for a single room and the robot mopped it anyway, and his 3.4.5 log names the cause outright.

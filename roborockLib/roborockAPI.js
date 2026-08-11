@@ -95,6 +95,34 @@ const B01_LIVE_ROOM_MISS_REASONS = {
     "the robot's position did not fall inside any known room outline (it may be between rooms, or the map may still be building)",
 };
 
+/**
+ * The outline range and map origin, appended to a live-room miss.
+ *
+ * A position cell on its own cannot distinguish "the robot is between rooms"
+ * from "the position was computed in the wrong units" — and the field logs
+ * showed cells near 22,000 where a Roborock map is a couple of thousand cells
+ * at most. Printing the range the outlines occupy, plus the origin and
+ * resolution the transform used, makes the difference measurable from one log
+ * line instead of inferable from none.
+ *
+ * @param {{outlineBounds?: {minX: number, minY: number, maxX: number, maxY: number} | null,
+ *          head?: {minX: number, minY: number, resolution: number}}} resolution
+ * @returns {string}
+ */
+function describeOutlineBounds(resolution) {
+  const bounds = resolution?.outlineBounds;
+  if (!bounds) {
+    return "";
+  }
+
+  const head = resolution.head;
+  const origin = head
+    ? `, map origin ${head.minX},${head.minY} at ${head.resolution}/cell`
+    : "";
+
+  return `, outlines span ${Math.round(bounds.minX)}-${Math.round(bounds.maxX)} x ${Math.round(bounds.minY)}-${Math.round(bounds.maxY)}${origin}`;
+}
+
 const B01_STATUS_TICK_MS = 15000;
 const B01_STATUS_FORCED_GAP_MS = 1500;
 const B01_STATUS_ACTIVE_GAP_MS = 12000;
@@ -4291,7 +4319,7 @@ class Roborock {
           // because they call for different fixes.
           liveState.unresolvedPoseCount =
             (liveState.unresolvedPoseCount || 0) + 1;
-          const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}).`;
+          const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}).`;
           if (liveState.unresolvedPoseCount % 5 === 0) {
             this.log.info(message);
           } else {

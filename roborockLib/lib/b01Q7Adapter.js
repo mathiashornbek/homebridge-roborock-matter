@@ -504,7 +504,9 @@ function resolveLiveRoomId(liveState) {
  * @returns {{roomId: number | null,
  *            reason: "resolved" | "no-map-header" | "no-pose" | "no-room-outlines" | "pose-outside-outlines",
  *            outlineCount: number,
- *            cell: {x: number, y: number} | null}}
+ *            cell: {x: number, y: number} | null,
+ *            outlineBounds?: {minX: number, minY: number, maxX: number, maxY: number} | null,
+ *            head?: {minX: number, minY: number, resolution: number}}}
  */
 function describeLiveRoomResolution(liveState) {
   const head = liveState?.head;
@@ -541,7 +543,42 @@ function describeLiveRoomResolution(liveState) {
     reason: "pose-outside-outlines",
     outlineCount,
     cell,
+    outlineBounds: outlineBoundingBox(chains),
+    head: { minX: head.minX, minY: head.minY, resolution },
   };
+}
+
+/**
+ * Bounding box of every room outline, in the same cell space the
+ * point-in-polygon test uses.
+ *
+ * Field logs showed two Q7s reporting position cells around 22,000 while a
+ * Roborock map is at most a couple of thousand cells across — so the position
+ * is not "between rooms", it is nowhere near the map. Whether that is a unit
+ * mismatch (pose in millimetres against a resolution in metres) or a wrong
+ * origin cannot be told from the position alone: it needs the range the
+ * outlines actually occupy. Printing both next to each other turns a guess
+ * into a measurement.
+ *
+ * @param {Array<{points: Array<{x: number, y: number}>}>} chains
+ * @returns {{minX: number, minY: number, maxX: number, maxY: number} | null}
+ */
+function outlineBoundingBox(chains) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const chain of chains) {
+    for (const point of chain.points || []) {
+      if (point.x < minX) minX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y > maxY) maxY = point.y;
+    }
+  }
+
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
 }
 
 /**
