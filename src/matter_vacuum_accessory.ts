@@ -402,6 +402,11 @@ export default class RoborockMatterVacuumAccessory {
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
+  // The suction-level clean mode last derived from a fan power the plugin
+  // could actually read. Used only as the answer to "the fan power is
+  // unreadable right now" while suction levels are announced; cleared by an
+  // explicit Apple Home selection so the user's choice always wins.
+  private lastResolvedFanPowerCleanMode: number | null = null;
   private lastVacuumFanPower: number | null = null;
   private lastWaterBoxMode: number | null = null;
   private matterInitializationRetryAttempt = 0;
@@ -812,6 +817,10 @@ export default class RoborockMatterVacuumAccessory {
       this.rememberCurrentRoborockCleanModeSettings();
       this.selectedCleanMode = newMode;
       this.selectedCleanModeNeedsApply = true;
+      // Discard the level remembered from the robot: from here on the user
+      // has said what they want, and an unreadable fan power must fall back
+      // to their choice rather than to what the robot said before it.
+      this.lastResolvedFanPowerCleanMode = null;
       const state = {
         rvcCleanMode: { currentMode: newMode },
       };
@@ -1462,8 +1471,26 @@ export default class RoborockMatterVacuumAccessory {
                 (powerMode) => powerMode.fanPower === liveFanPower
               );
         if (liveMode && this.isSupportedCleanMode(liveMode.mode)) {
+          this.lastResolvedFanPowerCleanMode = liveMode.mode;
           return liveMode.mode;
         }
+      }
+
+      // The fan power could not be resolved to one of the announced levels
+      // (nothing readable, or a value outside them such as 105 "off"). The
+      // plugin does not know which level the robot is on — and `selected`,
+      // which defaults to plain Vacuum, is not that knowledge. Reporting it
+      // anyway made both Q7 robots flip between "Max Vacuum" and "Vacuum" in
+      // Apple Home on every battery tick while docked (measured 11 Aug 2026,
+      // ten pairs of publishes one second apart). Keeping the level last
+      // actually read says nothing new instead of saying something untrue;
+      // an explicit Apple Home selection clears it, so a user's choice is
+      // never shadowed by a level read before they made it.
+      if (
+        this.lastResolvedFanPowerCleanMode !== null &&
+        this.isSupportedCleanMode(this.lastResolvedFanPowerCleanMode)
+      ) {
+        return this.lastResolvedFanPowerCleanMode;
       }
     }
 

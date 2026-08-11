@@ -163,8 +163,34 @@ describe("opt-in fan-power clean modes", () => {
     instance.selectedCleanMode = 1;
     expect(instance.buildCleanModeCluster().currentMode).toBe(1);
 
-    // Unknown fan power falls back to the selection.
+    // A fan power outside the announced levels keeps the level last read.
+    //
+    // This assertion previously read "unknown fan power falls back to the
+    // selection", expecting plain Vacuum here. That was the defect, not the
+    // decision: on two docked Q7s it made the Apple Home mode picker flip
+    // between "Max Vacuum" and "Vacuum" every ninety seconds, because the
+    // selection defaults to plain Vacuum and a momentary gap in the fan-power
+    // reading was published as a definite statement about the suction level.
+    // See 3.4.11 and clean-mode-keeps-the-known-suction-level.test.js.
     instance.selectedCleanMode = 0;
+    instance.rememberLiveStatus("fan_power", 106);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(7);
+  });
+
+  test("an Apple Home selection still wins over the level last read", async () => {
+    const { instance } = createAccessory({
+      enableFanPowerCleanModes: true,
+      canMaxPlusFanPower: true,
+    });
+
+    instance.rememberLiveStatus("fan_power", 108);
+    expect(instance.buildCleanModeCluster().currentMode).toBe(7);
+
+    // Selections reach the accessory through the Matter handler, which is
+    // what discards the remembered level — so a user choosing plain Vacuum
+    // gets plain Vacuum even while the fan power is unreadable.
+    await instance.changeCleanMode(0);
+    instance.selectedCleanModeNeedsApply = false;
     instance.rememberLiveStatus("fan_power", 106);
     expect(instance.buildCleanModeCluster().currentMode).toBe(0);
   });

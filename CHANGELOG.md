@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.4.11
+
+**Two docked Q7s flipped their Apple Home clean mode to "Vacuum" and back every ninety seconds, and the plugin was reporting a level it had never measured.** Caught in a log from a plugin author's own robots on 3.4.10: every battery tick produced a pair of publishes about a second apart, the first saying `cleanMode=0` and the second saying `cleanMode=6` — ten pairs in fourteen minutes, on both robots, at the same battery value.
+
+Mode 6 is "Max Vacuum", the level the robot is actually set to. Mode 0 is plain "Vacuum", a level nobody selected. When suction-level clean modes are announced (`enableFanPowerCleanModes`), the reported mode is derived from the robot's live fan power — but the derivation had no answer for "the fan power cannot be read right now". It fell through to the last Matter selection, which defaults to plain Vacuum, so a momentary gap in the reading was published as a definite statement about the robot's suction level.
+
+- **An unreadable fan power now leaves the reported level unchanged.** Saying nothing new beats saying something untrue. This covers a value that reads fine but is not one of the announced levels (such as 105, "fan off") as well as no value at all — in both cases the plugin does not know which announced level to report, and inventing one is the defect.
+- **An explicit Apple Home selection still wins immediately.** Choosing a mode discards the remembered level, so a user's choice is never shadowed by what the robot said before they made it — including a deliberate choice of plain Vacuum.
+- **A robot whose fan power has never been readable is unaffected**, and so is any robot that does not announce suction levels.
+
+This is the same class of defect as 3.4.6 and 3.4.7: reporting a value derived from missing data as though it had been measured. What makes the fan power intermittently unreadable on these robots is a separate question and is not answered here — but the reported mode no longer depends on the answer.
+
 ## 3.4.10
 
 **The Q7 position that never resolved to a room is not a position at all.** 3.4.9 asked the two Q7s to report the range their room outlines occupy, and they answered: Garage sat in a map spanning cells 52–171 by 43–187, 1. Sal in one spanning 38–293 by 90–227. Back-computing through each map's own origin and resolution gives the same coordinate for both — exactly (1100.0, 1100.0), on two robots, two maps, and twelve minutes of active cleaning. A number that identical is arithmetic, not a place a robot stood, which means live-room tracking on these models has never worked from that field.
