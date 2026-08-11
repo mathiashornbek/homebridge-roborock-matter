@@ -70,6 +70,17 @@ type RoborockCommandOptions = {
   requestTimeoutMs?: number;
 };
 
+type RoborockCleanModePrepOptions = RoborockCommandOptions & {
+  // The whole prep sequence is raced against this one window before the start
+  // command is sent (see withCleanModePrepTimeout). It travels with the
+  // options so the protocol layer can size each command's timeout from what is
+  // LEFT of the window, instead of starting a command the caller will not wait
+  // for. Without it, three sequential two-second commands were being issued
+  // inside a 2.5 second window, so the command carrying the user's clean mode
+  // could still be in flight when the start command overtook it (#8).
+  prepWindowMs: number;
+};
+
 type RoborockStatusRefreshOptions = {
   force?: boolean;
   preferCloud?: boolean;
@@ -135,7 +146,7 @@ interface RoborockApi {
   applyMatterCleanModeSettings?(
     duid: string,
     settings: RoborockCleanModeSettings,
-    options?: RoborockCommandOptions
+    options?: RoborockCleanModePrepOptions
   ): Promise<void>;
   load_multi_map?(
     duid: string,
@@ -487,10 +498,14 @@ export default class RoborockMatterVacuumAccessory {
     return options;
   }
 
-  private getMatterCleanModePrepCommandOptions(): RoborockCommandOptions {
+  private getMatterCleanModePrepCommandOptions(): RoborockCleanModePrepOptions {
     return {
       ...this.getMatterCommandOptions(),
       requestTimeoutMs: MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS,
+      // Derived from the same constant the prep is raced against, so the two
+      // cannot drift apart: whatever window this class enforces is the window
+      // the protocol layer budgets its commands inside.
+      prepWindowMs: MATTER_CLEAN_MODE_PREP_TIMEOUT_MS,
     };
   }
 

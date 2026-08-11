@@ -82,6 +82,37 @@ function createApi({ failWater = false, failFan = false } = {}) {
   return { api, attempted };
 }
 
+/**
+ * Every `catch (error) { … }` body in `source`, brace-matched rather than
+ * sliced on a fixed indentation so that nesting a command in an `if` does not
+ * quietly shrink what the rule inspects.
+ *
+ * @param {string} source
+ * @returns {string[]}
+ */
+function collectCatchHandlers(source) {
+  const handlers = [];
+  const opener = "} catch (error) {";
+  let index = source.indexOf(opener);
+
+  while (index !== -1) {
+    let depth = 1;
+    let cursor = index + opener.length;
+    while (cursor < source.length && depth > 0) {
+      if (source[cursor] === "{") {
+        depth += 1;
+      } else if (source[cursor] === "}") {
+        depth -= 1;
+      }
+      cursor += 1;
+    }
+    handlers.push(source.slice(index + opener.length, cursor - 1));
+    index = source.indexOf(opener, cursor);
+  }
+
+  return handlers;
+}
+
 describe("clean-mode prep sends every command the selection asks for", () => {
   test("a timed-out suction command does not swallow the mop setting", async () => {
     // The #8 scenario, exactly: Vacuum selected, fan command times out.
@@ -165,6 +196,14 @@ describe("clean-mode prep sends every command the selection asks for", () => {
     // not return out of the middle of itself. A `return` between the first
     // command and the last is how the water command was lost in the first
     // place, and it would be lost again the same way.
+    //
+    // This used to read only the classic half, anchored on a
+    // `const failedCommands = []` line that no longer exists — the failure
+    // bookkeeping moved to the top of the method so both dialect branches share
+    // it. The rule now covers every catch handler in the method, which is what
+    // it should always have said: the B01 branch sends the Q7's clean type the
+    // same way, and a `return` in its first catch would lose the suction level
+    // for exactly the same reason.
     const source = fs.readFileSync(
       path.join(__dirname, "..", "roborockLib", "roborockAPI.js"),
       "utf8"
@@ -172,16 +211,11 @@ describe("clean-mode prep sends every command the selection asks for", () => {
     const start = source.indexOf("async applyMatterCleanModeSettings(");
     expect(start).toBeGreaterThan(-1);
 
-    // The classic (non-B01) half of the method: everything after the B01
-    // branch returns, which is a legitimate early exit for a whole protocol.
     const body = source.slice(start, source.indexOf("\n  }", start));
-    const classicHalf = body.slice(body.indexOf("const failedCommands = []"));
-    expect(classicHalf.length).toBeGreaterThan(0);
-
-    const catchBlocks = classicHalf.split("} catch (error) {").slice(1);
-    expect(catchBlocks.length).toBeGreaterThan(1);
-    for (const block of catchBlocks) {
-      const handler = block.slice(0, block.indexOf("\n      }"));
+    const catchBlocks = collectCatchHandlers(body);
+    // Both dialect branches, at least one handler per command they send.
+    expect(catchBlocks.length).toBeGreaterThan(3);
+    for (const handler of catchBlocks) {
       expect(handler).not.toMatch(/\breturn\b/);
     }
   });

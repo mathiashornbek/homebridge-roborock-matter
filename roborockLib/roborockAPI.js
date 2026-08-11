@@ -262,6 +262,10 @@ const SIMPLE_VACUUM_COMMANDS = new Set([
 
 const TRANSIENT_ERROR_LOG_THROTTLE_MS = 6 * 60 * 60 * 1000;
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
+// Reserved out of the caller's prep window so the sequence ends by itself and
+// reports what it could not confirm, rather than being cut off mid-command with
+// nothing said. See createMatterCleanModePrepBudget.
+const MATTER_CLEAN_MODE_PREP_MARGIN_MS = 250;
 // How long to wait before retrying to cache rooms for a saved map that did not
 // return room segments. Retrying lets newly named/segmented maps appear without
 // switching maps on every poll cycle.
@@ -2351,10 +2355,86 @@ class Roborock {
     return { waitForResult, commandOptions };
   }
 
+  /**
+   * The caller races this whole sequence against a single window and sends the
+   * start command the moment it closes, so a command that is merely *started*
+   * inside the window buys nothing. Each command therefore gets whatever is
+   * left of the window rather than a fixed per-command timeout.
+   *
+   * @param {number | undefined} prepWindowMs The caller's window, if it has one.
+   * @returns {{ timeoutFor: () => number | null }} `timeoutFor` returns the
+   *   timeout to give the next command, or `null` when there is no time left —
+   *   in which case the command must be skipped and reported, never sent. A
+   *   non-positive `requestTimeoutMs` is not an override to messageQueueHandler:
+   *   it silently restores that layer's own ten-second default, which is four
+   *   times the whole window.
+   */
+  createMatterCleanModePrepBudget(prepWindowMs) {
+    const windowMs = Number(prepWindowMs);
+    if (!Number.isFinite(windowMs) || windowMs <= 0) {
+      return { timeoutFor: () => MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS };
+    }
+
+    const deadline = Date.now() + windowMs - MATTER_CLEAN_MODE_PREP_MARGIN_MS;
+
+    return {
+      timeoutFor: () => {
+        const remaining = deadline - Date.now();
+        return remaining > 0
+          ? Math.min(MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS, remaining)
+          : null;
+      },
+    };
+  }
+
+  /**
+   * Every way the prep can end without the robot having confirmed the mode the
+   * user picked reports through here, at warn.
+   *
+   * At warn level on purpose. The clean is about to start and the Matter tile
+   * will report the mode the user selected, so a silent partial apply leaves
+   * the tile stating something the robot is not doing. That mismatch is exactly
+   * what took two rounds of #8 to pin down, and the log is where the next
+   * person will look. Reaching it from one place is what stops a new exit path
+   * from being silent by omission — the "no water command detected" branch was
+   * debug-only, and that is precisely the case where the mop ran anyway.
+   *
+   * @param {string} duid
+   * @param {string[]} unconfirmedSettings
+   */
+  reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings) {
+    if (unconfirmedSettings.length === 0) {
+      return;
+    }
+
+    this.log.warn(
+      `Roborock did not confirm the ${[...new Set(unconfirmedSettings)].join(" and ")} for ${this.describeDevice(duid)} before starting; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
+    );
+  }
+
   async applyMatterCleanModeSettings(duid, settings, options = {}) {
-    const { commandOptions } = this.buildCommandOptions(options, {
+    const { prepWindowMs, ...commandInput } = options ?? {};
+    const budget = this.createMatterCleanModePrepBudget(prepWindowMs);
+    const { commandOptions } = this.buildCommandOptions(commandInput, {
       requestTimeoutMs: MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS,
     });
+    const unconfirmedSettings = [];
+
+    // Returns null when the window has closed. The caller must then skip the
+    // command: sending it would hand the transport a timeout nobody is waiting
+    // for, which is the shape of the original defect.
+    const takeCommandOptions = (label) => {
+      const requestTimeoutMs = budget.timeoutFor();
+      if (requestTimeoutMs === null) {
+        unconfirmedSettings.push(label);
+        this.log.debug(
+          `Matter clean mode ${label} for ${duid} was not sent: the prep window closed before its turn.`
+        );
+        return null;
+      }
+
+      return { ...commandOptions, requestTimeoutMs };
+    };
 
     // Q7/B01: the robot has a native clean-type concept (vacuum / mop /
     // vacuum+mop via the `mode` property), so apply the Matter selection
@@ -2375,47 +2455,59 @@ class Roborock {
       // a valid selection (vacuum), and vacuum.command's default branch tests
       // `if (value && ...)` — a bare 0 is falsy and would silently be sent as
       // an empty parameter list, which b01Q7Adapter then drops entirely.
+      // The clean type carries the user's choice on this dialect, so it goes
+      // first and gets the window before the suction level, which is only a
+      // level inside the chosen type.
       if (Number.isInteger(settings?.cleanMode)) {
-        try {
-          await this.runMatterSettingCommand(
-            duid,
-            "set_clean_type",
-            [settings.cleanMode],
-            commandOptions
-          );
-        } catch (error) {
-          this.rememberUnsupportedMatterSettingCommand(
-            duid,
-            "set_clean_type",
-            error
-          );
-          this.log.debug(
-            `B01 clean-type command failed for ${duid}; continuing with the start command. ${error.message || error}`
-          );
+        const cleanTypeOptions = takeCommandOptions("clean type");
+        if (cleanTypeOptions) {
+          try {
+            await this.runMatterSettingCommand(
+              duid,
+              "set_clean_type",
+              [settings.cleanMode],
+              cleanTypeOptions
+            );
+          } catch (error) {
+            this.rememberUnsupportedMatterSettingCommand(
+              duid,
+              "set_clean_type",
+              error
+            );
+            unconfirmedSettings.push("clean type");
+            this.log.debug(
+              `B01 clean-type command failed for ${duid}; continuing with the start command. ${error.message || error}`
+            );
+          }
         }
       }
 
       const fanPower = settings?.fanPower;
       if (Number.isInteger(fanPower) && fanPower !== 105) {
-        try {
-          await this.runMatterSettingCommand(
-            duid,
-            "set_custom_mode",
-            [fanPower],
-            commandOptions
-          );
-        } catch (error) {
-          this.rememberUnsupportedMatterSettingCommand(
-            duid,
-            "set_custom_mode",
-            error
-          );
-          this.log.debug(
-            `B01 suction command failed for ${duid}; continuing with the start command. ${error.message || error}`
-          );
+        const fanOptions = takeCommandOptions("suction level");
+        if (fanOptions) {
+          try {
+            await this.runMatterSettingCommand(
+              duid,
+              "set_custom_mode",
+              [fanPower],
+              fanOptions
+            );
+          } catch (error) {
+            this.rememberUnsupportedMatterSettingCommand(
+              duid,
+              "set_custom_mode",
+              error
+            );
+            unconfirmedSettings.push("suction level");
+            this.log.debug(
+              `B01 suction command failed for ${duid}; continuing with the start command. ${error.message || error}`
+            );
+          }
         }
       }
 
+      this.reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings);
       return;
     }
 
@@ -2436,28 +2528,43 @@ class Roborock {
     // races this whole sequence against its own prep timeout, which is what
     // bounds the delay. The early return was buying latency protection that
     // was already paid for one level up.
-    const failedCommands = [];
-
+    //
+    // Ordering alone was not enough, though, and skmzwanke's 3.4.8 log shows
+    // why: up to three commands are sent one after another, each with a
+    // two-second timeout, inside a window of 2500 ms. The water command was
+    // started but not finished when the window closed, so the start command
+    // still overtook the command carrying his "vacuum only" choice and the
+    // robot mopped. Sizing each command against what is LEFT of the window is
+    // what makes the order matter — the mode-carrying command now gets the
+    // window, and a cosmetic one that no longer fits is reported, not started.
     if (Number.isInteger(settings?.waterBoxMode)) {
       const waterCommands = this.getMatterWaterModeCommandCandidates(duid);
 
       if (waterCommands.length === 0) {
+        // Reached only when the plugin believes water is controllable — i.e.
+        // Apple Home is offering mop modes — but has no command left to send.
+        // That is the user's clean mode silently not happening, so it reports.
+        unconfirmedSettings.push("water mode");
         this.log.debug(
           `Matter clean mode requested water mode ${settings.waterBoxMode} for ${duid}, but no supported Roborock water command was detected.`
         );
       } else {
-        try {
-          await this.runFirstMatterSettingCommand(
-            duid,
-            waterCommands,
-            settings.waterBoxMode,
-            commandOptions
-          );
-        } catch (error) {
-          failedCommands.push("water mode");
-          this.log.debug(
-            `Matter clean mode water commands failed for ${duid}; continuing with start command. ${error.message || error}`
-          );
+        const waterOptions = takeCommandOptions("water mode");
+        if (waterOptions) {
+          try {
+            await this.runFirstMatterSettingCommand(
+              duid,
+              waterCommands,
+              settings.waterBoxMode,
+              waterOptions,
+              budget
+            );
+          } catch (error) {
+            unconfirmedSettings.push("water mode");
+            this.log.debug(
+              `Matter clean mode water commands failed for ${duid}; continuing with start command. ${error.message || error}`
+            );
+          }
         }
       }
     }
@@ -2466,36 +2573,30 @@ class Roborock {
       Number.isInteger(settings?.fanPower) &&
       this.getMatterCleanModeCapabilities(duid).canControlFanPower
     ) {
-      try {
-        await this.runMatterSettingCommand(
-          duid,
-          "set_custom_mode",
-          settings.fanPower,
-          commandOptions
-        );
-      } catch (error) {
-        this.rememberUnsupportedMatterSettingCommand(
-          duid,
-          "set_custom_mode",
-          error
-        );
-        failedCommands.push("suction level");
-        this.log.debug(
-          `Matter clean mode fan command failed for ${duid}; continuing with start command. ${error.message || error}`
-        );
+      const fanOptions = takeCommandOptions("suction level");
+      if (fanOptions) {
+        try {
+          await this.runMatterSettingCommand(
+            duid,
+            "set_custom_mode",
+            settings.fanPower,
+            fanOptions
+          );
+        } catch (error) {
+          this.rememberUnsupportedMatterSettingCommand(
+            duid,
+            "set_custom_mode",
+            error
+          );
+          unconfirmedSettings.push("suction level");
+          this.log.debug(
+            `Matter clean mode fan command failed for ${duid}; continuing with start command. ${error.message || error}`
+          );
+        }
       }
     }
 
-    // At warn level on purpose. The clean is about to start and the Matter
-    // tile will report the mode the user selected, so a silent partial apply
-    // leaves the tile stating something the robot is not doing. That mismatch
-    // is exactly what took two rounds of #8 to pin down, and the log is where
-    // the next person will look.
-    if (failedCommands.length > 0) {
-      this.log.warn(
-        `Roborock did not confirm the ${failedCommands.join(" and ")} for ${this.describeDevice(duid)} before starting; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
-      );
-    }
+    this.reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings);
   }
 
   getMatterWaterModeCommandCandidates(duid) {
@@ -2533,12 +2634,38 @@ class Roborock {
     );
   }
 
-  async runFirstMatterSettingCommand(duid, commands, value, options = {}) {
+  async runFirstMatterSettingCommand(
+    duid,
+    commands,
+    value,
+    options = {},
+    budget = null
+  ) {
     let lastError = null;
 
-    for (const command of commands) {
+    for (const [attempt, command] of commands.entries()) {
+      // Each fallback costs another timeout out of the same window, so it is
+      // re-sized here too. The first attempt keeps the timeout the caller
+      // already budgeted for it.
+      let attemptOptions = options;
+      if (budget && attempt > 0) {
+        const requestTimeoutMs = budget.timeoutFor();
+        if (requestTimeoutMs === null) {
+          this.log.debug(
+            `Matter clean mode command ${command} was not tried for ${duid}: the prep window closed before the fallback's turn.`
+          );
+          break;
+        }
+        attemptOptions = { ...options, requestTimeoutMs };
+      }
+
       try {
-        await this.runMatterSettingCommand(duid, command, value, options);
+        await this.runMatterSettingCommand(
+          duid,
+          command,
+          value,
+          attemptOptions
+        );
         return;
       } catch (error) {
         lastError = error;

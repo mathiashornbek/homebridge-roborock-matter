@@ -1057,6 +1057,11 @@ describe("Matter operational state", () => {
         preferLocal: true,
         allowOfflineCloudSend: true,
         requestTimeoutMs: 2000,
+        // The window this test then advances past. It is handed over so the
+        // protocol layer can size each command against what is left of it
+        // instead of starting one this race will not wait for — see
+        // __tests__/clean-mode-prep-fits-its-window.test.js.
+        prepWindowMs: 2500,
       }
     );
     expect(platform.log.warn).toHaveBeenCalledWith(

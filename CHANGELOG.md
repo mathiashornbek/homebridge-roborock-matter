@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.4.14
+
+**A "vacuum only" room clean could still mop, because the command carrying that choice was started inside the prep window but not finished inside it.** 3.4.8 fixed the ordering — the water command goes first and no failure cancels a later command — and skmzwanke's log from the fixed version shows why ordering alone was not enough:
+
+```
+9:44:57  Applying Vacuum mode to Weebo before starting.
+9:45:00  Unable to apply Vacuum mode to Weebo before starting; continuing with
+         the start command. Matter clean mode prep timed out after 2500 ms.
+9:45:00  Matter service area clean command for Weebo was acknowledged ...
+```
+
+The prep sequence sends up to three commands one after another, each with a two-second timeout, inside a window of 2500 ms that the caller races the whole sequence against before sending the start command. Three seconds of commands do not fit in two and a half. So the command carrying his "vacuum only" choice was merely _in flight_ when the window closed, the start command overtook it, and his Saros 10 mopped the room he had asked to be vacuumed — the same outcome as before the fix, arrived at by the clock instead of by an early return.
+
+- **Each command is now sized against what is left of the window**, not given a fixed timeout. The command that carries the user's clean mode goes first and gets the window; a cosmetic one that no longer fits is reported rather than started. The sequence ends by itself instead of being cut off mid-command.
+- **A command is never sent with a non-positive timeout.** Below the prep, a timeout of zero or less is not an override — it silently restores the transport's own ten-second default, four times the whole window.
+- **Every way the prep can end without the robot having confirmed the selected mode now reports at warn, from one place.** One of those ways was debug-only: when the plugin believes water is controllable — so Apple Home is offering "Vacuum" and "Vacuum and mop" — but has no water command left to send, the mop ran anyway and nothing above debug said so.
+- **The Q7/B01 branch was silent about all of this** and now reports the same way. Its clean type is the same kind of command and it had the same arithmetic problem.
+
+`__tests__/clean-mode-prep-fits-its-window.test.js` holds the rule over both dialects: no command may be started that cannot finish inside the window the caller is waiting on, and the window is handed down from the one constant that defines it rather than restated. Verified red against 3.4.13, where the suction command is started at t=2000 with a two-second timeout while the start command goes out at t=2500.
+
 ## 3.4.13
 
 **Nothing in this release changes what the plugin does. It removes things that were never doing anything, and two of them were actively lying.**
