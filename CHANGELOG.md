@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.4.15
+
+**The clean-mode prep was never losing its window to the commands it sends. It was losing it to a read nobody was waiting for.** skmzwanke's log from 3.4.14 (#8) has the whole thing in ten seconds:
+
+```
+1:09:11  Applying Vacuum + Mop mode to Weebo before starting.
+1:09:13  Unable to apply Vacuum + Mop mode ...; prep timed out after 2500 ms.
+1:09:13  Matter service area clean command ... acknowledged in 2589 ms via cloud
+1:09:21  Roborock did not confirm the water mode and suction level for Weebo
+```
+
+The water command was acknowledged over the cloud in about a tenth of a second. The report of its failure arrived eight seconds after the clean had already started — ten seconds after the prep began, which is the transport's default timeout and nothing else in this codebase.
+
+After every `set_*` command, `vacuum.command` awaited the paired `get_*` to refresh this plugin's own state cache. That read was issued **with no options at all**: not the caller's transport, so it went out over the LAN of a user who has `preferCloudForMatterCommands` on and whose LAN times out every request at ten seconds; and not the caller's timeout, so it ignored the 2500 ms budget the two previous releases went to such lengths to compute. The window was spent before the fallback water command — the one that would have worked — ever got its turn.
+
+- **A command is finished when the robot acknowledges it.** The state refresh that follows is bookkeeping: it is no longer awaited, it can no longer fail the command, and it can no longer delay one.
+- **It inherits the caller's transport, never the caller's deadline.** A caller that asked for cloud does not get a local request it never asked for.
+- **`getParameter` now carries the caller's options on every branch.** Only the `get_status` branch did, by hand; every other one silently reverted to the local transport and the ten-second default.
+- **One place decides which options travel with a request.** Two hand-kept copies of that list is what let the refresh drift away from the command that triggered it.
+- **A command with no `set` in its name is no longer re-sent to the robot as its own "refresh"** — `parameter.replace("set", "get")` returns the command unchanged for those.
+
+`__tests__/command-refresh-stays-out-of-the-callers-budget.test.js` holds the rule over the source — no request issued on a caller's behalf may bypass the one option-carrying helper — and reproduces #8 end to end through the real `vacuum` class. Verified red against 3.4.14: 9 of 11 failed, the command took 3041 ms instead of resolving on its acknowledgement, and the fallback water command was never sent at all.
+
+**Note for anyone reading the older prep tests:** they stub `api.vacuums[duid].command` wholesale. That is exactly why ten seconds could hide inside it for two releases. This one does not.
+
 ## 3.4.14
 
 **A "vacuum only" room clean could still mop, because the command carrying that choice was started inside the prep window but not finished inside it.** 3.4.8 fixed the ordering — the water command goes first and no failure cancels a later command — and skmzwanke's log from the fixed version shows why ordering alone was not enough:

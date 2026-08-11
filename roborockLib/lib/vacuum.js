@@ -17,6 +17,44 @@ const STATUS_POLL_MIN_INTERVAL_MS = 60 * 1000;
 const MAX_REPORTED_STATUS_VALUE_LENGTH = 60;
 
 /**
+ * The one list of caller options that travel with a request to the queue.
+ *
+ * Both `command` and `getParameter` derive theirs here on purpose. A
+ * hand-written copy of a list like this in two places is the fault shape this
+ * project keeps finding: the copies drift, and the one nobody looked at goes
+ * on sending requests the caller never asked for.
+ *
+ * @param {{ preferCloud?: boolean, preferLocal?: boolean, allowOfflineCloudSend?: boolean, requestTimeoutMs?: number }} [options]
+ * @returns {{ preferCloud?: boolean, preferLocal?: boolean, allowOfflineCloudSend?: boolean, requestTimeoutMs?: number }}
+ */
+function buildForwardedRequestOptions(options = {}) {
+  /** @type {{ preferCloud?: boolean, preferLocal?: boolean, allowOfflineCloudSend?: boolean, requestTimeoutMs?: number }} */
+  const requestOptions = {};
+
+  if (options.preferCloud) {
+    requestOptions.preferCloud = true;
+  }
+  if (options.preferLocal) {
+    requestOptions.preferLocal = true;
+  }
+  if (options.allowOfflineCloudSend) {
+    requestOptions.allowOfflineCloudSend = true;
+  }
+  // A non-positive or non-finite timeout is not an override to
+  // messageQueueHandler — it silently restores that layer's ten-second
+  // default. Only a usable budget is forwarded.
+  if (
+    typeof options.requestTimeoutMs === "number" &&
+    Number.isFinite(options.requestTimeoutMs) &&
+    options.requestTimeoutMs > 0
+  ) {
+    requestOptions.requestTimeoutMs = options.requestTimeoutMs;
+  }
+
+  return requestOptions;
+}
+
+/**
  * Render a `get_status` value for a log line. The old per-attribute warning
  * interpolated the raw value, so an object arrived as the useless
  * `[object Object]` — visible in skmzwanke's log for `cleaning_info`, which is
@@ -154,23 +192,7 @@ class vacuum {
 
   async command(duid, parameter, value, options = {}) {
     try {
-      const requestOptions = {};
-      if (options.preferCloud) {
-        requestOptions.preferCloud = true;
-      }
-      if (options.preferLocal) {
-        requestOptions.preferLocal = true;
-      }
-      if (options.allowOfflineCloudSend) {
-        requestOptions.allowOfflineCloudSend = true;
-      }
-      if (
-        typeof options.requestTimeoutMs === "number" &&
-        Number.isFinite(options.requestTimeoutMs) &&
-        options.requestTimeoutMs > 0
-      ) {
-        requestOptions.requestTimeoutMs = options.requestTimeoutMs;
-      }
+      const requestOptions = buildForwardedRequestOptions(options);
       const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const sendCommandRequest = (method, params) =>
         hasRequestOptions
@@ -298,7 +320,14 @@ class vacuum {
           this.adapter.log.debug(
             `Command: ${parameter} with value: ${mapId} result: ${result}`
           );
-          return await this.getParameter(duid, "get_room_mapping");
+          // The caller is waiting for this mapping, so it stays awaited — but
+          // it is still the caller's request and carries the caller's options.
+          return await this.getParameter(
+            duid,
+            "get_room_mapping",
+            undefined,
+            options
+          );
         }
         case "set_water_box_distance_off": {
           const mappedValue = ((value - 1) / (30 - 1)) * (60 - 205) + 205;
@@ -326,9 +355,7 @@ class vacuum {
               `Command: ${parameter} with value: ${JSON.stringify(value)} result: ${result}`
             );
 
-            // this is needed to update the states instantly after sending a command
-            const getCommand = parameter.replace("set", "get");
-            await this.getParameter(duid, getCommand);
+            this.refreshStateAfterCommand(duid, parameter, options);
             return result;
           } else {
             const result = await sendCommandRequest(parameter, []);
@@ -342,6 +369,55 @@ class vacuum {
         throw error;
       }
     }
+  }
+
+  /**
+   * Refresh this plugin's own state cache after a `set_*` command. Bookkeeping,
+   * not part of the command.
+   *
+   * A command is finished when the robot acknowledges it. The paired `get_*`
+   * that follows only updates state objects on this side — but it used to be
+   * awaited inside the caller's latency budget AND issued with no options at
+   * all, so it reverted to the local transport and the ten-second default no
+   * matter what the caller had asked for.
+   *
+   * skmzwanke's 3.4.14 log (#8) is that arithmetic in the field. His water
+   * command was acknowledged over the cloud in about a tenth of a second
+   * inside a 2500 ms clean-mode window; the refresh then went out over a LAN
+   * he had configured the plugin away from and hung for ten seconds. The
+   * window closed, the start command overtook his "Vacuum" choice, and the
+   * fallback water command was never tried — all of it spent on a read nobody
+   * was waiting for. Two rounds of fixes had sized the *commands* against the
+   * window while this read sat outside the accounting entirely.
+   *
+   * So it inherits the caller's transport, never the caller's deadline, is not
+   * awaited, and cannot fail the command.
+   *
+   * @param {string} duid
+   * @param {string} parameter The command that was just acknowledged.
+   * @param {object} options The caller's command options.
+   */
+  refreshStateAfterCommand(duid, parameter, options) {
+    const getCommand = parameter.replace("set", "get");
+    // Nothing to read back: a command with no `set` in its name would other-
+    // wise be re-sent to the robot as its own "refresh".
+    if (getCommand === parameter) {
+      return;
+    }
+
+    // The deadline is dropped on purpose: it was the caller's budget for the
+    // command, and the refresh is no longer inside it.
+    const { requestTimeoutMs, ...transport } =
+      buildForwardedRequestOptions(options);
+    void requestTimeoutMs;
+
+    Promise.resolve()
+      .then(() => this.getParameter(duid, getCommand, undefined, transport))
+      .catch((error) => {
+        this.adapter.log.debug(
+          `State refresh ${getCommand} after ${parameter} failed for ${describeDevice(this.adapter, duid)}; the command itself was acknowledged. ${error?.message || error}`
+        );
+      });
   }
 
   async getServerTimers(duid) {
@@ -376,14 +452,36 @@ class vacuum {
     }
     let mode;
 
+    // Every request below is issued on the caller's behalf, so it carries the
+    // caller's transport and timeout. Until 3.4.15 only the `get_status` branch
+    // did, by hand, and every other branch reverted to the local transport and
+    // the ten-second default however the caller had been configured (#8).
+    const requestOptions = buildForwardedRequestOptions(options);
+    /**
+     * @param {string} method
+     * @param {unknown} params
+     * @param {boolean} [secure]
+     * @param {boolean} [photo]
+     */
+    const sendParameterRequest = (
+      method,
+      params,
+      secure = false,
+      photo = false
+    ) =>
+      this.adapter.messageQueueHandler.sendRequest(
+        duid,
+        method,
+        params,
+        secure,
+        photo,
+        requestOptions
+      );
+
     try {
       if (parameter == "get_network_info") {
         mode = parameter;
-        const networkInfo = await this.adapter.messageQueueHandler.sendRequest(
-          duid,
-          parameter,
-          []
-        );
+        const networkInfo = await sendParameterRequest(parameter, []);
 
         for (const attribute in networkInfo) {
           if (
@@ -400,11 +498,7 @@ class vacuum {
         }
       } else if (parameter == "get_consumable") {
         const consumables = (
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            "get_consumable",
-            []
-          )
+          await sendParameterRequest("get_consumable", [])
         )[0];
 
         for (const consumable in consumables) {
@@ -440,19 +534,10 @@ class vacuum {
         if (force || this.shouldPollStatusNow(duid)) {
           this.markStatusPolled(duid);
 
-          // const deviceStatus = await this.adapter.messageQueueHandler.sendRequest(duid, "get_status", []);
-          const requestOptions = options.preferCloud
-            ? { preferCloud: true }
-            : {};
-          const deviceStatus =
-            await this.adapter.messageQueueHandler.sendRequest(
-              duid,
-              "get_prop",
-              ["get_status"],
-              false,
-              false,
-              requestOptions
-            );
+          // const deviceStatus = await sendParameterRequest("get_status", []);
+          const deviceStatus = await sendParameterRequest("get_prop", [
+            "get_status",
+          ]);
 
           await this.updateDiagnosticSnapshot(duid, "lastStatus", {
             method: "get_status",
@@ -601,21 +686,13 @@ class vacuum {
           this.adapter.manageDeviceIntervals(duid);
         }
       } else if (parameter == "get_room_mapping") {
-        const deviceStatus = await this.adapter.messageQueueHandler.sendRequest(
-          duid,
-          "get_status",
-          []
-        );
+        const deviceStatus = await sendParameterRequest("get_status", []);
         const mapStatus = Array.isArray(deviceStatus)
           ? deviceStatus[0]?.["map_status"]
           : undefined;
         // to get the currently selected map perform bitwise right shift
         const roomFloor = typeof mapStatus === "number" ? mapStatus >> 2 : -1;
-        const mappedRooms = await this.adapter.messageQueueHandler.sendRequest(
-          duid,
-          "get_room_mapping",
-          []
-        );
+        const mappedRooms = await sendParameterRequest("get_room_mapping", []);
         if (typeof this.adapter.updateRoomMappingCache === "function") {
           this.adapter.updateRoomMappingCache(duid, roomFloor, mappedRooms);
         }
@@ -672,11 +749,7 @@ class vacuum {
 
         return mappedRooms;
       } else if (parameter == "get_multi_maps_list") {
-        const mapList = await this.adapter.messageQueueHandler.sendRequest(
-          duid,
-          "get_multi_maps_list",
-          []
-        );
+        const mapList = await sendParameterRequest("get_multi_maps_list", []);
         const mapInfo = mapList[0]?.map_info || [];
         const maps = {};
 
@@ -731,12 +804,7 @@ class vacuum {
 
         return mapInfo;
       } else if (parameter == "get_fw_features") {
-        const firmwareFeatures =
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            parameter,
-            []
-          );
+        const firmwareFeatures = await sendParameterRequest(parameter, []);
         for (const firmwareFeature in firmwareFeatures) {
           const featureID = firmwareFeatures[firmwareFeature];
 
@@ -770,12 +838,7 @@ class vacuum {
         }
       } else if (parameter == "get_server_timer") {
         if (this.adapter.config.debug) {
-          const serverTimers =
-            await this.adapter.messageQueueHandler.sendRequest(
-              duid,
-              parameter,
-              []
-            );
+          const serverTimers = await sendParameterRequest(parameter, []);
           await this.updateDiagnosticSnapshot(duid, "lastServerTimer", {
             method: parameter,
             response: serverTimers,
@@ -786,11 +849,7 @@ class vacuum {
         }
       } else if (parameter == "get_timer") {
         if (this.adapter.config.debug) {
-          const timers = await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            parameter,
-            []
-          );
+          const timers = await sendParameterRequest(parameter, []);
           await this.updateDiagnosticSnapshot(duid, "lastTimer", {
             method: parameter,
             response: timers,
@@ -800,14 +859,12 @@ class vacuum {
           );
         }
       } else if (parameter == "get_photo") {
-        const photoresponse =
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            "get_photo",
-            attribute,
-            true,
-            true
-          );
+        const photoresponse = await sendParameterRequest(
+          "get_photo",
+          attribute,
+          true,
+          true
+        );
 
         if (this.isGZIP(photoresponse)) {
           this.adapter.log.debug(`gzipped photo found.`);
@@ -857,23 +914,14 @@ class vacuum {
         parameter == "get_dust_collection_mode"
       ) {
         const attribute_val = JSON.stringify(
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            parameter,
-            {}
-          )
+          await sendParameterRequest(parameter, {})
         );
         this.adapter.setStateAsync(
           `Devices.${duid}.commands.${parameter.replace("get", "set")}`,
           { val: attribute_val, ack: true }
         );
       } else if (parameter == "app_get_dryer_setting") {
-        const attribute_val =
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            parameter,
-            {}
-          );
+        const attribute_val = await sendParameterRequest(parameter, {});
         const actualVal = JSON.stringify({
           on: { dry_time: attribute_val.on.dry_time },
           status: attribute_val.status,
@@ -884,12 +932,7 @@ class vacuum {
         );
       } else if (this.parameterFolders[parameter]) {
         mode = parameter.substring(4);
-        const attribute_val =
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            parameter,
-            []
-          );
+        const attribute_val = await sendParameterRequest(parameter, []);
 
         if (typeof attribute_val[0] == "object") {
           attribute_val[0] = JSON.stringify(attribute_val[0]);
@@ -901,12 +944,7 @@ class vacuum {
         });
       } else {
         // unknown parameter
-        const unknown_parameter_val =
-          await this.adapter.messageQueueHandler.sendRequest(
-            duid,
-            parameter,
-            []
-          );
+        const unknown_parameter_val = await sendParameterRequest(parameter, []);
 
         // this.adapter.setStateAsync("Devices." + duid + "." + targetFolder + "." + mode, { val: attribute_val[0], ack: true });
         if (typeof unknown_parameter_val == "object") {
