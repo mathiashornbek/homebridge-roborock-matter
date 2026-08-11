@@ -635,7 +635,12 @@ describe("Roborock API model and diagnostics helpers", () => {
     );
   });
 
-  test("skips remaining Matter clean mode prep when fan command times out", async () => {
+  // Was "skips remaining Matter clean mode prep when fan command times out",
+  // which pinned the behaviour that lost skmzwanke's mop setting in #8: the
+  // fan command timed out and the water command — the one that decides whether
+  // the robot mops at all — was never sent. The prep now runs to the end, and
+  // the caller's own prep timeout is what bounds the delay.
+  test("still sends the water command when the fan command times out", async () => {
     const log = createLog();
     const api = createRoborock({ log });
     await api.setStateAsync("HomeData", {
@@ -669,15 +674,22 @@ describe("Roborock API model and diagnostics helpers", () => {
       { waitForResult: true }
     );
 
-    expect(api.vacuums["device-1"].command).toHaveBeenCalledTimes(1);
+    // The water command goes out first and the fan command still follows it,
+    // even though the water command timed out as well. (Only the first water
+    // candidate is tried: falling back to the next one after a timeout is a
+    // separate rule, pinned by the test below.)
+    expect(
+      api.vacuums["device-1"].command.mock.calls.map((call) => call[1])
+    ).toEqual(["set_water_box_mode", "set_custom_mode"]);
     expect(api.vacuums["device-1"].command).toHaveBeenCalledWith(
       "device-1",
       "set_custom_mode",
       104,
       { waitForResult: true, requestTimeoutMs: 2000, throwOnError: true }
     );
-    expect(log.debug).toHaveBeenCalledWith(
-      expect.stringContaining("skipping remaining clean-mode prep")
+    // Announced at warn level: the tile is about to claim the selected mode.
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("may not match the mode selected")
     );
   });
 

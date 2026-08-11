@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.4.8
+
+**Selecting "Vacuum" and getting a vacuum-and-mop was not a display bug — one timed-out command cancelled the one that mattered.** skmzwanke reported in [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) that he selected Vacuum for a single room and the robot mopped it anyway, and his 3.4.5 log names the cause outright.
+
+On a v1 robot the difference between "Vacuum" and "Vacuum and mop" **is** the water-box mode: choosing Vacuum sends water-box OFF. Fan power only picks a suction level within the chosen mode. The prep sequence sent fan power first and, if that command timed out, returned — so the water command was never sent at all. In his log, `set_custom_mode` timed out after two seconds, `set_water_box_custom_mode` never appeared, and the robot kept the mopping setting it already had from the Roborock app. A cosmetic command that did not answer in time cancelled the one carrying the user's actual choice.
+
+- **The water command now goes out first, and no command in the sequence is cancelled by another's failure.** Dropping the early return cannot delay the start: the caller already races the whole prep against its own timeout, so the early return was buying latency protection that was paid for one level up.
+- **A partial apply is now announced at warn level**, naming the robot and what was not confirmed. It was a debug line before, which meant that on a default log level the robot simply did the wrong job in silence while the Matter tile reported the mode that had been selected. That mismatch took two rounds of #8 to pin down.
+- **The rule is enumerated over the sequence, not over the two commands in it today:** no clean-mode prep command may return out of the middle of the sequence. A third setting added later is covered by construction.
+
 ## 3.4.7
 
 **The diagnostic report told Q7 owners their robot had tried to reach the LAN and failed. It never tried.** Following [#7](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/7), jawnlydon unpaired his robot from Apple Home, uninstalled the plugin, reinstalled it and paired fresh — and his report still read `markedRemote: true`, `remoteReason: marked-remote-after-connect-failure`, `connectionStatus: Cloud fallback`, "usually because LAN TCP was not connected at that moment". His `roborock.vacuum.sc05` speaks the B01 protocol, which has no LAN request surface at all: the plugin marks these robots cloud-only at startup precisely so it never opens a local socket to them. Every line above described a network fault that could not occur, and he spent an evening chasing it.

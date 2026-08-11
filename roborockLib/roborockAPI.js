@@ -2355,6 +2355,49 @@ class Roborock {
       return;
     }
 
+    // The water command goes first, and no failure below cancels a later
+    // command.
+    //
+    // On a v1 robot the difference between "Vacuum" and "Vacuum and mop" IS
+    // the water-box mode: selecting Vacuum sends water-box OFF. Fan power is a
+    // suction level *within* the chosen mode. The fan command used to run
+    // first and, on timeout, return — skipping the water command entirely. So
+    // skmzwanke selected Vacuum in Apple Home, the fan command timed out after
+    // two seconds, the water command was never sent, and his Saros 10 ran a
+    // vacuum-and-mop over the room he had asked to be vacuumed (#8). A
+    // cosmetic command that did not answer in time cancelled the one that
+    // carried the user's actual choice.
+    //
+    // Dropping the early return cannot run the start command late: the caller
+    // races this whole sequence against its own prep timeout, which is what
+    // bounds the delay. The early return was buying latency protection that
+    // was already paid for one level up.
+    const failedCommands = [];
+
+    if (Number.isInteger(settings?.waterBoxMode)) {
+      const waterCommands = this.getMatterWaterModeCommandCandidates(duid);
+
+      if (waterCommands.length === 0) {
+        this.log.debug(
+          `Matter clean mode requested water mode ${settings.waterBoxMode} for ${duid}, but no supported Roborock water command was detected.`
+        );
+      } else {
+        try {
+          await this.runFirstMatterSettingCommand(
+            duid,
+            waterCommands,
+            settings.waterBoxMode,
+            commandOptions
+          );
+        } catch (error) {
+          failedCommands.push("water mode");
+          this.log.debug(
+            `Matter clean mode water commands failed for ${duid}; continuing with start command. ${error.message || error}`
+          );
+        }
+      }
+    }
+
     if (
       Number.isInteger(settings?.fanPower) &&
       this.getMatterCleanModeCapabilities(duid).canControlFanPower
@@ -2372,40 +2415,21 @@ class Roborock {
           "set_custom_mode",
           error
         );
-        if (this.isMatterSettingTimeoutError(error)) {
-          this.log.debug(
-            `Matter clean mode fan command timed out for ${duid}; skipping remaining clean-mode prep and continuing with start command. ${error.message || error}`
-          );
-          return;
-        }
+        failedCommands.push("suction level");
         this.log.debug(
           `Matter clean mode fan command failed for ${duid}; continuing with start command. ${error.message || error}`
         );
       }
     }
 
-    if (!Number.isInteger(settings?.waterBoxMode)) {
-      return;
-    }
-
-    const waterCommands = this.getMatterWaterModeCommandCandidates(duid);
-    if (waterCommands.length === 0) {
-      this.log.debug(
-        `Matter clean mode requested water mode ${settings.waterBoxMode} for ${duid}, but no supported Roborock water command was detected.`
-      );
-      return;
-    }
-
-    try {
-      await this.runFirstMatterSettingCommand(
-        duid,
-        waterCommands,
-        settings.waterBoxMode,
-        commandOptions
-      );
-    } catch (error) {
-      this.log.debug(
-        `Matter clean mode water commands failed for ${duid}; continuing with start command. ${error.message || error}`
+    // At warn level on purpose. The clean is about to start and the Matter
+    // tile will report the mode the user selected, so a silent partial apply
+    // leaves the tile stating something the robot is not doing. That mismatch
+    // is exactly what took two rounds of #8 to pin down, and the log is where
+    // the next person will look.
+    if (failedCommands.length > 0) {
+      this.log.warn(
+        `Roborock did not confirm the ${failedCommands.join(" and ")} for ${this.describeDevice(duid)} before starting; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
       );
     }
   }
@@ -2519,11 +2543,6 @@ class Roborock {
       "invalid method",
       "unknown parameter",
     ].some((pattern) => message.includes(pattern));
-  }
-
-  isMatterSettingTimeoutError(error) {
-    const message = `${error?.message || error || ""}`.toLowerCase();
-    return message.includes("request") && message.includes("timed out after");
   }
 
   /**
