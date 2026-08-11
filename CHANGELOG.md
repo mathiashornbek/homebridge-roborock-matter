@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.4.10
+
+**The Q7 position that never resolved to a room is not a position at all.** 3.4.9 asked the two Q7s to report the range their room outlines occupy, and they answered: Garage sat in a map spanning cells 52–171 by 43–187, 1. Sal in one spanning 38–293 by 90–227. Back-computing through each map's own origin and resolution gives the same coordinate for both — exactly (1100.0, 1100.0), on two robots, two maps, and twelve minutes of active cleaning. A number that identical is arithmetic, not a place a robot stood, which means live-room tracking on these models has never worked from that field.
+
+- **The miss line now surveys the payload rather than asserting anything about it.** It prints the size of every top-level field and every scalar inside the small ones, keyed by field path. Two consecutive lines are then a diff: the value that changed while the robot was driving is the position, and the submessage that grew is the trail behind it.
+- **Varints are surveyed, not just floats.** The pose message carries an `update` flag alongside its coordinates, so a float-only dump would have printed two plausible-looking numbers and hidden the field saying they were stale.
+- **The survey descends one level.** A pose trail's last point is by construction where the robot is now, and repeated paths overwrite, so the end of a trail lands in the log under a stable key.
+- **A bare scalar on the map itself is now visible.** The parse loop only ever descended into submessages, so a position stored as a plain float would not have appeared anywhere.
+- **It is bounded and it cannot throw.** The occupancy grid is measured rather than walked, the scalar count is capped, recursion is capped, and bytes that turn out not to be protobuf are swallowed. A diagnostic must never be the reason a robot stops reporting its room.
+
+This changes no behaviour. It exists because guessing another field number would have been the third guess in a row on this code path, and the robots were running.
+
 ## 3.4.9
 
 - **A live-room miss now says where the rooms actually are.** Two Q7s produced position cells around 22,000 while a Roborock map is a couple of thousand cells across at most — so those robots were never "between rooms", their computed position was nowhere near the map. One of them reported x exactly equal to y, which is arithmetic rather than a place a robot stood. The position on its own cannot separate a unit mismatch from a wrong origin, so the miss line now carries the range the room outlines occupy plus the map origin and resolution the transform used. This changes no behaviour; it turns the next log from a hypothesis into a measurement. The bounding box is computed only on the failure path, so a run that resolves every position pays nothing.

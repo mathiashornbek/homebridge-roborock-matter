@@ -186,6 +186,14 @@ function readVarint(buf, pos) {
   throw new Error("Malformed varint in SCMap payload");
 }
 
+// Bounds for the raw field survey below. They exist to keep a diagnostic
+// from becoming a liability: the survey is pointed at fields whose schema is
+// unknown, so it must not be able to produce an unbounded log line, walk the
+// occupancy grid as if it were protobuf, or recurse without end.
+const RAW_SURVEY_MAX_SCALARS = 48;
+const RAW_SURVEY_MAX_SUBMESSAGE_BYTES = 16384;
+const RAW_SURVEY_MAX_DEPTH = 2;
+
 /** @param {Buffer} buf @param {number} pos @param {number} wireType */
 function skipField(buf, pos, wireType) {
   switch (wireType) {
@@ -284,6 +292,11 @@ function parseRoomsFromScMap(buffer) {
  * @returns {{
  *   head: {sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null,
  *   pose: {x: number, y: number} | null,
+ *   rawSurvey: {
+ *     fields: Array<{field: number, count: number, bytes: number}>,
+ *     scalars: Record<string, number>,
+ *     truncated: boolean,
+ *   },
  *   rooms: Array<{roomId: number, roomName: string}>,
  *   roomChains: Array<{roomId: number, points: Array<{x: number, y: number}>}>,
  * }}
@@ -293,6 +306,26 @@ function parseScMapLiveState(buffer) {
   let head = null;
   /** @type {{x: number, y: number} | null} */
   let pose = null;
+  // Diagnostic. Both Q7s in the field reported a pose of exactly
+  // (1100.0, 1100.0) — the same value on two robots, two maps and twelve
+  // minutes of active cleaning. That is a constant, not a position, so the
+  // number being read as the robot's position is not the robot's position.
+  //
+  // The schema above is not obviously wrong, which is what makes guessing
+  // another field number a bad move: it would be the third guess in a row on
+  // this code path. Two candidates fit the evidence and the survey separates
+  // them without a second release. DeviceCurrentPoseInfo carries an `update`
+  // varint, so field 8 may simply be marked stale on this firmware — a
+  // float-only dump would not have shown it. And field 6 is a pose *trail*,
+  // whose last point is by construction where the robot is now — which needs
+  // one level of nesting to see. So the survey records varints as well as
+  // floats, and descends one level: repeated paths overwrite, which leaves
+  // the last point of a trail sitting in the log under a stable key.
+  /** @type {Array<{field: number, count: number, bytes: number}>} */
+  const surveyFields = [];
+  /** @type {Record<string, number>} */
+  const surveyScalars = {};
+  let surveyTruncated = false;
   /** @type {Array<{roomId: number, roomChainPoints?: unknown}>} */
   const roomChains = [];
 
@@ -345,6 +378,109 @@ function parseScMapLiveState(buffer) {
     return parsed.x !== null && parsed.y !== null
       ? { x: parsed.x, y: parsed.y }
       : null;
+  }
+
+  /**
+   * Record that a top-level field was seen, and how many bytes it carried.
+   *
+   * The sizes matter as much as the values: a submessage that grows between
+   * two consecutive log lines while the robot is driving is a trail of where
+   * it has been, and the field that does that is the one worth reading.
+   *
+   * @param {number} field
+   * @param {number} bytes
+   */
+  function noteField(field, bytes) {
+    const seen = surveyFields.find((entry) => entry.field === field);
+    if (seen) {
+      seen.count += 1;
+      seen.bytes += bytes;
+    } else if (surveyFields.length < RAW_SURVEY_MAX_SCALARS) {
+      surveyFields.push({ field, count: 1, bytes });
+    } else {
+      surveyTruncated = true;
+    }
+  }
+
+  /**
+   * @param {string} path
+   * @param {number} value
+   */
+  function noteScalar(path, value) {
+    if (
+      surveyScalars[path] === undefined &&
+      Object.keys(surveyScalars).length >= RAW_SURVEY_MAX_SCALARS
+    ) {
+      surveyTruncated = true;
+      return;
+    }
+    // Deliberately last-wins. A repeated submessage collapses to its final
+    // occurrence, which for a pose trail is the current position.
+    surveyScalars[path] = value;
+  }
+
+  /**
+   * Walk a submessage recording every scalar it contains, keyed by dotted
+   * field path, to a bounded depth.
+   *
+   * Diagnostic only, and defensive by necessity: it is pointed at fields
+   * whose schema is unknown, so bytes that are not protobuf at all will
+   * reach it. A throw here would take live-room tracking down with it, so
+   * the caller swallows the error and keeps whatever was collected.
+   *
+   * @param {Buffer} buf
+   * @param {string} prefix
+   * @param {number} depth
+   */
+  function surveyMessage(buf, prefix, depth) {
+    let pos = 0;
+    while (pos < buf.length) {
+      const tag = readVarint(buf, pos);
+      pos = tag.pos;
+      const fieldNumber = Math.floor(tag.value / 8);
+      const wireType = tag.value % 8;
+      const path = `${prefix}.${fieldNumber}`;
+      if (wireType === 0) {
+        const value = readVarint(buf, pos);
+        pos = value.pos;
+        noteScalar(path, value.value);
+      } else if (wireType === 5) {
+        noteScalar(path, buf.readFloatLE(pos));
+        pos += 4;
+      } else if (wireType === 1) {
+        noteScalar(path, buf.readDoubleLE(pos));
+        pos += 8;
+      } else if (wireType === 2) {
+        const len = readVarint(buf, pos);
+        if (depth > 1 && len.value > 0) {
+          surveyMessage(
+            buf.subarray(len.pos, len.pos + len.value),
+            path,
+            depth - 1
+          );
+        }
+        pos = len.pos + len.value;
+      } else {
+        pos = skipField(buf, pos, wireType);
+      }
+    }
+  }
+
+  /**
+   * @param {Buffer} buf
+   * @param {number} field
+   */
+  function surveyTopLevelSubmessage(buf, field) {
+    if (buf.length > RAW_SURVEY_MAX_SUBMESSAGE_BYTES) {
+      // The occupancy grid is tens of kilobytes of raw cells, not protobuf.
+      // Its size is recorded; walking it would be nonsense and slow.
+      return;
+    }
+    try {
+      surveyMessage(buf, String(field), RAW_SURVEY_MAX_DEPTH);
+    } catch {
+      surveyTruncated = true;
+    }
   }
 
   /** @param {Buffer} buf */
@@ -440,6 +576,8 @@ function parseScMapLiveState(buffer) {
     if (wireType === 2) {
       const len = readVarint(buffer, pos);
       const body = buffer.subarray(len.pos, len.pos + len.value);
+      noteField(fieldNumber, len.value);
+      surveyTopLevelSubmessage(body, fieldNumber);
       if (fieldNumber === 3) {
         head = parseMapHead(body);
       } else if (fieldNumber === 8) {
@@ -457,6 +595,17 @@ function parseScMapLiveState(buffer) {
       }
       pos = len.pos + len.value;
     } else {
+      // A position could just as easily be a bare float or varint on the
+      // RobotMap itself; the loop above only ever looked at submessages, so
+      // such a field would never have been seen at all.
+      noteField(fieldNumber, 0);
+      if (wireType === 0) {
+        noteScalar(String(fieldNumber), readVarint(buffer, pos).value);
+      } else if (wireType === 5) {
+        noteScalar(String(fieldNumber), buffer.readFloatLE(pos));
+      } else if (wireType === 1) {
+        noteScalar(String(fieldNumber), buffer.readDoubleLE(pos));
+      }
       pos = skipField(buffer, pos, wireType);
     }
   }
@@ -464,6 +613,11 @@ function parseScMapLiveState(buffer) {
   return {
     head,
     pose,
+    rawSurvey: {
+      fields: surveyFields,
+      scalars: surveyScalars,
+      truncated: surveyTruncated,
+    },
     rooms,
     roomChains:
       /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */ (
