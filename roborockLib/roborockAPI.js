@@ -14,6 +14,7 @@ const roborock_mqtt_connector =
 const rrMessage = require("./lib/message").message;
 const vacuum_class = require("./lib/vacuum").vacuum;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
+const errorCodes = require("./lib/deviceFeatures").errorCodes;
 const supportsMaxPlusFanPower =
   require("./lib/deviceFeatures").supportsMaxPlusFanPower;
 const RRMapParser = require("./lib/RRMapParser");
@@ -4691,6 +4692,21 @@ class Roborock {
     const name = this.getVacuumDeviceInfo(duid, "name");
 
     return typeof name === "string" && name.length > 0 ? name : String(duid);
+  }
+
+  /**
+   * Human-readable text for a Roborock `error_code`, or "" when the table does
+   * not name it. Restored for the dock-fault beta: the Matter fault carries a
+   * standard enum value, and this is the wording that rides along with it in
+   * `errorStateDetails` so a controller can say more than "error".
+   *
+   * @param {number} errorCode
+   * @returns {string}
+   */
+  getErrorCodeDescription(errorCode) {
+    const description = errorCodes[errorCode];
+
+    return typeof description === "string" ? description : "";
   }
 
   getVacuumDeviceStatus(duid, property) {

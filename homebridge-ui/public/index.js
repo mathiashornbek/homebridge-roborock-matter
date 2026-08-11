@@ -29,6 +29,9 @@ const elements = {
   enableMatterFaultReporting: document.getElementById(
     "enable-matter-fault-reporting"
   ),
+  enableMatterDockFaultsAsError: document.getElementById(
+    "enable-matter-dock-faults-as-error"
+  ),
   matterChargedBatteryThreshold: document.getElementById(
     "matter-charged-battery-threshold"
   ),
@@ -181,6 +184,11 @@ async function loadConfig() {
         config.enableMatterFaultReporting
       );
     }
+    if (elements.enableMatterDockFaultsAsError) {
+      elements.enableMatterDockFaultsAsError.checked = Boolean(
+        config.enableMatterDockFaultsAsError
+      );
+    }
     if (elements.matterChargedBatteryThreshold) {
       elements.matterChargedBatteryThreshold.value =
         config.matterChargedBatteryThreshold != null
@@ -241,16 +249,9 @@ function getCloudOnlyMode() {
 }
 
 /**
- * The Apple Home features the RUNNING plugin has switched on.
- *
- * This deliberately reads the saved plugin config rather than the checkboxes
- * on screen. A tick that has not been saved and had the bridge restarted is
- * not in effect, and a report that says otherwise sends the reader chasing a
- * behaviour the plugin was never exhibiting — which is exactly what happened
- * when a user toggled a setting, exported a report and we both read it as
- * proof the feature was live.
- *
- * @returns {Promise<string>}
+ * The Apple Home features currently switched on, as a compact list for the
+ * diagnostics report. Read from the live checkboxes so it reflects what is
+ * actually saved rather than what the plugin defaults to.
  */
 /**
  * The plugin config as SAVED, or null when it cannot be read.
@@ -327,6 +328,9 @@ async function describeEnabledMatterFeatures() {
     ],
     ["chargingDockedStates", config.enableMatterChargingDockedStates === true],
     ["faultReporting", config.enableMatterFaultReporting === true],
+    // Beta only. Reads the saved config like every other line here — the
+    // checkbox is only consulted by the unsaved-edits warning below.
+    ["dockFaultsAsError", config.enableMatterDockFaultsAsError === true],
   ]
     .filter(([, on]) => on)
     .map(([name]) => name);
@@ -339,7 +343,12 @@ async function describeEnabledMatterFeatures() {
     : saved;
 }
 
-/** True when a feature checkbox differs from what is saved in the config. */
+/**
+ * True when any Apple Home feature checkbox differs from what is saved.
+ *
+ * The list is the same one describeEnabledMatterFeatures reports, so a feature
+ * added to one and forgotten in the other cannot silently stop being checked.
+ */
 function hasUnsavedMatterFeatureEdits(config) {
   const comparisons = [
     [
@@ -367,6 +376,10 @@ function hasUnsavedMatterFeatureEdits(config) {
     [
       elements.enableMatterFaultReporting,
       config.enableMatterFaultReporting === true,
+    ],
+    [
+      elements.enableMatterDockFaultsAsError,
+      config.enableMatterDockFaultsAsError === true,
     ],
   ];
 
@@ -416,6 +429,9 @@ function getFormValues() {
     ),
     enableMatterFaultReporting: Boolean(
       elements.enableMatterFaultReporting?.checked
+    ),
+    enableMatterDockFaultsAsError: Boolean(
+      elements.enableMatterDockFaultsAsError?.checked
     ),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
