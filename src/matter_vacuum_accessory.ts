@@ -155,6 +155,28 @@ const RUN_MODE_CLEANING = 1;
 // Live status entries older than this fall back to the HomeData snapshot.
 const LIVE_STATUS_STALENESS_MS = 15 * 60 * 1000;
 
+// The status fields a live frame can carry that the Matter publish actually
+// reads. Both the gate in extractStatusUpdate and the "nothing meaningful
+// arrived" check in updateMatterStateFromMessage derive from this one list, so
+// the two cannot disagree about what counts as an update.
+//
+// They did disagree: the caller was taught that a frame carrying only
+// `fan_power` or only `matter_clean_type` is meaningful — a suction or
+// mop-mode change made in the Roborock app, or picked by SmartPlan, pushes
+// exactly that — while the gate one level below still dropped such a frame
+// before the caller ever saw it. A hand-written field list in two places is
+// the same defect as a hand-written file list: adding a field to one of them
+// silently leaves the other behind.
+const MEANINGFUL_LIVE_STATUS_FIELDS = [
+  "state",
+  "charge_status",
+  "battery",
+  "clean_area",
+  "clean_time",
+  "fan_power",
+  "matter_clean_type",
+] as const;
+
 const CLEAN_MODE_VACUUM = 0;
 const CLEAN_MODE_MOP = 1;
 const CLEAN_MODE_VACUUM_AND_MOP = 2;
@@ -1181,14 +1203,25 @@ export default class RoborockMatterVacuumAccessory {
     // event happened to arrive. The publish below resolves the operational
     // state through getNumberStatus, which falls back to the remembered state,
     // so a frame without `state` does not reset the tile.
+    //
+    // Derived from MEANINGFUL_LIVE_STATUS_FIELDS rather than spelled out, so
+    // this check and extractStatusUpdate's gate always name the same fields.
+    const meaningfulValues: Record<
+      (typeof MEANINGFUL_LIVE_STATUS_FIELDS)[number],
+      number | null
+    > = {
+      state,
+      charge_status: chargeStatus,
+      battery,
+      clean_area: cleanArea,
+      clean_time: cleanTime,
+      fan_power: fanPower,
+      matter_clean_type: matterCleanType,
+    };
     if (
-      state === null &&
-      chargeStatus === null &&
-      battery === null &&
-      cleanArea === null &&
-      cleanTime === null &&
-      fanPower === null &&
-      matterCleanType === null
+      MEANINGFUL_LIVE_STATUS_FIELDS.every(
+        (field) => meaningfulValues[field] === null
+      )
     ) {
       return;
     }
@@ -2933,12 +2966,13 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
 
-    const hasStatus =
-      Object.prototype.hasOwnProperty.call(message, "state") ||
-      Object.prototype.hasOwnProperty.call(message, "battery") ||
-      Object.prototype.hasOwnProperty.call(message, "charge_status") ||
-      Object.prototype.hasOwnProperty.call(message, "clean_area") ||
-      Object.prototype.hasOwnProperty.call(message, "clean_time");
+    // Every field the publish reads counts here, including `fan_power` and
+    // `matter_clean_type`. This gate used to name five of the seven, so a frame
+    // whose only field was one of the missing two was discarded here even
+    // though the caller explicitly treats it as a meaningful update.
+    const hasStatus = MEANINGFUL_LIVE_STATUS_FIELDS.some((field) =>
+      Object.prototype.hasOwnProperty.call(message, field)
+    );
 
     return hasStatus ? message : null;
   }

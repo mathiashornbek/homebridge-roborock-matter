@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.4.12
+
+**A live frame whose only field was the suction level or the clean type was thrown away before anything could read it.** A live message passes two checks on its way to Apple Home: a gate that decides whether it is a status message at all, and a check in the publish path that decides whether anything meaningful arrived. Both named their fields by hand, and they had drifted apart — the publish path was taught that a frame carrying only `fan_power` or only `matter_clean_type` counts (a suction or mop-mode change made in the Roborock app, or picked by SmartPlan, pushes exactly that), while the gate one level below still listed five of the seven fields and discarded such a frame before the publish path ever ran.
+
+- **Both checks now derive from one list.** Adding a field the publish path reads covers the gate in the same edit, so the two cannot drift again.
+- **A frame carrying no meaningful field is still ignored**, so this widens the gate exactly as far as the publish path can actually use and no further.
+
+The fix that added the two fields was made one level down from the gatekeeper, which is why it looked complete and was not. `__tests__/live-status-gate-matches-what-the-publish-reads.test.js` pins the rule over the source rather than the two field names, so a field added later is covered the moment it is read.
+
 ## 3.4.11
 
 **Two docked Q7s flipped their Apple Home clean mode to "Vacuum" and back every ninety seconds, and the plugin was reporting a level it had never measured.** Caught in a log from a plugin author's own robots on 3.4.10: every battery tick produced a pair of publishes about a second apart, the first saying `cleanMode=0` and the second saying `cleanMode=6` — ten pairs in fourteen minutes, on both robots, at the same battery value.
