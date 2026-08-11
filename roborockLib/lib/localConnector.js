@@ -227,7 +227,7 @@ class localConnector {
     // The robot answered, so the back-off starts over for the next outage.
     this.reconnectAttempts.delete(duid);
 
-    if (this.adapter.remoteDevices?.delete(duid)) {
+    if (this.adapter.clearRemoteDevice(duid)) {
       this.adapter.log.debug(
         `Local TCP connected for ${duid}; clearing remote fallback marker.`
       );
@@ -316,11 +316,10 @@ class localConnector {
         this.adapter.log.debug(
           `error on tcp client for ${duid}. Marking this device as remote device. Connecting via MQTT instead ${error.message}`
         );
-        this.adapter.remoteDevices.add(duid);
-        await this.adapter.updateTransportDiagnostics(duid, {
-          isRemote: true,
-          remoteReason: "marked-remote-after-connect-failure",
-        });
+        await this.adapter.markDeviceRemote(
+          duid,
+          "marked-remote-after-connect-failure"
+        );
         // this.adapter.catchError(`Failed to create tcp client: ${error.stack}`, `function createClient`, duid);
       }
     });

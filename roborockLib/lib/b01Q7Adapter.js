@@ -34,6 +34,15 @@ const B01_PROTOCOL_VERSION = "B01";
 const B01_REQUEST_DPS = 10000;
 const B01_RESPONSE_DPS = 10001;
 
+// Why a B01 robot is routed over the Roborock cloud. The dialect has no LAN
+// request surface at all, so these robots are marked remote at startup and the
+// plugin never opens a local TCP socket to them. That is a property of the
+// protocol, not a fault, and the diagnostic report has to say so: labelling it
+// as a failed LAN connection sends users hunting a network problem that cannot
+// exist. Both the transport layer and the UI server read this one constant so
+// the two sides cannot drift apart.
+const B01_CLOUD_ONLY_REMOTE_REASON = "b01-protocol-cloud-only";
+
 // Q7 properties queried for a status snapshot (RoborockB01Props).
 // Note: no "water" property. Q7-series robots use a manually filled water
 // tank on the robot with no electronic water level/control, so water state
@@ -818,6 +827,7 @@ module.exports = {
   B01_STATUS_PROPS,
   B01_STATUS_TO_V1_STATE,
   isB01Protocol,
+  B01_CLOUD_ONLY_REMOTE_REASON,
   createB01MessageId,
   translateOutgoing,
   neutralResponse,

@@ -59,6 +59,14 @@ const CLOUD_ONLY_TRANSPORT_MARKERS = Object.freeze({
   tcpConnectionState: "disabled",
 });
 
+// The reason recorded for a robot that was marked remote without one being
+// given. Deliberately vague: "the vacuum is marked remote" tells the reader
+// nothing they did not already know, which is the correct failure mode for a
+// missing reason. The alternative — assuming the most common cause — is how
+// the report came to state that a LAN connection had been attempted and failed
+// for robots the plugin never attempts a LAN connection to.
+const UNEXPLAINED_REMOTE_REASON = "remote-device";
+
 // Minimum gap between live-room map fetch attempts while cleaning. The map
 // payload is an order of magnitude heavier than get_status, so it rides a
 // slower cadence than the active status polls — but 20s meant a robot could
@@ -212,6 +220,10 @@ class Roborock {
 
     this.localDevices = {};
     this.remoteDevices = new Set();
+    // Why each of those robots is remote. Membership alone cannot answer that:
+    // see markDeviceRemote.
+    /** @type {Map<string, string>} */
+    this.remoteDeviceReasons = new Map();
 
     this.name = "roborock";
     this.deviceNotify = null;
@@ -1266,6 +1278,8 @@ class Roborock {
       "secure-command",
       "photo-command",
       "preferred-cloud-command",
+      // Not a fallback from local: this dialect has no local to fall back from.
+      b01Q7Adapter.B01_CLOUD_ONLY_REMOTE_REASON,
     ].includes(String(reason));
   }
 
@@ -1301,6 +1315,8 @@ class Roborock {
       "udp-broadcast-discovery": "UDP broadcast discovery found the vacuum",
       "marked-remote-after-connect-failure":
         "local TCP connection failed and the vacuum was marked remote",
+      [b01Q7Adapter.B01_CLOUD_ONLY_REMOTE_REASON]:
+        "this model speaks only Roborock's cloud protocol, which has no LAN control surface",
     };
 
     if (!reason) {
@@ -2005,9 +2021,14 @@ class Roborock {
       this.log.debug(`Creating device: ${name} with duid: ${duid}`);
 
       // B01/Q7 robots are cloud/MQTT-only: mark them remote up front so the
-      // transport layer never attempts local TCP connections to them.
+      // transport layer never attempts local TCP connections to them. The
+      // reason travels with the mark so the report says "this protocol has no
+      // LAN surface" rather than inventing a LAN connection that failed.
       if (b01Q7Adapter.isB01Protocol(device.pv)) {
-        this.remoteDevices.add(duid);
+        await this.markDeviceRemote(
+          duid,
+          b01Q7Adapter.B01_CLOUD_ONLY_REMOTE_REASON
+        );
       }
 
       const robotModel = this.getProductAttribute(duid, "model");
@@ -2637,6 +2658,58 @@ class Roborock {
     }
   }
 
+  /**
+   * Marks a vacuum as reachable only over the Roborock cloud, recording WHY.
+   *
+   * Membership of `remoteDevices` cannot answer "why" on its own, and the two
+   * reasons are not remotely alike. A B01/Q7 robot is marked at startup
+   * because its dialect has no LAN request surface, so no local connection is
+   * ever attempted; another robot is marked only after a local TCP connect
+   * genuinely failed. The report used to state the second reason for both,
+   * which sent a Q7 owner through an unpair, a plugin uninstall, a reinstall
+   * and a fresh pairing chasing a LAN fault that could not exist (#7).
+   *
+   * Every caller therefore supplies its own reason. A caller that forgets one
+   * degrades to the vague `remote-device`, which is merely uninformative —
+   * never to a specific claim that is false.
+   *
+   * @param {string} duid
+   * @param {string} reason
+   */
+  async markDeviceRemote(duid, reason) {
+    if (!duid) {
+      return;
+    }
+
+    const remoteReason = reason || UNEXPLAINED_REMOTE_REASON;
+    this.remoteDevices.add(duid);
+    this.remoteDeviceReasons.set(duid, remoteReason);
+
+    await this.updateTransportDiagnostics(duid, {
+      isRemote: true,
+      remoteReason,
+    });
+  }
+
+  /**
+   * Drops the remote marker and the reason that went with it.
+   *
+   * @param {string} duid
+   * @returns {boolean} whether the vacuum had been marked remote
+   */
+  clearRemoteDevice(duid) {
+    this.remoteDeviceReasons.delete(duid);
+    return this.remoteDevices.delete(duid);
+  }
+
+  /**
+   * @param {string} duid
+   * @returns {string} the recorded reason, or the vague default
+   */
+  getRemoteDeviceReason(duid) {
+    return this.remoteDeviceReasons.get(duid) || UNEXPLAINED_REMOTE_REASON;
+  }
+
   async isRemoteDevice(duid) {
     const homedataJSON = this.getStoredHomeData();
 
@@ -2651,7 +2724,7 @@ class Roborock {
           isRemote: true,
           remoteReason: receivedDevice
             ? "received-device"
-            : "marked-remote-after-connect-failure",
+            : this.getRemoteDeviceReason(duid),
         });
         return true;
       }
@@ -4570,6 +4643,10 @@ class Roborock {
   }
 }
 
-module.exports = { Roborock, CLOUD_ONLY_TRANSPORT_MARKERS };
+module.exports = {
+  Roborock,
+  CLOUD_ONLY_TRANSPORT_MARKERS,
+  UNEXPLAINED_REMOTE_REASON,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

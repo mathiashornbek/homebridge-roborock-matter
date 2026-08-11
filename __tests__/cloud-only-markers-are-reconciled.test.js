@@ -117,12 +117,14 @@ describe("cloud-only transport markers follow the setting", () => {
 });
 
 describe("the report cannot label a robot cloud-only once the markers are gone", () => {
-  // The UI server infers "Cloud only" from exactly these persisted fields, so
-  // the inference is only sound while the fields track the setting. This pins
-  // the two halves together: whatever the marker table holds is what the UI
-  // branch keys off.
+  // The report infers "Cloud only" from exactly these persisted fields, so the
+  // inference is only sound while the fields track the setting. This pins the
+  // two halves together: whatever the marker table holds is what the branch
+  // keys off. (The branch itself moved out of the TypeScript UI server into
+  // roborockLib/lib/connectionState.js, so the suite — which runs before any
+  // build — can exercise its wording rather than only grep for it.)
   const uiSource = fs.readFileSync(
-    path.join(__dirname, "..", "src", "ui", "index.ts"),
+    path.join(__dirname, "..", "roborockLib", "lib", "connectionState.js"),
     "utf8"
   );
   // Just the `if (...)` condition that decides the "Cloud only" label.
@@ -139,9 +141,9 @@ describe("the report cannot label a robot cloud-only once the markers are gone",
 
     // `tcpState` is the local alias for transport.tcpConnectionState.
     const keyed = new Set(
-      [...condition.matchAll(/transport\.([A-Za-z]+)|\btcpState\b/g)].map(
-        (match) => match[1] || "tcpConnectionState"
-      )
+      [
+        ...condition.matchAll(/(?:safeT|t)ransport\.([A-Za-z]+)|\btcpState\b/g),
+      ].map((match) => match[1] || "tcpConnectionState")
     );
 
     expect(keyed.size).toBeGreaterThan(0);

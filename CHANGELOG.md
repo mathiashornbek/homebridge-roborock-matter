@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.4.7
+
+**The diagnostic report told Q7 owners their robot had tried to reach the LAN and failed. It never tried.** Following [#7](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/7), jawnlydon unpaired his robot from Apple Home, uninstalled the plugin, reinstalled it and paired fresh — and his report still read `markedRemote: true`, `remoteReason: marked-remote-after-connect-failure`, `connectionStatus: Cloud fallback`, "usually because LAN TCP was not connected at that moment". His `roborock.vacuum.sc05` speaks the B01 protocol, which has no LAN request surface at all: the plugin marks these robots cloud-only at startup precisely so it never opens a local socket to them. Every line above described a network fault that could not occur, and he spent an evening chasing it.
+
+- **A robot marked remote now records why it was marked.** Membership of the remote set could tell the report _that_ a robot was on cloud transport but not _why_, and the report assumed the most common cause — a failed local TCP connect — for every member. The two causes have nothing in common: one is a protocol with no local side, the other is a genuine LAN failure worth investigating. Both reasons now travel with the mark, from the one place that sets it.
+- **A future marking that forgets its reason degrades to "the vacuum is marked remote".** Uninformative, and deliberately so. Guessing the usual cause is what turned a design decision into a phantom network fault in the first place.
+- **The device card no longer calls the only transport a fallback.** A B01/Q7 robot now reads `Cloud control (this model)` with a hint saying its protocol has no LAN control surface and that a blank local IP, discovery state and TCP state are expected. The LAN connection test stops telling its owner to wait for a discovery that is never coming, and the robot is no longer flagged as a likely cloud fallback. A robot on a LAN-capable model that really is falling back is still reported exactly as before.
+- **The wording moved into plain JavaScript** (`roborockLib/lib/connectionState.js`), because the test job runs before any build and could therefore only grep the TypeScript UI server for these strings. They are not decoration — they are what an owner acts on when a robot will not respond — so they are now exercised directly.
+- **The rule is enumerated over the source tree**, not over the two call sites that exist today: no code path may mark a robot remote without stating its reason. A hand-written list of call sites is the same mistake as a hand-written list of files or log lines.
+
 ## 3.4.6
 
 **Trying cloud-only mode once marked a robot "Cloud only" forever.** jawnlydon reported in [#7](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/7) that a "Cloud Only" instance of his robot "seems to have stuck around through several re-pairs" — surviving a bridge restart, repeated Apple Home re-pairings, and a complete uninstall and reinstall of the plugin. It was not a leftover accessory. It was one stale field.

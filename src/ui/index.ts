@@ -6,6 +6,15 @@ import QRCode from "qrcode";
 import { encryptSession } from "../crypto";
 
 const roborockAuth = require("../../roborockLib/lib/roborockAuth");
+// What the report says about a robot's transport lives in plain JavaScript, so
+// the test suite — which runs before any build — can exercise the wording
+// directly instead of grepping this file for it.
+const {
+  describeConnectionState,
+  describeLocalProbeSkip,
+  isCloudFallbackLikely,
+  isCloudOnlyProtocol,
+} = require("../../roborockLib/lib/connectionState");
 
 const ACTIVE_LOCAL_TRANSPORT_MAX_AGE_MS = 5 * 60 * 1000;
 const LOCAL_CONTROL_PORT = 58867;
@@ -660,9 +669,7 @@ class RoborockUiServer {
   ) {
     const localIp = device.localIp;
     const port = LOCAL_CONTROL_PORT;
-    const cloudFallbackLikely =
-      device.lastTransport === "cloud" ||
-      device.connectionStatus === "Cloud fallback";
+    const cloudFallbackLikely = isCloudFallbackLikely(device);
     const baseResult = {
       name: device.name || device.duid || "Unknown device",
       duid: device.duid || "",
@@ -679,35 +686,21 @@ class RoborockUiServer {
       latencyMs: null as number | null,
     };
 
-    const skip = (message: string) => ({
-      ...baseResult,
-      status: "skipped",
-      health: "warn",
-      message,
+    const probeSkip = describeLocalProbeSkip({
+      cloudOnlyProtocol: isCloudOnlyProtocol(device),
+      cloudOnlyMode,
+      hasLocalKey: Boolean(device.hasLocalKey),
+      online: device.online,
+      localIp,
     });
 
-    if (cloudOnlyMode) {
-      return skip(
-        "Use Roborock cloud only is enabled, so local LAN probing is skipped until cloud-only mode is disabled and Homebridge is restarted."
-      );
-    }
-
-    if (!device.hasLocalKey) {
-      return skip(
-        "No local credential is cached for this vacuum, so a LAN control test cannot run yet."
-      );
-    }
-
-    if (device.online === false) {
-      return skip(
-        "Roborock currently reports this vacuum offline. Wake the vacuum or place it on the dock, then test again."
-      );
-    }
-
-    if (!localIp) {
-      return skip(
-        "No local IP address is cached yet. Let the plugin complete startup or press Refresh after the vacuum wakes up."
-      );
+    if (probeSkip) {
+      return {
+        ...baseResult,
+        status: "skipped",
+        health: probeSkip.health,
+        message: probeSkip.message,
+      };
     }
 
     const activeLocalConnection = this.describeActiveLocalConnection(device);
@@ -905,72 +898,7 @@ class RoborockUiServer {
     transport: Record<string, any>,
     hasLocalCredentials: boolean
   ): { status: string; health: "good" | "warn"; hint: string } {
-    const tcpState = transport.tcpConnectionState;
-    const lastTransportReason =
-      transport.lastTransportReason || transport.remoteReason || null;
-    const hasLocalIp = Boolean(transport.localIp);
-
-    if (
-      lastTransportReason === "cloud-only-mode" ||
-      transport.localDiscoveryState === "disabled" ||
-      tcpState === "disabled"
-    ) {
-      return {
-        status: "Cloud only",
-        health: "good",
-        hint: "Cloud-only mode is enabled, so local LAN discovery and local TCP control are disabled for this plugin.",
-      };
-    }
-
-    if (tcpState === "connected") {
-      return {
-        status: "Local connected",
-        health: "good",
-        hint: "The plugin has an active LAN TCP connection to this vacuum.",
-      };
-    }
-
-    if (device.online === false || lastTransportReason === "device-offline") {
-      return {
-        status: "Device offline",
-        health: "warn",
-        hint: hasLocalCredentials
-          ? "Roborock currently reports this vacuum offline. Local credentials are available, but the plugin cannot use them until the vacuum wakes up and rejoins Wi-Fi."
-          : "Roborock currently reports this vacuum offline, and no local credentials were found for LAN control.",
-      };
-    }
-
-    if (transport.lastTransport === "cloud") {
-      return {
-        status: "Cloud fallback",
-        health: "warn",
-        hint: hasLocalCredentials
-          ? "The plugin has local credentials but the last command used Roborock cloud transport, usually because LAN TCP was not connected at that moment."
-          : "The last command used Roborock cloud transport because local LAN credentials are not available.",
-      };
-    }
-
-    if (hasLocalCredentials && hasLocalIp) {
-      return {
-        status: "Ready for local connection",
-        health: "warn",
-        hint: "The plugin has local credentials and a discovered IP address, but no active LAN TCP connection is currently cached.",
-      };
-    }
-
-    if (hasLocalCredentials) {
-      return {
-        status: "Local credentials available",
-        health: "warn",
-        hint: "The plugin has the credential needed for LAN control, but it has not discovered or connected to the vacuum locally yet.",
-      };
-    }
-
-    return {
-      status: "Cloud-only fallback likely",
-      health: "warn",
-      hint: "No local LAN credential was found for this vacuum, so the plugin will likely rely on Roborock cloud transport.",
-    };
+    return describeConnectionState(device, transport, hasLocalCredentials);
   }
 
   private getPackageVersion(): string {
