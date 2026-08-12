@@ -37,21 +37,21 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 566 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 571 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
-|                                     |                                                                                                                                  |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| 🤖 **Full control from Apple Home** | Start, stop, pause and send the robot home to its dock — from the Home app, Siri, or automations                                 |
-| 🚪 **Clean specific rooms**         | Pick rooms right in Apple Home, with the names you gave them in the Roborock app — multi-floor homes included                    |
-| 📍 **Live room tracking**           | See which room the robot is cleaning right now, updated as it moves ([details](#live-room-tracking))                             |
-| 📊 **Honest cleaning progress**     | Each room goes pending → cleaning → done — and a room only counts as done when the robot was actually there                      |
-| 🌀 **Cleaning & suction modes**     | Vacuum / Mop / Vacuum + Mop on models that support it — plus optional Quiet / Balanced / Turbo / Max suction levels (Max+ on Q7) |
-| 🔋 **Battery & charging**           | Battery level and charging state on the accessory ([one Apple-side caveat](#battery-percentage-in-apple-home))                   |
-| 🧠 **New models just work**         | Brand-new Roborock models get sensible defaults automatically, and the plugin adapts to what each robot actually supports        |
-| 🩺 **Built-in diagnostics**         | Connection status, a one-click connection test, and a ready-to-share report if you ever need help                                |
-| 🔐 **Easy, safe login**             | Sign in with your Roborock account right in the settings — two-factor supported, session stored encrypted                        |
+|                                     |                                                                                                                                                      |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🤖 **Full control from Apple Home** | Start, stop, pause and send the robot home to its dock — from the Home app or Siri ([automations: one Apple-side limit](#automations-in-apple-home)) |
+| 🚪 **Clean specific rooms**         | Pick rooms right in Apple Home, with the names you gave them in the Roborock app — multi-floor homes included                                        |
+| 📍 **Live room tracking**           | See which room the robot is cleaning right now, updated as it moves ([details](#live-room-tracking))                                                 |
+| 📊 **Honest cleaning progress**     | Each room goes pending → cleaning → done — and a room only counts as done when the robot was actually there                                          |
+| 🌀 **Cleaning & suction modes**     | Vacuum / Mop / Vacuum + Mop on models that support it — plus optional Quiet / Balanced / Turbo / Max suction levels (Max+ on Q7)                     |
+| 🔋 **Battery & charging**           | Battery level and charging state on the accessory ([one Apple-side caveat](#battery-percentage-in-apple-home))                                       |
+| 🧠 **New models just work**         | Brand-new Roborock models get sensible defaults automatically, and the plugin adapts to what each robot actually supports                            |
+| 🩺 **Built-in diagnostics**         | Connection status, a one-click connection test, and a ready-to-share report if you ever need help                                                    |
+| 🔐 **Easy, safe login**             | Sign in with your Roborock account right in the settings — two-factor supported, session stored encrypted                                            |
 
 ## Quick start
 
@@ -119,9 +119,17 @@ Everything is configurable from the Homebridge UI. The essentials:
 
 By default a robot that has stopped for any reason shows as **Ready** in Apple Home — whether it finished the job or is wedged under the sofa. Turning on **Report faults in Apple Home** changes that: a robot that is stuck, has a blocked brush or wheel, a missing dust bin, a flat battery or a dock it cannot reach reports the Matter **Error** state instead of Ready. It is off by default because a robot in Error may be refused a Start command by Apple Home.
 
-**Dock and tank conditions are deliberately not reported, and this is worth explaining.** The plugin can read them all accurately — empty clean-water tank, full waste-water tank, missing dust bag, blocked air duct — and two releases tried to surface them through Matter's fault attribute (`OperationalError`). Three controlled tests on an S8 Pro Ultra with a genuinely empty tank showed it does not work: Apple Home drew no warning when the fault was published beside a Charging state, drew no warning when it was published beside a forced Error state either, and the tile went into a stuck "Updating…" that needed a manual poke to clear. **Apple Home does not appear to render Matter vacuum faults from a bridged accessory at all** — which is also why an earlier version removed the same write back in 1.4.61. Reporting them was therefore pure cost, and the attribute is no longer published in any configuration.
+**Dock and tank conditions are deliberately not reported, and this is worth explaining.** The plugin can read them all accurately — empty clean-water tank, full waste-water tank, missing dust bag, blocked air duct — and two releases tried to surface them through Matter's fault attribute (`OperationalError`). Four controlled tests on an S8 Pro Ultra with a genuinely empty clean-water tank showed it does not work: Apple Home drew no warning when the fault was published beside a Charging state, and drew no warning in the final test either, where the robot was raised all the way to the Matter **Error** state carrying "Clean water tank empty" — the tile simply kept reading Ready. **Apple Home does not appear to render Matter vacuum faults from a bridged accessory at all** — which is also why an earlier version removed the same write back in 1.4.61. Reporting them was therefore pure cost, and the attribute is no longer published in any configuration.
+
+This section also used to blame the setting for a tile stuck on "Updating…", which was not caused by it: in the final test the same robot, with both switches on, stayed in Ready throughout. That wedge came from a stale pairing left behind by an earlier install — see [Troubleshooting](#troubleshooting). The correction is stated here rather than quietly deleted, because someone may have left the feature switched off on the strength of it.
 
 A detached water tank or mop pad is never treated as a fault either: that is the normal, correct configuration for a vacuum-only run.
+
+## Automations in Apple Home
+
+Every command lives on the tile: start, stop, pause and send-to-dock all work from the Home app and from Siri, because the plugin implements Matter's own `RvcOperationalState` commands — including **GoHome**, which is exactly what the dock button sends.
+
+What Apple offers _inside_ Home automations is a separate question, and it is Apple's to answer, not the plugin's. It has now been measured once, by a user in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3): Apple Home does **not** offer sending the vacuum to its dock as an automation **action** for a Matter vacuum. Whether it offers the other commands as actions, or a vacuum as an automation _trigger_, has not been verified here — so this README no longer claims automation support in either direction. If you want a schedule today, the honest answer is that it has to come from the Roborock app's own schedules, or from helper switches in a HAP-based plugin; this plugin is Matter-only by design and does not publish any.
 
 ## Battery percentage in Apple Home
 
@@ -143,7 +151,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 566 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 571 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 

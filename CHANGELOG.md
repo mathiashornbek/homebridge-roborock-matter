@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.19
+
+**Two things the README told users were not what had been measured.** No behaviour changes in this release; both are wording, and wording is what people choose a plugin on.
+
+The feature table promised control "from the Home app, Siri, or automations". Nobody had ever checked the last word, and a user has now measured it: Apple Home does **not** offer sending a Matter vacuum to its dock as an automation action, which is why he had to move that part of his setup to a HAP-based plugin. The table no longer claims it, and a new [Automations in Apple Home](README.md#automations-in-apple-home) section says exactly what is known — the commands all work from the tile and from Siri, one automation action has been measured absent, and the rest is unverified rather than promised.
+
+The fault-reporting section also blamed the "Report faults in Apple Home" setting for a tile that got stuck on "Updating…". A controlled test on the same robot, with fault reporting and dock-fault escalation both switched on and a genuinely empty clean-water tank, has now shown the tile staying in Ready throughout: the wedge was a stale pairing from an earlier install, which the Troubleshooting section already explained. The correction is written into the section rather than quietly deleted, because someone may have left the feature off on the strength of it. The same test also confirms the main finding more strongly than before — the fault was published beside a full Matter **Error** state this time, not just beside Charging, and Apple Home still drew nothing.
+
 ## 3.4.18
 
 **A robot that drops off the Roborock cloud filled the log with stack traces about the plugin correctly deciding not to send.** When the transport a request would need is not there — the robot is marked offline, MQTT is down, or the local socket is not connected — the request queue declines to put it on the wire. That is a deliberate, calm decision, and it writes its own debug line where it happens. But the rejection then arrived at the error handler unclassified, so it was logged as a plugin error, with a full stack trace, once per poll, for as long as the condition lasted.
