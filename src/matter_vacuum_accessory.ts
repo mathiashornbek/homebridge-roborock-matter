@@ -790,7 +790,7 @@ export default class RoborockMatterVacuumAccessory {
         this.beginServiceAreaProgress(areasToClean.map((area) => area.areaId));
         this.setAndScheduleOptimisticState(state, "selected-area start");
         this.dispatchRoborockMatterCommand("service area clean", async () => {
-          await this.applySelectedCleanModeIfNeeded();
+          await this.applyCleanModeBeforeStarting();
           await this.loadMatterMapIfNeeded(duid, targetMapId);
           await this.api.app_segment_clean_by_ids(
             duid,
@@ -811,7 +811,7 @@ export default class RoborockMatterVacuumAccessory {
       this.beginFullCleanServiceAreaProgress();
       this.setAndScheduleOptimisticState(state, "start");
       this.dispatchRoborockMatterCommand("start", async () => {
-        await this.applySelectedCleanModeIfNeeded();
+        await this.applyCleanModeBeforeStarting();
         await this.api.app_start(duid, this.getMatterCommandOptions());
       });
       return;
@@ -911,7 +911,7 @@ export default class RoborockMatterVacuumAccessory {
     };
     this.setAndScheduleOptimisticState(state, "resume");
     this.dispatchRoborockMatterCommand("resume", async () => {
-      await this.applySelectedCleanModeIfNeeded();
+      await this.applyCleanModeBeforeStarting();
       await this.api.app_start(this.getDuid(), this.getMatterCommandOptions());
     });
   }
@@ -1600,11 +1600,29 @@ export default class RoborockMatterVacuumAccessory {
     return capabilities ?? { canVacuum: true, canMop: false };
   }
 
-  private async applySelectedCleanModeIfNeeded(): Promise<void> {
-    if (!this.selectedCleanModeNeedsApply) {
-      return;
-    }
-
+  /**
+   * Makes the robot match the clean mode Apple Home is displaying, before a
+   * Matter-initiated start.
+   *
+   * This used to run only when the user had just CHANGED the mode — the flag
+   * was set by the ChangeToMode handler and by nothing else. That left the
+   * most ordinary case of all unhandled: the mode Home already shows is
+   * usually the mode the user wants, so they never tap it, so no ChangeToMode
+   * arrives, so nothing was sent and the robot ran in whatever mode it had
+   * been left in. Measured in #8: a "Vacuum" start with no preceding mode
+   * request sent no water command at all and the robot mopped, while the same
+   * start one explicit tap later sent it and vacuumed.
+   *
+   * Starting a clean is a promise that the robot will run in the displayed
+   * mode, so the mode is applied on every start, changed or not. It is
+   * deliberately NOT skipped when the robot looks like it already matches:
+   * the reading such a check would consult is exactly the one that lies — a
+   * docked robot's water-box status read as plain Vacuum for the robot that
+   * then mopped. The settings themselves preserve the user's levels (a
+   * vacuum-family mode keeps the robot's current suction, a mop-family mode
+   * its current water level), so applying pins the clean TYPE and nothing else.
+   */
+  private async applyCleanModeBeforeStarting(): Promise<void> {
     const applySettings = this.api.applyMatterCleanModeSettings;
     if (typeof applySettings !== "function") {
       this.selectedCleanModeNeedsApply = false;
