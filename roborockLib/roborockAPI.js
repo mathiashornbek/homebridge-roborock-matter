@@ -3827,6 +3827,27 @@ class Roborock {
       return "timeout";
     }
 
+    // `messageQueueHandler.sendRequest` declines to put a request on the wire
+    // when the transport it would need is not there. It writes its own calm
+    // debug line at the refusal site, so the rejection describes a transport
+    // condition, not a plugin failure — logging it as an error with a stack
+    // trace once per poll buried real problems whenever a robot dropped off
+    // the Roborock cloud. Each reason keeps its own kind so that one outage
+    // does not silence the reporting of another.
+    if (/Not sending method .+ request\./.test(text)) {
+      if (text.includes("is offline")) {
+        return "device offline";
+      }
+      if (text.includes("Cloud connection not available")) {
+        return "cloud unavailable";
+      }
+      if (text.includes("Local connection not available")) {
+        return "local connection unavailable";
+      }
+
+      return "transport unavailable";
+    }
+
     if (text.includes("retry")) {
       return "retry";
     }

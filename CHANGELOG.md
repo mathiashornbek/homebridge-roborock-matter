@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.4.18
+
+**A robot that drops off the Roborock cloud filled the log with stack traces about the plugin correctly deciding not to send.** When the transport a request would need is not there — the robot is marked offline, MQTT is down, or the local socket is not connected — the request queue declines to put it on the wire. That is a deliberate, calm decision, and it writes its own debug line where it happens. But the rejection then arrived at the error handler unclassified, so it was logged as a plugin error, with a full stack trace, once per poll, for as long as the condition lasted.
+
+The shape it takes in a real log: a robot goes offline at 3:28 AM, and a single poll cycle produces six stack-traced errors in the same second, followed by one a minute after that. Nothing is wrong with the plugin in any of them.
+
+These three refusals now go through the same throttle the request timeouts have always used: one warning, then a suppressed-count summary when the window reopens. Each reason keeps its own bucket, so a robot being offline does not silence the reporting of a separate MQTT outage. Errors that are genuinely the plugin's fault — including its failure to build a request at all — are untouched and still log with their stack.
+
+`__tests__/refused-sends-are-not-plugin-errors.test.js` enumerates the rule over the source rather than over the three messages that were reported: every message the request queue can reject with must be one the classifier recognises, so a refusal path added later fails the test until it is classified. Verified red against 3.4.17: 10 of 15 failed.
+
 ## 3.4.17
 
 **Installing this package asked npm to build it, and that build could only ever fail or warn.** `dist/` is in the published tarball and `main` points into it, so nothing a user installs needs compiling — but package.json still carried `"prepare": "npm run build"`, a hook npm runs at install time. The two things it could do to a user, both measured:
