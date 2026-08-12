@@ -613,3 +613,12 @@ select:focus-visible {
     margin-left: 0;
   }
 }
+
+/* The per-action boxes under the Home app switches toggle. */
+.checkbox-group {
+  margin: 0 0 12px 26px;
+}
+
+.checkbox-group.disabled {
+  opacity: 0.5;
+}

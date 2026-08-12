@@ -26,6 +26,15 @@ const elements = {
   enableMatterChargingDocked: document.getElementById(
     "enable-matter-charging-docked"
   ),
+  enableHomeKitActionSwitches: document.getElementById(
+    "enable-homekit-action-switches"
+  ),
+  homeKitActionSwitchActions: document.getElementById(
+    "homekit-action-switch-actions"
+  ),
+  homeKitActionDock: document.getElementById("homekit-action-dock"),
+  homeKitActionPause: document.getElementById("homekit-action-pause"),
+  homeKitActionLocate: document.getElementById("homekit-action-locate"),
   enableMatterFaultReporting: document.getElementById(
     "enable-matter-fault-reporting"
   ),
@@ -74,6 +83,15 @@ const state = {
 const DIAGNOSTICS_AUTO_REFRESH_DELAY_MS = 3000;
 const DIAGNOSTICS_AUTO_REFRESH_LIMIT = 2;
 const DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS = 6;
+
+// Kept in the same order as HOMEKIT_ACTION_KEYS in src/types.ts, so the form,
+// the saved config and the plugin all name these the same way.
+const ACTION_SWITCH_KEYS = ["dock", "pause", "locate"];
+const ACTION_SWITCH_ELEMENTS = {
+  dock: () => elements.homeKitActionDock,
+  pause: () => elements.homeKitActionPause,
+  locate: () => elements.homeKitActionLocate,
+};
 
 function showToast(type, message) {
   if (
@@ -176,6 +194,13 @@ async function loadConfig() {
         config.enableMatterChargingDockedStates
       );
     }
+    if (elements.enableHomeKitActionSwitches) {
+      elements.enableHomeKitActionSwitches.checked = Boolean(
+        config.enableHomeKitActionSwitches
+      );
+    }
+    applyActionSwitchSelection(readActionSwitchSelection(config));
+    syncActionSwitchAvailability();
     if (elements.enableMatterFaultReporting) {
       elements.enableMatterFaultReporting.checked = Boolean(
         config.enableMatterFaultReporting
@@ -327,6 +352,10 @@ async function describeEnabledMatterFeatures() {
     ],
     ["chargingDockedStates", config.enableMatterChargingDockedStates === true],
     ["faultReporting", config.enableMatterFaultReporting === true],
+    [
+      `homeKitActionSwitches(${readActionSwitchSelection(config).join("+") || "none"})`,
+      config.enableHomeKitActionSwitches === true,
+    ],
   ]
     .filter(([, on]) => on)
     .map(([name]) => name);
@@ -368,12 +397,69 @@ function hasUnsavedMatterFeatureEdits(config) {
       elements.enableMatterFaultReporting,
       config.enableMatterFaultReporting === true,
     ],
+    [
+      elements.enableHomeKitActionSwitches,
+      config.enableHomeKitActionSwitches === true,
+    ],
   ];
+
+  if (
+    getActionSwitchSelection().join(",") !==
+    readActionSwitchSelection(config).join(",")
+  ) {
+    return true;
+  }
 
   return comparisons.some(
     ([element, savedValue]) =>
       element && Boolean(element.checked) !== savedValue
   );
+}
+
+/**
+ * The action switches the SAVED config asks for.
+ *
+ * Reads the config only. The report builder reaches this, and a report that
+ * quotes the form describes a plugin that is not running.
+ */
+function readActionSwitchSelection(config) {
+  const saved = config?.homeKitActionSwitches;
+  if (!Array.isArray(saved)) {
+    // Matches the plugin: master on with no list saved means Return to Dock.
+    return config?.enableHomeKitActionSwitches === true ? ["dock"] : [];
+  }
+
+  return ACTION_SWITCH_KEYS.filter((key) => saved.includes(key));
+}
+
+/** The action switches the form currently shows. */
+function getActionSwitchSelection() {
+  return ACTION_SWITCH_KEYS.filter((key) =>
+    Boolean(ACTION_SWITCH_ELEMENTS[key]()?.checked)
+  );
+}
+
+function applyActionSwitchSelection(selection) {
+  ACTION_SWITCH_KEYS.forEach((key) => {
+    const element = ACTION_SWITCH_ELEMENTS[key]();
+    if (element) {
+      element.checked = selection.includes(key);
+    }
+  });
+}
+
+/** Grey out the per-action boxes while the feature itself is off. */
+function syncActionSwitchAvailability() {
+  const on = Boolean(elements.enableHomeKitActionSwitches?.checked);
+  if (elements.homeKitActionSwitchActions) {
+    elements.homeKitActionSwitchActions.classList.toggle("disabled", !on);
+  }
+  ACTION_SWITCH_KEYS.forEach((key) => {
+    const element = ACTION_SWITCH_ELEMENTS[key]();
+    if (element) {
+      element.disabled = !on;
+    }
+  });
 }
 
 function getTransientWarningThrottleHours() {
@@ -417,6 +503,10 @@ function getFormValues() {
     enableMatterFaultReporting: Boolean(
       elements.enableMatterFaultReporting?.checked
     ),
+    enableHomeKitActionSwitches: Boolean(
+      elements.enableHomeKitActionSwitches?.checked
+    ),
+    homeKitActionSwitches: getActionSwitchSelection(),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
     cloudOnlyMode: getCloudOnlyMode(),
@@ -1469,6 +1559,11 @@ function init() {
   if (elements.saveFeatureSettings) {
     elements.saveFeatureSettings.addEventListener("click", () =>
       saveCredentials(true)
+    );
+  }
+  if (elements.enableHomeKitActionSwitches) {
+    elements.enableHomeKitActionSwitches.addEventListener("change", () =>
+      syncActionSwitchAvailability()
     );
   }
   elements.login.addEventListener("click", login);

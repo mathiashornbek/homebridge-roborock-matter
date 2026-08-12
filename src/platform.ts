@@ -10,10 +10,21 @@ import {
 } from "homebridge";
 
 import RoborockMatterVacuumAccessory from "./matter_vacuum_accessory";
+import RoborockActionSwitchAccessory, {
+  ACTION_SWITCH_KIND,
+  ActionSwitchContext,
+  actionSwitchUuidSeed,
+  getActionSwitchDefinition,
+  isActionSwitchAccessory,
+} from "./action_switch_accessory";
 
 import RoborockPlatformLogger from "./logger";
-import { RoborockPlatformConfig } from "./types";
-import { PLATFORM_NAME, PLUGIN_NAME } from "./settings";
+import {
+  HomeKitActionKey,
+  isHomeKitActionKey,
+  RoborockPlatformConfig,
+} from "./types";
+import { HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME, PLUGIN_NAME } from "./settings";
 import { decryptSession } from "./crypto";
 
 const DEP0040_CODE = "DEP0040";
@@ -78,6 +89,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   private readonly matterAccessories: any[] = [];
   private readonly matterVacuums: Map<string, RoborockMatterVacuumAccessory> =
     new Map();
+  /** Optional HAP action switches, keyed `<duid>:<action>`. */
+  private readonly actionSwitches: Map<string, RoborockActionSwitchAccessory> =
+    new Map();
   private matterUnavailableLogged = false;
 
   public readonly roborockAPI: any;
@@ -96,7 +110,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   constructor(
     homebridgeLogger: Logger,
     config: PlatformConfig,
-    private readonly api: API
+    // Public because the action-switch accessories build their services from
+    // this.api.hap; everything else on the platform is still reached through
+    // the narrow helpers below.
+    public readonly api: API
   ) {
     this.platformConfig = config as RoborockPlatformConfig;
 
@@ -162,6 +179,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       // fires into a bridge that is tearing down.
       for (const vacuum of this.matterVacuums.values()) {
         vacuum.dispose();
+      }
+
+      for (const actionSwitch of this.actionSwitches.values()) {
+        actionSwitch.dispose();
       }
 
       if (this.roborockAPI) {
@@ -409,13 +430,14 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
 
     try {
       const self = this;
+      let devices: any[] = [];
 
       if (self.roborockAPI.isInited()) {
-        const devices = self.roborockAPI.getVacuumList();
+        devices = self.roborockAPI.getVacuumList();
 
-        // Matter-only edition: this plugin publishes each robot exclusively
-        // as a native Matter vacuum. No HomeKit (HAP) accessories are
-        // registered.
+        // Every robot is published as a native Matter vacuum. The only HAP
+        // accessories this plugin registers are the opt-in action switches
+        // below; the robot itself never appears over HomeKit.
         for (const device of devices) {
           await self.discoverMatterVacuum(device);
         }
@@ -426,15 +448,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       // Matter-only migration: unregister every cached HomeKit accessory
       // (the legacy fan + helper switches) so robots appear exactly once —
       // as Matter vacuums — in Apple Home.
-      if (this.accessories.length > 0) {
-        this.log.info(
-          `Matter-only edition: removing ${this.accessories.length} legacy HomeKit accessor${this.accessories.length === 1 ? "y" : "ies"} (robots are published via Matter only).`
-        );
-        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
-          ...this.accessories,
-        ]);
-        this.accessories.length = 0;
-      }
+      this.removeLegacyHomeKitAccessories();
+
+      this.syncActionSwitches(Array.isArray(devices) ? devices : []);
 
       await this.unregisterStaleMatterAccessories();
     } catch (error) {
@@ -444,6 +460,240 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       );
       this.log.debug(error);
     }
+  }
+
+  /**
+   * Unregister every cached HAP accessory that is not one of ours.
+   *
+   * This sweep is older than the action switches and used to take the whole
+   * cache without looking: the Matter-only rebuild removed the legacy fan and
+   * helper-switch accessories, and a user who upgraded mid-way would otherwise
+   * keep a duplicate robot in Apple Home forever. Registering a new HAP
+   * accessory under that rule would have deleted it on the very next restart —
+   * and the log line would have gone on calling it a legacy accessory while it
+   * did so. The partition is by the context marker, not by name, because a
+   * name is user-editable in the Home app and the marker is not.
+   */
+  private removeLegacyHomeKitAccessories(): void {
+    const legacy = this.accessories.filter(
+      (accessory) => !isActionSwitchAccessory(accessory)
+    );
+
+    if (legacy.length === 0) {
+      return;
+    }
+
+    this.log.info(
+      `Matter-only edition: removing ${legacy.length} legacy HomeKit accessor${legacy.length === 1 ? "y" : "ies"} (robots are published via Matter only).`
+    );
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, legacy);
+
+    for (const accessory of legacy) {
+      const index = this.accessories.indexOf(accessory);
+      if (index >= 0) {
+        this.accessories.splice(index, 1);
+      }
+    }
+  }
+
+  /**
+   * Which action switches the user has asked for.
+   *
+   * Off unless the master switch is explicitly on: this adds accessories to
+   * somebody's Home app, which is not something a plugin update should do by
+   * itself. With the master on and no list saved, "dock" is the default,
+   * because that is the one Apple Home cannot do any other way (issue #3).
+   */
+  private getEnabledActionSwitchKeys(): HomeKitActionKey[] {
+    if (this.platformConfig.enableHomeKitActionSwitches !== true) {
+      return [];
+    }
+
+    const configured = this.platformConfig.homeKitActionSwitches;
+    if (!Array.isArray(configured)) {
+      return ["dock"];
+    }
+
+    return [...new Set(configured.filter(isHomeKitActionKey))];
+  }
+
+  /**
+   * Bring the registered action switches in line with the config and the
+   * account, adding what is missing and removing what is no longer wanted.
+   */
+  private syncActionSwitches(devices: any[]): void {
+    const enabled = this.getEnabledActionSwitchKeys();
+
+    // The disabled path costs one config read and one length check. Nothing
+    // below runs, no accessory is built, and nothing is scheduled.
+    if (enabled.length === 0 && this.accessories.length === 0) {
+      return;
+    }
+
+    const wanted = new Map<
+      string,
+      { duid: string; action: HomeKitActionKey; vacuumName: string }
+    >();
+
+    for (const device of devices) {
+      const duid = String(device?.duid ?? "");
+      if (!duid) {
+        continue;
+      }
+
+      const vacuum = this.matterVacuums.get(duid);
+      const vacuumName = this.getVacuumDisplayName(duid, device);
+
+      for (const action of enabled) {
+        const definition = getActionSwitchDefinition(action);
+        if (!definition) {
+          continue;
+        }
+
+        if (vacuum && !vacuum.supportsHomeKitAction(action)) {
+          this.log.debug(
+            `Not publishing the ${definition.nameSuffix} switch for ${vacuumName}: the robot does not support that command.`
+          );
+          continue;
+        }
+
+        wanted.set(`${duid}:${action}`, { duid, action, vacuumName });
+      }
+    }
+
+    // An empty device list is almost always a temporary cloud or network
+    // failure rather than an emptied account — the same trap
+    // unregisterStaleMatterAccessories documents. Removing a switch a
+    // disabled setting no longer asks for is safe either way, because that
+    // decision comes from the config and not from the cloud.
+    const accountIsTrustworthy = devices.length > 0;
+    const obsolete = this.accessories.filter((accessory) => {
+      const context = accessory.context as Partial<ActionSwitchContext>;
+      const key = `${context?.duid}:${context?.action}`;
+      if (wanted.has(key)) {
+        return false;
+      }
+
+      const stillEnabled =
+        typeof context?.action === "string" &&
+        enabled.includes(context.action as HomeKitActionKey);
+
+      return !stillEnabled || accountIsTrustworthy;
+    });
+
+    if (obsolete.length > 0) {
+      this.removeActionSwitches(obsolete);
+    }
+
+    for (const [key, target] of wanted) {
+      const existing = this.actionSwitches.get(key);
+      if (existing) {
+        // The robot may have been renamed in the Roborock app since the last
+        // start; the switch follows it rather than keeping the old name.
+        existing.updateIdentity(target.vacuumName);
+        continue;
+      }
+
+      this.addActionSwitch(key, target.duid, target.action, target.vacuumName);
+    }
+  }
+
+  private removeActionSwitches(accessories: PlatformAccessory[]): void {
+    for (const accessory of accessories) {
+      const context = accessory.context as Partial<ActionSwitchContext>;
+      this.log.info(
+        `Removing the '${accessory.displayName}' switch; it is no longer enabled or its robot is gone.`
+      );
+
+      const key = `${context?.duid}:${context?.action}`;
+      this.actionSwitches.get(key)?.dispose();
+      this.actionSwitches.delete(key);
+
+      const index = this.accessories.indexOf(accessory);
+      if (index >= 0) {
+        this.accessories.splice(index, 1);
+      }
+    }
+
+    this.api.unregisterPlatformAccessories(
+      HAP_PLUGIN_IDENTIFIER,
+      PLATFORM_NAME,
+      accessories
+    );
+  }
+
+  private addActionSwitch(
+    key: string,
+    duid: string,
+    action: HomeKitActionKey,
+    vacuumName: string
+  ): void {
+    const definition = getActionSwitchDefinition(action);
+    if (!definition) {
+      return;
+    }
+
+    const name = `${vacuumName} ${definition.nameSuffix}`;
+
+    const uuid = this.api.hap.uuid.generate(actionSwitchUuidSeed(duid, action));
+    const context: ActionSwitchContext = {
+      duid,
+      kind: ACTION_SWITCH_KIND,
+      action,
+    };
+
+    let accessory = this.accessories.find((cached) => cached.UUID === uuid);
+    const isNew = !accessory;
+
+    if (!accessory) {
+      accessory = new this.api.platformAccessory(name, uuid);
+      this.accessories.push(accessory);
+    }
+
+    accessory.displayName = name;
+    accessory.context = context;
+
+    const actionSwitch = new RoborockActionSwitchAccessory(
+      this,
+      accessory,
+      definition,
+      duid
+    );
+    this.actionSwitches.set(key, actionSwitch);
+
+    if (isNew) {
+      this.log.info(
+        `Adding the '${name}' switch — one press ${definition.summary}.`
+      );
+      this.api.registerPlatformAccessories(
+        HAP_PLUGIN_IDENTIFIER,
+        PLATFORM_NAME,
+        [accessory]
+      );
+    }
+  }
+
+  getMatterVacuum(duid: string): RoborockMatterVacuumAccessory | undefined {
+    return this.matterVacuums.get(duid);
+  }
+
+  getVacuumModel(duid: string): string {
+    return (
+      this.roborockAPI.getProductAttribute(duid, "model") || "Roborock Vacuum"
+    );
+  }
+
+  getVacuumSerialNumber(duid: string): string {
+    return this.roborockAPI.getVacuumDeviceInfo(duid, "sn") || duid;
+  }
+
+  private getVacuumDisplayName(duid: string, device?: any): string {
+    return (
+      this.roborockAPI.getVacuumDeviceInfo(duid, "name") ||
+      this.matterVacuums.get(duid)?.getDisplayName() ||
+      device?.name ||
+      "Roborock Vacuum"
+    );
   }
 
   getMatterApi(): any | null {

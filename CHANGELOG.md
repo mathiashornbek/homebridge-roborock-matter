@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.5.0
+
+**Apple Home cannot send a Matter vacuum to its dock from an automation, so the plugin now offers a switch that can.** The measurement is pponce's, in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3): the commands all work from the tile and from Siri, but "send the vacuum to its dock" is not on Apple's list of automation actions for a Matter vacuum, and he moved that part of his setup to a HAP-based plugin rather than go without it. 3.4.19 stopped the README from promising what could not be delivered. This release delivers it.
+
+Turning on **Add Home app switches for Dock, Pause and Find** publishes one plain HomeKit switch per robot per action you select — `Vicky Return to Dock`, `Vicky Pause`, `Vicky Find`. A switch is an automation action everywhere, so the schedule that could not reach the tile can reach the switch. Each one is momentary: it turns itself off again 1.5 s after it is pressed, because there is no docking state worth mirroring and a second state machine racing the same laggy Roborock snapshot is exactly what issues #4 and #12 were about.
+
+**The press takes the existing command path rather than a second one.** It routes into the same `returnToDock` / `pauseCleaning` / `identifyVacuum` the Matter cluster handlers use, so it inherits the acknowledgement wait and timing log (#12), the decision to forward a command the cached snapshot claims is unnecessary (#4), the retry when Roborock times out while the robot is still cleaning, and the optimistic cluster write that moves the tile so a robot driving home does not read Ready. The log now names the surface that asked: `Sending Vicky back to dock from the Home switch.` next to `Sending Vicky back to dock from Matter.` — the first question when a schedule misfires is which one sent it.
+
+Three things this had to get right that are not in the feature description:
+
+- **The Matter-only sweep would have deleted them.** `discoverDevices()` has always unregistered every cached HAP accessory without looking at what it was, which was correct while this plugin registered none. A switch shipped against that rule would work until the first restart and then vanish out of every automation using it, while the log went on calling it a legacy accessory. The sweep now partitions on a context marker written into the accessory — not on its name, which is editable in the Home app.
+- **They are registered under the real package name.** `PLUGIN_NAME` has never matched package.json, and Homebridge stores whatever it is given as the accessory's owning plugin. On restore it falls back to searching by dynamic platform name, which repairs the mismatch with an alarming log line — and throws when two plugins claim the same platform name, at which point the accessory is called orphaned and removed. Matter keeps its own cache and cannot be moved without forcing every user to re-pair, so the correct identifier is introduced for HAP only.
+- **An empty device list does not remove anything.** The same trap `unregisterStaleMatterAccessories` documents: a failed startup arrives at discovery as "the account has no robots". Removing a switch because the config no longer asks for it is safe; removing one because the Roborock cloud had a bad minute is not.
+
+Off by default, per robot per action, and the Find switch is only published for robots that report `find_me` at all. No re-pairing is needed to add or remove them — they are HomeKit accessories and arrive over the Homebridge bridge, which does mean a user who has only ever paired the Matter robot has to pair the bridge itself before they appear. The robot stays a Matter vacuum and is untouched.
+
+`__tests__/action-switches-survive-the-legacy-sweep.test.js` enumerates the partition over context shapes rather than the two cases I happened to think of, `__tests__/action-switches-are-an-opt-in.test.js` covers the config and removal rules, and `__tests__/action-switch-press-uses-the-matter-command-path.test.js` pins that a press reaches Roborock through the shared path and is named apart from Matter in the log. Verified red: 4 of 8 fail with the old sweep restored, and the empty-device-list rule fails 1 of 17 with the guard removed.
+
 ## 3.4.19
 
 **Two things the README told users were not what had been measured.** No behaviour changes in this release; both are wording, and wording is what people choose a plugin on.

@@ -1,10 +1,9 @@
-import {
-  clearTimeout as nodeClearTimeout,
-  setTimeout as nodeSetTimeout,
-} from "node:timers";
+import { setTimeout as nodeSetTimeout } from "node:timers";
 
 import RoborockPlatform from "./platform";
 import { getLiveMessageForThisAccessory } from "./live_message";
+import { HomeKitActionKey } from "./types";
+import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
 const MATTER_CLEAN_MODE_PREP_TIMEOUT_MS = 2500;
@@ -88,33 +87,21 @@ type RoborockStatusRefreshOptions = {
 
 type MatterCommandDispatchOptions = {
   retryReturnToDockIfStillActive?: boolean;
+  /** Which control surface asked for this — see MATTER_SURFACE. */
+  surface?: string;
 };
 
-function scheduleTimer(
-  callback: () => void,
-  delayMs: number
-): ReturnType<typeof nodeSetTimeout> {
-  const setTimer =
-    typeof globalThis.setTimeout === "function"
-      ? globalThis.setTimeout
-      : nodeSetTimeout;
+// Commands reach this class from two places now: the Matter clusters, and the
+// optional HAP action switches. The surface is threaded through the command
+// path rather than inferred, because the only way a user can tell a dropped
+// automation from a dropped tile press is the log line that names which one
+// sent the command.
+export const MATTER_SURFACE = "Matter";
+export const HOME_SWITCH_SURFACE = "Home switch";
 
-  return setTimer(callback, delayMs);
-}
-
-function unrefTimer(timer: ReturnType<typeof nodeSetTimeout>): void {
-  if (typeof timer === "object" && typeof timer.unref === "function") {
-    timer.unref();
-  }
-}
-
-function clearTimer(timer: ReturnType<typeof nodeSetTimeout>): void {
-  const clear =
-    typeof globalThis.clearTimeout === "function"
-      ? globalThis.clearTimeout
-      : nodeClearTimeout;
-
-  clear(timer);
+/** "Matter" reads bare; anything else takes an article. */
+function surfacePhrase(surface: string): string {
+  return surface === MATTER_SURFACE ? surface : `the ${surface}`;
 }
 
 /**
@@ -509,6 +496,54 @@ export default class RoborockMatterVacuumAccessory {
     };
   }
 
+  /** The robot's name exactly as the log lines and Apple Home spell it. */
+  getDisplayName(): string {
+    return this.getVacuumName();
+  }
+
+  /**
+   * Whether this robot can actually perform the action behind a HAP switch.
+   *
+   * Only `locate` is conditional: `find_me` is optional on the Roborock API
+   * and absent on some models, and identifyVacuum already degrades to a debug
+   * line rather than an error when it is missing. A switch that silently does
+   * nothing is worse than no switch, so an unsupported action is never
+   * published in the first place.
+   */
+  supportsHomeKitAction(action: HomeKitActionKey): boolean {
+    if (action === "locate") {
+      return typeof this.api.find_me === "function";
+    }
+
+    return true;
+  }
+
+  /**
+   * Perform an action requested by one of the optional HAP switches.
+   *
+   * This deliberately routes into the same private methods the Matter cluster
+   * handlers use, rather than calling app_charge/app_pause directly. Those
+   * methods carry every lesson the command path has already learned —
+   * acknowledgement waiting and timing logs (issue #12), forwarding a command
+   * the cached snapshot claims is unnecessary (issue #4), the return-to-dock
+   * retry when Roborock times out but is still cleaning, and the optimistic
+   * cluster write that moves the Matter tile. A switch that bypassed them
+   * would be a second, worse command path that re-earns all four bugs.
+   */
+  async runHomeKitAction(action: HomeKitActionKey): Promise<void> {
+    switch (action) {
+      case "dock":
+        await this.returnToDock(HOME_SWITCH_SURFACE);
+        return;
+      case "pause":
+        await this.pauseCleaning(HOME_SWITCH_SURFACE);
+        return;
+      case "locate":
+        await this.identifyVacuum(HOME_SWITCH_SURFACE);
+        return;
+    }
+  }
+
   markRegistered(): void {
     this.registered = true;
     // Fresh registration: nothing is published on the new node yet.
@@ -718,15 +753,17 @@ export default class RoborockMatterVacuumAccessory {
     return handlers;
   }
 
-  private async identifyVacuum(): Promise<void> {
-    await this.publishCurrentMatterState("Matter identify command", {
+  private async identifyVacuum(
+    surface: string = MATTER_SURFACE
+  ): Promise<void> {
+    await this.publishCurrentMatterState(`${surface} identify command`, {
       clearOptimistic: true,
     });
 
     const findMe = this.api.find_me;
     if (typeof findMe !== "function") {
       this.platform.log.debug(
-        `Matter identify requested for ${this.getVacuumName()}, but the Roborock API does not expose find_me.`
+        `${surface} identify requested for ${this.getVacuumName()}, but the Roborock API does not expose find_me.`
       );
       return;
     }
@@ -739,13 +776,16 @@ export default class RoborockMatterVacuumAccessory {
       );
     } catch (error) {
       this.platform.log.warn(
-        `Unable to locate ${this.getVacuumName()} from Matter identify: ${this.getErrorMessage(error)}`
+        `Unable to locate ${this.getVacuumName()} from ${surfacePhrase(surface)} identify: ${this.getErrorMessage(error)}`
       );
     }
 
-    await this.publishCurrentMatterState("Matter identify command complete", {
-      clearOptimistic: true,
-    });
+    await this.publishCurrentMatterState(
+      `${surface} identify command complete`,
+      {
+        clearOptimistic: true,
+      }
+    );
   }
 
   private async changeRunMode(newMode?: number): Promise<void> {
@@ -866,7 +906,7 @@ export default class RoborockMatterVacuumAccessory {
     );
   }
 
-  private async pauseCleaning(): Promise<void> {
+  private async pauseCleaning(surface: string = MATTER_SURFACE): Promise<void> {
     const roborockState = this.getNumberStatus("state");
     const chargeStatus = this.getNumberStatus("charge_status");
     const currentOperationalState = this.getOperationalState(
@@ -885,10 +925,12 @@ export default class RoborockMatterVacuumAccessory {
     // harmless no-op, and the optimistic state self-corrects if it was idle.
     if (looksIdle) {
       this.platform.log.info(
-        `Pausing ${this.getVacuumName()} from Matter despite an idle snapshot; the cached state may be stale.`
+        `Pausing ${this.getVacuumName()} from ${surfacePhrase(surface)} despite an idle snapshot; the cached state may be stale.`
       );
     } else {
-      this.platform.log.info(`Pausing ${this.getVacuumName()} from Matter.`);
+      this.platform.log.info(
+        `Pausing ${this.getVacuumName()} from ${surfacePhrase(surface)}.`
+      );
     }
     const state = {
       rvcOperationalState: {
@@ -896,8 +938,10 @@ export default class RoborockMatterVacuumAccessory {
       },
     };
     this.setAndScheduleOptimisticState(state, "pause");
-    this.dispatchRoborockMatterCommand("pause", () =>
-      this.api.app_pause(this.getDuid(), this.getMatterCommandOptions())
+    this.dispatchRoborockMatterCommand(
+      "pause",
+      () => this.api.app_pause(this.getDuid(), this.getMatterCommandOptions()),
+      { surface }
     );
   }
 
@@ -916,18 +960,18 @@ export default class RoborockMatterVacuumAccessory {
     });
   }
 
-  private async returnToDock(): Promise<void> {
+  private async returnToDock(surface: string = MATTER_SURFACE): Promise<void> {
     // Always forward an explicit Matter dock to the robot. As with pause, the
     // cached snapshot can lag or be overridden by a stale HomeData refresh while
     // the robot is really cleaning (issues #4 and #12); docking an already-docked
     // robot is a harmless no-op.
     if (this.isDockedOrChargingNow()) {
       this.platform.log.info(
-        `Sending ${this.getVacuumName()} back to dock from Matter despite a docked snapshot; the cached state may be stale.`
+        `Sending ${this.getVacuumName()} back to dock from ${surfacePhrase(surface)} despite a docked snapshot; the cached state may be stale.`
       );
     } else {
       this.platform.log.info(
-        `Sending ${this.getVacuumName()} back to dock from Matter.`
+        `Sending ${this.getVacuumName()} back to dock from ${surfacePhrase(surface)}.`
       );
     }
     const returnOperationalState = this.isExtendedOperationalStateEnabled()
@@ -947,7 +991,7 @@ export default class RoborockMatterVacuumAccessory {
     this.dispatchRoborockMatterCommand(
       "return to dock",
       () => this.api.app_charge(this.getDuid(), this.getMatterCommandOptions()),
-      { retryReturnToDockIfStillActive: true }
+      { retryReturnToDockIfStillActive: true, surface }
     );
   }
 
@@ -3227,10 +3271,11 @@ export default class RoborockMatterVacuumAccessory {
     options: MatterCommandDispatchOptions = {}
   ): void {
     const startedAt = Date.now();
+    const surface = options.surface ?? MATTER_SURFACE;
 
     void command()
       .then(() => {
-        this.logMatterCommandDuration(action, startedAt);
+        this.logMatterCommandDuration(action, startedAt, surface);
         this.schedulePostCommandStatusRefresh(action);
       })
       .catch(async (error) => {
@@ -3240,7 +3285,7 @@ export default class RoborockMatterVacuumAccessory {
           // and let the user retry once startup completes instead of showing
           // a scary error with a misleading stack.
           this.platform.log.warn(
-            `Matter ${action} command for ${this.getVacuumName()} arrived before the Roborock connection finished starting up. Try again in a few seconds. ${this.getErrorMessage(error)}`
+            `${surface} ${action} command for ${this.getVacuumName()} arrived before the Roborock connection finished starting up. Try again in a few seconds. ${this.getErrorMessage(error)}`
           );
           await this.recoverMatterStateAfterFailedCommand(action);
           return;
@@ -3248,25 +3293,28 @@ export default class RoborockMatterVacuumAccessory {
 
         if (this.isMatterCommandTimeoutError(error)) {
           this.platform.log.warn(
-            `Matter ${action} command for ${this.getVacuumName()} was sent but Roborock did not acknowledge it before timeout: ${this.getErrorMessage(error)}. Keeping the optimistic Matter state and actively refreshing Roborock status.`
+            `${surface} ${action} command for ${this.getVacuumName()} was sent but Roborock did not acknowledge it before timeout: ${this.getErrorMessage(error)}. Keeping the optimistic Matter state and actively refreshing Roborock status.`
           );
           this.schedulePostCommandStatusRefresh(action, {
             acknowledgementTimedOut: true,
           });
           if (options.retryReturnToDockIfStillActive) {
-            this.scheduleReturnToDockRetry(command);
+            this.scheduleReturnToDockRetry(command, surface);
           }
           return;
         }
 
         this.platform.log.error(
-          `Error sending Matter ${action} command to ${this.getVacuumName()}: ${this.getErrorMessage(error)}`
+          `Error sending ${surface} ${action} command to ${this.getVacuumName()}: ${this.getErrorMessage(error)}`
         );
         await this.recoverMatterStateAfterFailedCommand(action);
       });
   }
 
-  private scheduleReturnToDockRetry(command: () => Promise<void>): void {
+  private scheduleReturnToDockRetry(
+    command: () => Promise<void>,
+    surface: string = MATTER_SURFACE
+  ): void {
     if (this.returnToDockRetryPending) {
       return;
     }
@@ -3279,25 +3327,29 @@ export default class RoborockMatterVacuumAccessory {
         .then(() => {
           if (!this.shouldRetryReturnToDock()) {
             this.platform.log.debug(
-              `Skipping Matter return to dock retry for ${this.getVacuumName()} because Roborock no longer reports active cleaning.`
+              `Skipping ${surface} return to dock retry for ${this.getVacuumName()} because Roborock no longer reports active cleaning.`
             );
             return;
           }
 
           const startedAt = Date.now();
           this.platform.log.warn(
-            `Retrying Matter return to dock command for ${this.getVacuumName()} because Roborock still reports active cleaning after the first command timed out.`
+            `Retrying ${surface} return to dock command for ${this.getVacuumName()} because Roborock still reports active cleaning after the first command timed out.`
           );
 
           return command()
             .then(() => {
-              this.logMatterCommandDuration("return to dock retry", startedAt);
+              this.logMatterCommandDuration(
+                "return to dock retry",
+                startedAt,
+                surface
+              );
               this.schedulePostCommandStatusRefresh("return to dock retry");
             })
             .catch(async (error) => {
               if (this.isMatterCommandTimeoutError(error)) {
                 this.platform.log.warn(
-                  `Matter return to dock retry for ${this.getVacuumName()} was sent but Roborock did not acknowledge it before timeout: ${this.getErrorMessage(error)}. Keeping the optimistic Matter state and actively refreshing Roborock status.`
+                  `${surface} return to dock retry for ${this.getVacuumName()} was sent but Roborock did not acknowledge it before timeout: ${this.getErrorMessage(error)}. Keeping the optimistic Matter state and actively refreshing Roborock status.`
                 );
                 this.schedulePostCommandStatusRefresh("return to dock retry", {
                   acknowledgementTimedOut: true,
@@ -3306,7 +3358,7 @@ export default class RoborockMatterVacuumAccessory {
               }
 
               this.platform.log.error(
-                `Error sending Matter return to dock retry to ${this.getVacuumName()}: ${this.getErrorMessage(error)}`
+                `Error sending ${surface} return to dock retry to ${this.getVacuumName()}: ${this.getErrorMessage(error)}`
               );
               await this.recoverMatterStateAfterFailedCommand(
                 "return to dock retry"
@@ -3315,7 +3367,7 @@ export default class RoborockMatterVacuumAccessory {
         })
         .catch((error) => {
           this.platform.log.debug(
-            `Unable to evaluate Matter return to dock retry for ${this.getVacuumName()}: ${this.getErrorMessage(error)}`
+            `Unable to evaluate ${surface} return to dock retry for ${this.getVacuumName()}: ${this.getErrorMessage(error)}`
           );
         });
     }, MATTER_RETURN_TO_DOCK_RETRY_DELAY_MS);
@@ -3438,11 +3490,15 @@ export default class RoborockMatterVacuumAccessory {
     unrefTimer(retryTimer);
   }
 
-  private logMatterCommandDuration(action: string, startedAt: number): void {
+  private logMatterCommandDuration(
+    action: string,
+    startedAt: number,
+    surface: string = MATTER_SURFACE
+  ): void {
     const durationMs = Date.now() - startedAt;
     const transport = this.getTransportDescription();
     const message =
-      `Matter ${action} command for ${this.getVacuumName()} was acknowledged ` +
+      `${surface} ${action} command for ${this.getVacuumName()} was acknowledged ` +
       `by Roborock in ${durationMs} ms${transport ? ` via ${transport}` : ""}.`;
 
     if (durationMs >= SLOW_MATTER_COMMAND_MS) {

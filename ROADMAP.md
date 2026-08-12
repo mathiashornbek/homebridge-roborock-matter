@@ -2,6 +2,16 @@
 
 ## Recently Completed
 
+- **Home app action switches (3.5.0).** Apple Home does not offer a Matter
+  vacuum's commands as automation actions — measured for docking by pponce in
+  issue #3, who moved that part of his setup to a HAP plugin rather than go
+  without it. An opt-in switch per robot per action (Return to Dock, Pause,
+  Find) gives an automation something it can actually turn on. The press routes
+  through the same command path as the Matter tile, so it inherits the
+  acknowledgement wait, the #4 forward-anyway decision, the dock retry and the
+  optimistic tile update instead of re-earning all four. The switches are
+  partitioned out of the Matter-only accessory sweep by a context marker, and
+  registered under the real package name rather than PLUGIN_NAME.
 - Repo cleanup (3.4.12): removed the ioBroker-era leftovers this fork never
   used — the orphaned map viewer and MITM sniffing script, ten locale files no
   code path could ever load, ten unreferenced functions, and the last dead
@@ -51,7 +61,7 @@
 - Added startup diagnostics auto-refresh and transport freshness timestamps.
 - Added a manual "Test Local Connection" action that runs a live LAN TCP probe from the admin UI.
 - Added clearer transport logs for local TCP connections, cloud fallback, local recovery, remote/shared devices, missing local credentials, and missing local IP discovery.
-- _(pre-Matter-only)_ Added dedicated HomeKit controls for Pause Cleaning and Return to Dock. Superseded: these HAP accessories were removed in the Matter-only rebuild — see "Superseded by the Matter-only design" below.
+- _(pre-Matter-only)_ Added dedicated HomeKit controls for Pause Cleaning and Return to Dock. These were removed in the Matter-only rebuild; Return to Dock, Pause and Find came back in 3.5.0 as opt-in switches beside the Matter vacuum, for the automation gap measured in issue #3 — not as a second way to publish the robot.
 - Clarified cloud-only transport logs so expected Roborock cloud calls are not described as local fallback.
 - Added configurable, per-vacuum throttling for recurring transient timeout warnings.
 - _(pre-Matter-only)_ Added Phase 1 optional Matter robotic vacuum exposure for Homebridge 2 alongside the HomeKit fan/switch accessory. The HomeKit half is gone; Matter is now the only surface.
@@ -94,7 +104,7 @@
 
 ## Superseded by the Matter-only design
 
-- ~~Improve scene and room controls so HomeKit exposes room cleaning shortcuts~~ — this fork removed all HomeKit (HAP) accessories by design; room cleaning is exposed natively through Matter Service Area selection, which Apple Home renders with correct room names and no invalid-characteristic warnings.
+- ~~Improve scene and room controls so HomeKit exposes room cleaning shortcuts~~ — the robot itself is published over Matter only, and room cleaning is exposed natively through Matter Service Area selection, which Apple Home renders with correct room names and no invalid-characteristic warnings. The one HAP exception is the 3.5.0 action switches, which exist because Apple offers no automation action for these commands; they do not publish the robot and are off by default.
 
 ## Worth Evaluating Carefully
 

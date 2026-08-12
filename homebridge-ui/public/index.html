@@ -260,6 +260,46 @@
         robot report fully charged early.</small
       >
     </label>
+    <label class="checkbox">
+      <input id="enable-homekit-action-switches" type="checkbox" />
+      <span>
+        Add Home app switches for Dock, Pause and Find
+        <small
+          >Apple Home does not offer &ldquo;send the vacuum to its dock&rdquo;
+          as an automation action for a Matter vacuum &mdash; measured in issue
+          #3. A plain switch is an automation action everywhere, so this adds
+          one extra switch per robot per action, which an automation, a scene or
+          Siri can turn on. Each switch is momentary: it turns itself off again
+          about a second after it is pressed. The robot itself stays a Matter
+          vacuum and is unaffected. Off by default, because turning it on adds
+          accessories to your Home app.</small
+        >
+      </span>
+    </label>
+    <div id="homekit-action-switch-actions" class="checkbox-group">
+      <label class="checkbox">
+        <input id="homekit-action-dock" type="checkbox" />
+        <span
+          >Return to Dock
+          <small>The one Apple Home cannot do any other way.</small></span
+        >
+      </label>
+      <label class="checkbox">
+        <input id="homekit-action-pause" type="checkbox" />
+        <span>Pause <small>Pauses the current clean.</small></span>
+      </label>
+      <label class="checkbox">
+        <input id="homekit-action-locate" type="checkbox" />
+        <span
+          >Find
+          <small
+            >The robot announces where it is. Hidden for robots that do not
+            support it.</small
+          ></span
+        >
+      </label>
+    </div>
+
     <p class="help matter-setup-note">
       After saving and restarting the Roborock bridge, use the Matter Pairing
       section below. Apple Home may need both the bridge QR code and the

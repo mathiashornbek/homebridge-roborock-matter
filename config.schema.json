@@ -124,6 +124,37 @@
         "maximum": 100,
         "default": 100
       },
+      "enableHomeKitActionSwitches": {
+        "title": "Add Home App Switches for Dock, Pause and Find",
+        "description": "Publishes one extra HomeKit switch per robot per action, so Apple Home automations and Shortcuts can send a command that Apple does not offer for a Matter vacuum. Measured in issue #3: Apple Home has no \"send the vacuum to its dock\" automation action for a Matter vacuum, and a plain switch is an automation action everywhere. Each switch is momentary: it turns itself off again about a second after it is pressed. Off by default, because turning it on adds accessories to your Home app.",
+        "type": "boolean",
+        "default": false
+      },
+      "homeKitActionSwitches": {
+        "title": "Which Switches to Add",
+        "description": "Which actions get a switch. Return to Dock is the one Apple Home cannot do any other way; Pause and Find are there because they cost nothing extra once the first switch exists. Only used when the setting above is on.",
+        "type": "array",
+        "uniqueItems": true,
+        "default": ["dock"],
+        "items": {
+          "type": "string",
+          "enum": ["dock", "pause", "locate"],
+          "oneOf": [
+            {
+              "title": "Return to Dock",
+              "enum": ["dock"]
+            },
+            {
+              "title": "Pause",
+              "enum": ["pause"]
+            },
+            {
+              "title": "Find (robot announces where it is)",
+              "enum": ["locate"]
+            }
+          ]
+        }
+      },
       "cloudOnlyMode": {
         "title": "Use Roborock Cloud Only",
         "description": "Disables local LAN discovery and local TCP commands for this plugin, routing commands and status polling through Roborock cloud when available. Useful when local LAN connections appear connected but consistently time out. Restart the Roborock child bridge after changing this setting.",
