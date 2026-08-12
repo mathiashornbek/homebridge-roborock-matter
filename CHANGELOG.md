@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.4.17
+
+**Installing this package asked npm to build it, and that build could only ever fail or warn.** `dist/` is in the published tarball and `main` points into it, so nothing a user installs needs compiling — but package.json still carried `"prepare": "npm run build"`, a hook npm runs at install time. The two things it could do to a user, both measured:
+
+- **Fail.** Installing straight from the git repository clones the package to a temp directory and runs `prepare` there. The internal dependency install inherits `-g` and `--prefix` from the outer command, so the clone is left with no `node_modules` at all, and the build dies with `sh: rimraf: command not found` / `code 127`. Reproduced line by line from npm's own debug log; not fixable from this side, which is why prebuilt tarballs are now the way to install anything that is not on npm.
+- **Warn.** npm 11.16 and later will not run install scripts it has not been told to trust, and prints `npm warn allow-scripts homebridge-roborock-matter (prepare: npm run build)` for a tarball install — a supply-chain warning naming this package, for a build that did not need to happen. It cost a tester a round trip before it cost anyone else anything.
+
+The build now runs on `prepack` instead, so packing or publishing still cannot produce a tarball without `dist`, while installing one asks for nothing. No behaviour in the plugin changes.
+
+`__tests__/installing-the-package-runs-no-build.test.js` holds both halves of the rule: package.json may declare none of npm's install-time lifecycle scripts, and a packing script must perform the build. Dropping the hook without moving the build is the obvious way to get this wrong, so both are enumerated rather than assumed. Verified red against 3.4.16: 3 of 13 failed.
+
+## 3.4.16
+
+**The clean mode shown on the tile is now applied before every Matter-initiated start, changed or not.** The prep that applied it only ran when Apple Home sent a `ChangeToMode` command — and Home only sends that when the selection actually changes. So the most ordinary case of all went unhandled: the mode Home already displays is usually the mode the user wants, so they never tap it, nothing was sent, and the robot ran in whatever mode it had been left in.
+
+Measured end to end in #8: a "Vacuum" start with no preceding mode request produced no `Applying ... mode` line at all and the robot mopped, while the very same start one explicit tap later sent it and vacuumed. It is deliberately not skipped when the robot looks like it already matches, because that reading is the one that lies. The user's levels are preserved — only the clean _type_ is pinned.
+
+`__tests__/every-matter-start-applies-the-displayed-clean-mode.test.js` holds the rule over the source: every start dispatch must apply the mode, and stop/pause must not. Verified red against 3.4.15: 8 of 16 failed.
+
 ## 3.4.15
 
 **The clean-mode prep was never losing its window to the commands it sends. It was losing it to a read nobody was waiting for.** skmzwanke's log from 3.4.14 (#8) has the whole thing in ten seconds:
