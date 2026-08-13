@@ -5,11 +5,20 @@
 // which is the tell: two hand-written numbers describing one fact will drift
 // apart and neither will be corrected, because nothing checks them.
 //
-// This does not pin an exact figure — jest's total (484) is larger than the
-// number of declarations in the files (439) because `test.each` expands at
-// runtime, and no static reader can know by how much. It pins the two things
-// that actually went wrong: the README must state the count once, and that
-// number must sit in a defensible band around what is really declared.
+// This does not pin an exact figure — jest's total is larger than the number of
+// declarations in the files because `test.each` expands at runtime, and no
+// static reader can know by how much. It pins the two things that actually went
+// wrong: the README must state the count once, and that number must sit in a
+// defensible band around what is really declared.
+//
+// The band's width is a measurement, not a taste. It was 1.3× when the suite
+// declared 439 and ran 484. At 3.9.0 it declares 663 and runs 922 — a factor of
+// 1.39 — because the parameterised suites now carry most of the coverage: one
+// file turns 25 declarations into 133 cases by enumerating two sensors across
+// nine robot states and four toggle combinations, which is the shape this repo
+// keeps reaching for on purpose. So the ceiling is 1.6×, sized off 1.39 rather
+// than off nothing. It still refuses an invented figure by a wide margin: the
+// two numbers this file was written about, 463 and 263, would both fail it.
 
 const fs = require("fs");
 const path = require("path");
@@ -49,6 +58,6 @@ describe("the README's test count is checked against the suite", () => {
     // Never fewer than the declarations: `test.each` only ever adds cases.
     expect(claimed).toBeGreaterThanOrEqual(declared);
     // And not a number someone made up: the expansion is real but bounded.
-    expect(claimed).toBeLessThanOrEqual(Math.round(declared * 1.3));
+    expect(claimed).toBeLessThanOrEqual(Math.round(declared * 1.6));
   });
 });

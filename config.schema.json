@@ -159,6 +159,33 @@
           ]
         }
       },
+      "enableHomeKitStateSensors": {
+        "title": "Add Home App Sensors so Automations Can Trigger on the Robot",
+        "description": "Publishes one extra read-only HomeKit contact sensor per robot per state, so an Apple Home automation can START when the robot does something. The switches above are commands an automation sends; Apple Home will not accept a Matter vacuum as an automation TRIGGER at all, which was measured twice in issue #3, so nothing the robot does can begin an automation. A contact sensor is a trigger source in every Home client. Each sensor reads Closed while the state it is named after is true and Open when it is not — \"Docked\" is Closed in the dock and Open once the robot leaves. Off by default, because turning it on adds accessories to your Home app. IMPORTANT — THESE NEED THE SAME PAIRING AS THE SWITCHES ABOVE: they are HomeKit accessories on this plugin's Homebridge child bridge, which is paired separately from the robot's Matter connection. Go to Plugins -> homebridge-roborock-matter -> the three-dot menu -> Child Bridge Config, make sure Enable HAP is ON, restart, then press Connect to HomeKit on that same screen and scan THAT QR code. It is not the main Homebridge QR code, and not the robot's Matter pairing code.",
+        "type": "boolean",
+        "default": false
+      },
+      "homeKitStateSensors": {
+        "title": "Which Sensors to Add",
+        "description": "Which states get a sensor. Docked is the one to start with: it is the state most automations read, and \"not docked\" is its own answer. Cleaning is the pair for it — not docked AND not cleaning means the robot is probably stuck somewhere, which is the automation this was asked for. Only used when the setting above is on.",
+        "type": "array",
+        "uniqueItems": true,
+        "default": ["docked"],
+        "items": {
+          "type": "string",
+          "enum": ["docked", "cleaning"],
+          "oneOf": [
+            {
+              "title": "Docked (Closed while the robot is in its dock)",
+              "enum": ["docked"]
+            },
+            {
+              "title": "Cleaning (Closed while the robot is on a cleaning run)",
+              "enum": ["cleaning"]
+            }
+          ]
+        }
+      },
       "cloudOnlyMode": {
         "title": "Use Roborock Cloud Only",
         "description": "Disables local LAN discovery and local TCP commands for this plugin, routing commands and status polling through Roborock cloud when available. Useful when local LAN connections appear connected but consistently time out. Restart the Roborock child bridge after changing this setting.",

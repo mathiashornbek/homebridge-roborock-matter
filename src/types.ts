@@ -27,6 +27,36 @@ export function isHomeKitActionKey(value: unknown): value is HomeKitActionKey {
   );
 }
 
+/**
+ * The robot states the optional read-only HAP sensors mirror.
+ *
+ * The switches above are inputs an automation *presses*. Apple Home will not
+ * accept a Matter vacuum as an automation *trigger* at all — measured by
+ * pponce in issue #3 and confirmed by him a second time — so nothing the robot
+ * does can start an automation. A contact sensor is a trigger source in every
+ * Home client, so mirroring the state onto one is the only way this works.
+ *
+ * The order is the order pponce ranked them in when asked which state he would
+ * actually trigger on: docked first ("I'd use the docked feature on its own for
+ * sure"), cleaning second. He also named the pair he wants them for — not
+ * docked AND not cleaning means the robot is probably stuck somewhere — which
+ * is why both ship together and why no third "stuck" sensor is guessed at: that
+ * one is a timeout over these two, and it belongs in his automation where he
+ * can pick the timeout, not in a plugin that would pick it for him.
+ */
+export const HOMEKIT_STATE_SENSOR_KEYS = ["docked", "cleaning"] as const;
+
+export type HomeKitStateSensorKey = (typeof HOMEKIT_STATE_SENSOR_KEYS)[number];
+
+export function isHomeKitStateSensorKey(
+  value: unknown
+): value is HomeKitStateSensorKey {
+  return (
+    typeof value === "string" &&
+    (HOMEKIT_STATE_SENSOR_KEYS as readonly string[]).includes(value)
+  );
+}
+
 export interface RoborockPlatformConfig extends PlatformConfig {
   email: string;
   password?: string;
@@ -48,4 +78,6 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   preferCloudForMatterCommands?: boolean;
   enableHomeKitActionSwitches?: boolean;
   homeKitActionSwitches?: string[];
+  enableHomeKitStateSensors?: boolean;
+  homeKitStateSensors?: string[];
 }

@@ -343,16 +343,60 @@
       </label>
     </div>
 
+    <label class="checkbox">
+      <input id="enable-homekit-state-sensors" type="checkbox" />
+      <span>
+        Add Home app sensors so automations can trigger on the robot
+        <small
+          >The switches above are commands an automation <em>sends</em>. Apple
+          Home will not accept a Matter vacuum as an automation
+          <em>trigger</em> at all &mdash; measured twice in issue #3 &mdash; so
+          nothing the robot does can start an automation. A contact sensor is a
+          trigger source in every Home client, so this adds one read-only sensor
+          per robot per state. Each one reads <strong>Closed</strong> while the
+          state it is named after is true and <strong>Open</strong> when it is
+          not. Nothing is sent to the robot; these only report. Off by default,
+          because turning it on adds accessories to your Home app.</small
+        >
+      </span>
+    </label>
+    <div id="homekit-state-sensor-states" class="checkbox-group disabled">
+      <label class="checkbox">
+        <input id="homekit-state-docked" type="checkbox" disabled />
+        <span
+          >Docked
+          <small
+            >Closed while the robot is in its dock, Open once it leaves. The one
+            to start with: most automations read this, and &ldquo;not
+            docked&rdquo; is its own answer.</small
+          ></span
+        >
+      </label>
+      <label class="checkbox">
+        <input id="homekit-state-cleaning" type="checkbox" disabled />
+        <span
+          >Cleaning
+          <small
+            >Closed while the robot is on a cleaning run, Open when it is not. A
+            dock chore &mdash; emptying the bin, washing the mop &mdash; is not
+            a cleaning run and does not move it. Pair it with Docked: not docked
+            and not cleaning means the robot is probably stuck somewhere.</small
+          ></span
+        >
+      </label>
+    </div>
+
     <div id="homekit-switch-pairing" class="pairing-callout hidden">
       <h3>
-        &#9888; The switches need their own pairing &mdash; a different QR code
+        &#9888; The switches and sensors need their own pairing &mdash; a
+        different QR code
       </h3>
       <p>
         The robot reaches Apple Home over <strong>Matter</strong>. These
-        switches are ordinary <strong>HomeKit</strong> accessories, and they
-        travel on this plugin&rsquo;s own Homebridge bridge. That bridge is
-        paired separately, so the code you scanned for the vacuum will not bring
-        the switches in.
+        switches and sensors are ordinary <strong>HomeKit</strong> accessories,
+        and they travel on this plugin&rsquo;s own Homebridge bridge. That
+        bridge is paired separately, so the code you scanned for the vacuum will
+        not bring them in.
       </p>
       <p class="pairing-steps">
         In the Homebridge UI: <strong>Plugins</strong> &rarr;

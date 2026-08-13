@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.9.0
+
+**Automations can now be triggered by the robot.**
+
+Apple Home does not accept a Matter vacuum as an automation trigger at all. pponce measured that in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3) and confirmed it again after the action switches shipped: the switches are commands an automation _sends_, so nothing the robot does can _start_ one. A contact sensor is a trigger source in every Home client, so each robot can now publish read-only sensors mirroring its state — `Vicky Docked` and `Vicky Cleaning`.
+
+Two states, in the order he ranked them when asked which he would actually trigger on: docked first ("I'd use the docked feature on its own for sure"), cleaning second. He also named the pair he wants them for — not docked **and** not cleaning means the robot is probably stuck somewhere — which is why both ship together, and why there is no third "stuck" sensor: that one is a timeout over these two, and the timeout is his to pick.
+
+Closed means the state the sensor is named after is true, in every sensor. Nothing is ever sent to the robot.
+
+Three things the implementation is careful about, each enumerated as a rule rather than fixed for the case that prompted it:
+
+- **The value comes from the robot's own state, never from the state Apple Home was told.** Two unrelated display toggles rewrite the published operational state: CHARGING and DOCKED become STOPPED without **Charging/Docked status**, and the dock chores become RUNNING without **Dock & Returning status**. A `Docked` sensor built on the published value would have worked only for users who had ticked a box about something else — the same fault form as [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9)'s fix and [#5](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/5)'s. Verified red against that exact wrong implementation: 13 assertions failed, on the docked-robot and dock-chore rows specifically.
+- **A dock chore is not a cleaning run, and interrupting a run does not end it.** `Cleaning` mirrors the run mode that actually reached Matter, so it carries 3.6.2's inheritance rule and cannot disagree with the tile. The test asserts that agreement as an identity rather than as a second hand-written truth table, plus a guard that both values genuinely occur.
+- **Nothing is claimed before the robot has reported in.** Roborock state 0 is not a real state; it maps to STOPPED, which is indistinguishable from a robot idle on the floor. A Q7 on the maintainer's own account reports it for 27 seconds after every restart, so a sensor that believed it would report "not docked" for a docked robot and then move — firing every automation watching for that, on every Homebridge restart. The sensors hold their last known reading and only move on real data. Verified red with the guard removed.
+
+The partition that keeps both HAP accessory kinds alive is the fourth: `discoverDevices()` unregisters cached HAP accessories it does not recognise, and each kind's sync removes what its own config no longer asks for. A sensor has no `action` in its context, so before this the switch sync would have deleted every sensor on the first discovery pass. Both directions are asserted, and verified red against the unpartitioned version.
+
+Off by default, and no re-pairing: like the switches these are HAP accessories on this plugin's child bridge, not Matter. They need that bridge's own HomeKit QR code — the plugin says which one at every start.
+
+922 tests, up from 907.
+
 ## 3.8.0
 
 **The settings page follows Homebridge's dark theme, and the icon is in the header.**

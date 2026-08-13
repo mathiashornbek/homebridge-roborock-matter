@@ -262,6 +262,23 @@ describe("the README matches the automation measurements on record", () => {
   test("the measurements are attributed, not asserted", () => {
     expect(section(AUTOMATIONS_HEADING)).toMatch(/issues\/3\b/);
   });
+
+  test("each gap names the accessory that closes it", () => {
+    // Both absent findings now have an answer in the product, and each answer
+    // is a different accessory: a switch for the missing dock ACTION, a
+    // read-only sensor for the missing TRIGGER. Stating a gap without naming
+    // its answer is how a user concludes the plugin cannot do the thing it
+    // ships a feature for — the same cost as the reverse mistake this file was
+    // written about, arriving from the other side.
+    const automations = plain(section(AUTOMATIONS_HEADING));
+
+    expect(automations).toMatch(/switch(?:es)?\b/i);
+    expect(automations).toMatch(/contact sensor/i);
+    // And the sensors have to be named, or "a sensor exists somewhere" is all
+    // the reader gets.
+    expect(automations).toMatch(/Docked/);
+    expect(automations).toMatch(/Cleaning/);
+  });
 });
 
 describe("the README does not blame fault reporting for the stuck tile", () => {

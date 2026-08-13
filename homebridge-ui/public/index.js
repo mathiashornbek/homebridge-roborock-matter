@@ -37,6 +37,14 @@ const elements = {
   homeKitActionDock: document.getElementById("homekit-action-dock"),
   homeKitActionPause: document.getElementById("homekit-action-pause"),
   homeKitActionLocate: document.getElementById("homekit-action-locate"),
+  enableHomeKitStateSensors: document.getElementById(
+    "enable-homekit-state-sensors"
+  ),
+  homeKitStateSensorStates: document.getElementById(
+    "homekit-state-sensor-states"
+  ),
+  homeKitStateDocked: document.getElementById("homekit-state-docked"),
+  homeKitStateCleaning: document.getElementById("homekit-state-cleaning"),
   enableMatterFaultReporting: document.getElementById(
     "enable-matter-fault-reporting"
   ),
@@ -94,6 +102,14 @@ const ACTION_SWITCH_ELEMENTS = {
   dock: () => elements.homeKitActionDock,
   pause: () => elements.homeKitActionPause,
   locate: () => elements.homeKitActionLocate,
+};
+
+// Kept in the same order as HOMEKIT_STATE_SENSOR_KEYS in src/types.ts, for the
+// same reason as above.
+const STATE_SENSOR_KEYS = ["docked", "cleaning"];
+const STATE_SENSOR_ELEMENTS = {
+  docked: () => elements.homeKitStateDocked,
+  cleaning: () => elements.homeKitStateCleaning,
 };
 
 function showToast(type, message) {
@@ -213,7 +229,13 @@ async function loadConfig() {
         config.enableHomeKitActionSwitches
       );
     }
+    if (elements.enableHomeKitStateSensors) {
+      elements.enableHomeKitStateSensors.checked = Boolean(
+        config.enableHomeKitStateSensors
+      );
+    }
     applyActionSwitchSelection(readActionSwitchSelection(config));
+    applyStateSensorSelection(readStateSensorSelection(config));
     syncActionSwitchAvailability();
     syncFeatureDependencies();
     if (elements.enableMatterFaultReporting) {
@@ -371,6 +393,10 @@ async function describeEnabledMatterFeatures() {
       `homeKitActionSwitches(${readActionSwitchSelection(config).join("+") || "none"})`,
       config.enableHomeKitActionSwitches === true,
     ],
+    [
+      `homeKitStateSensors(${readStateSensorSelection(config).join("+") || "none"})`,
+      config.enableHomeKitStateSensors === true,
+    ],
   ]
     .filter(([, on]) => on)
     .map(([name]) => name);
@@ -416,11 +442,22 @@ function hasUnsavedMatterFeatureEdits(config) {
       elements.enableHomeKitActionSwitches,
       config.enableHomeKitActionSwitches === true,
     ],
+    [
+      elements.enableHomeKitStateSensors,
+      config.enableHomeKitStateSensors === true,
+    ],
   ];
 
   if (
     getActionSwitchSelection().join(",") !==
     readActionSwitchSelection(config).join(",")
+  ) {
+    return true;
+  }
+
+  if (
+    getStateSensorSelection().join(",") !==
+    readStateSensorSelection(config).join(",")
   ) {
     return true;
   }
@@ -482,6 +519,57 @@ function applyActionSwitchSelection(selection) {
 }
 
 /**
+ * The state sensors the SAVED config asks for.
+ *
+ * Reads the config only, for the same reason readActionSwitchSelection does:
+ * the report builder reaches this, and a report that quotes the form describes
+ * a plugin that is not running.
+ */
+function readStateSensorSelection(config) {
+  const saved = config?.homeKitStateSensors;
+  if (!Array.isArray(saved)) {
+    // Matches the plugin: master on with no list saved means Docked.
+    return config?.enableHomeKitStateSensors === true ? ["docked"] : [];
+  }
+
+  return STATE_SENSOR_KEYS.filter((key) => saved.includes(key));
+}
+
+/**
+ * What to persist: never an empty list while the feature is on.
+ *
+ * `[]` and "absent" mean different things to the plugin — absent falls back to
+ * Docked, empty publishes nothing — so the form must not be able to produce the
+ * silent-nothing state.
+ */
+function getSavedStateSensorSelection() {
+  const selection = getStateSensorSelection();
+  if (
+    selection.length === 0 &&
+    Boolean(elements.enableHomeKitStateSensors?.checked)
+  ) {
+    return ["docked"];
+  }
+  return selection;
+}
+
+/** The state sensors the form currently shows. */
+function getStateSensorSelection() {
+  return STATE_SENSOR_KEYS.filter((key) =>
+    Boolean(STATE_SENSOR_ELEMENTS[key]()?.checked)
+  );
+}
+
+function applyStateSensorSelection(selection) {
+  STATE_SENSOR_KEYS.forEach((key) => {
+    const element = STATE_SENSOR_ELEMENTS[key]();
+    if (element) {
+      element.checked = selection.includes(key);
+    }
+  });
+}
+
+/**
  * Grey out settings whose prerequisite is switched off.
  *
  * Three settings do nothing on their own and said so only in their help text.
@@ -504,21 +592,33 @@ function syncFeatureDependencies() {
   }
 }
 
-/** Grey out the per-action boxes while the feature itself is off. */
+/** Grey out the per-action and per-state boxes while their feature is off. */
 function syncActionSwitchAvailability() {
   const on = Boolean(elements.enableHomeKitActionSwitches?.checked);
   if (elements.homeKitActionSwitchActions) {
     elements.homeKitActionSwitchActions.classList.toggle("disabled", !on);
   }
-  // The pairing steps are noise until the feature is on, and the single most
-  // important thing on the page the moment it is.
+  const sensorsOn = Boolean(elements.enableHomeKitStateSensors?.checked);
+  if (elements.homeKitStateSensorStates) {
+    elements.homeKitStateSensorStates.classList.toggle("disabled", !sensorsOn);
+  }
+  // The pairing steps are noise until a feature is on, and the single most
+  // important thing on the page the moment one is. Either feature puts the
+  // user in the same situation — HAP accessories on a bridge they may never
+  // have paired — so the callout follows both, not just the switches.
   if (elements.homeKitSwitchPairing) {
-    elements.homeKitSwitchPairing.classList.toggle("hidden", !on);
+    elements.homeKitSwitchPairing.classList.toggle("hidden", !on && !sensorsOn);
   }
   ACTION_SWITCH_KEYS.forEach((key) => {
     const element = ACTION_SWITCH_ELEMENTS[key]();
     if (element) {
       element.disabled = !on;
+    }
+  });
+  STATE_SENSOR_KEYS.forEach((key) => {
+    const element = STATE_SENSOR_ELEMENTS[key]();
+    if (element) {
+      element.disabled = !sensorsOn;
     }
   });
 }
@@ -596,6 +696,10 @@ function getFormValues() {
       elements.enableHomeKitActionSwitches?.checked
     ),
     homeKitActionSwitches: getSavedActionSwitchSelection(),
+    enableHomeKitStateSensors: Boolean(
+      elements.enableHomeKitStateSensors?.checked
+    ),
+    homeKitStateSensors: getSavedStateSensorSelection(),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
     cloudOnlyMode: getCloudOnlyMode(),
@@ -1761,6 +1865,21 @@ function init() {
         getActionSwitchSelection().length === 0
       ) {
         applyActionSwitchSelection(["dock"]);
+      }
+      syncActionSwitchAvailability();
+    });
+  }
+  if (elements.enableHomeKitStateSensors) {
+    elements.enableHomeKitStateSensors.addEventListener("change", () => {
+      // Same trap as the switches: an empty saved list is not the same as no
+      // list, and the plugin falls back to ["docked"] only when the key is
+      // absent. The user would enable the feature, save, restart, and find no
+      // sensor to trigger on.
+      if (
+        elements.enableHomeKitStateSensors.checked &&
+        getStateSensorSelection().length === 0
+      ) {
+        applyStateSensorSelection(["docked"]);
       }
       syncActionSwitchAvailability();
     });

@@ -2,7 +2,7 @@ import { setTimeout as nodeSetTimeout } from "node:timers";
 
 import RoborockPlatform from "./platform";
 import { getLiveMessageForThisAccessory } from "./live_message";
-import { HomeKitActionKey } from "./types";
+import { HomeKitActionKey, HomeKitStateSensorKey } from "./types";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
@@ -435,6 +435,13 @@ export default class RoborockMatterVacuumAccessory {
   // resolveRunMode(). Idle is the honest starting point: a plugin that boots
   // while the dock is emptying knows of no run in progress.
   private lastRunMode = RUN_MODE_IDLE;
+  // The run mode as it went out to Matter, optimistic overlay included. The
+  // read-only "Cleaning" state sensor answers from this so it and the Apple
+  // Home tile always say the same thing. Null until the first publish.
+  private lastPublishedRunMode: number | null = null;
+  // Notified after every publish, by whoever wants to mirror this robot's state
+  // somewhere else. Null means nobody asked, which is the common case.
+  private stateListener: (() => void) | null = null;
   // The suction-level clean mode last derived from a fan power the plugin
   // could actually read. Used only as the answer to "the fan power is
   // unreadable right now" while suction levels are announced; cleared by an
@@ -545,6 +552,78 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     return true;
+  }
+
+  /**
+   * The value a read-only HAP state sensor should show, or null for "not yet".
+   *
+   * Both arms read the ROBOT'S OWN state, never the controller-facing one that
+   * toControllerOperationalState() produces. That is not a stylistic choice: it
+   * is the fault form this file has now been bitten by seven times. CHARGING
+   * and DOCKED are rewritten to STOPPED unless the user enabled the
+   * charging/docked toggle, and the dock chores are rewritten to RUNNING unless
+   * they enabled the extended-states one — so a docked sensor built on the
+   * published operational state would have worked only for the users who had
+   * ticked an unrelated box, and reported "not docked" for everybody else.
+   *
+   * `cleaning` mirrors the run mode that was last PUBLISHED rather than
+   * recomputing one, for three reasons. It is the value Apple Home was actually
+   * told, so the sensor and the tile cannot disagree — including during the
+   * optimistic window after a command, where the tile moves before the robot
+   * confirms and a sensor computed from raw status would lag it by a poll. It
+   * carries 3.6.2's rule that a dock chore inherits the run mode it interrupted,
+   * so emptying the dust bin does not make the sensor announce a cleaning that
+   * is not happening — the exact bug issue #9 reported against the tile, which
+   * would otherwise have been reintroduced one surface over. And resolveRunMode()
+   * is deliberately NOT called here: it assigns lastRunMode, and a getter a HAP
+   * read can reach must not advance the state machine that decides what gets
+   * published.
+   */
+  /** Ask to be told after every publish. Null clears it. */
+  setStateListener(listener: (() => void) | null): void {
+    this.stateListener = listener;
+  }
+
+  getHomeKitStateSensorValue(sensor: HomeKitStateSensorKey): boolean | null {
+    if (!this.hasUsableRobotState()) {
+      return null;
+    }
+
+    switch (sensor) {
+      case "docked":
+        return this.isDockedOrChargingNow();
+      case "cleaning":
+        return (
+          (this.lastPublishedRunMode ?? this.lastRunMode) === RUN_MODE_CLEANING
+        );
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Whether the robot has reported enough for a sensor to claim anything.
+   *
+   * State 0 is not a Roborock state — the enum starts at 1 and the mapping
+   * switch has no arm for it, so it falls to the default branch and comes out
+   * as STOPPED. That is indistinguishable from a robot that is genuinely idle
+   * off its dock, which is why this is checked here rather than left to the
+   * mapping: a Q7 on this account has been measured reporting state 0 for 27
+   * seconds after every restart, and a sensor that believed it would report
+   * "not docked" for a robot sitting in its dock, then flip — firing every
+   * automation triggered on the robot leaving, on every Homebridge restart.
+   *
+   * A non-zero charge_status is a complete answer on its own: the robot is on
+   * the dock drawing power whatever it says its state is.
+   */
+  private hasUsableRobotState(): boolean {
+    const chargeStatus = this.getNumberStatus("charge_status");
+    if (chargeStatus !== null && chargeStatus !== 0) {
+      return true;
+    }
+
+    const state = this.getNumberStatus("state");
+    return state !== null && state !== 0;
   }
 
   /**
@@ -1240,6 +1319,15 @@ export default class RoborockMatterVacuumAccessory {
     // line always reports every value — not just the clusters that changed.
     const snapshot = clusters;
 
+    // Before the diff below, and before the early return it can take: this is
+    // the one place every Roborock-driven state change passes through, so it is
+    // the only hook that cannot miss one. The unchanged-payload path matters
+    // just as much as the changed one — a listener's first reading after a
+    // restart usually arrives on a poll whose clusters are byte-identical to
+    // what the previous process already published.
+    this.rememberPublishedRunMode(snapshot);
+    this.notifyStateListener();
+
     if (options.force !== true) {
       const changed: MatterClusterState = {};
       for (const [cluster, attributes] of Object.entries(clusters)) {
@@ -1290,6 +1378,41 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     return updated;
+  }
+
+  /**
+   * Tell whoever asked that this robot's published state may have moved.
+   *
+   * A listener rather than a call into the platform's sensor map, so this class
+   * stays unaware that read-only HAP sensors exist at all. The first draft did
+   * reach into the platform, and the cost showed up immediately: seventeen test
+   * suites build their own platform stand-in, and every one of them would have
+   * had to grow a method about a feature it was not testing — with the next
+   * stand-in forgetting it again. Nothing else in this file needs the platform
+   * to own that knowledge, so it does not.
+   */
+  private notifyStateListener(): void {
+    if (!this.stateListener) {
+      return;
+    }
+
+    try {
+      this.stateListener();
+    } catch (error) {
+      // A listener that throws must not take the Matter publish down with it.
+      this.platform.log.debug(
+        `State listener for ${this.getVacuumName()} failed: ${this.getErrorMessage(error)}`
+      );
+    }
+  }
+
+  /** Keep the run mode the state sensors answer from in step with Matter's. */
+  private rememberPublishedRunMode(snapshot: MatterClusterState): void {
+    const runMode = snapshot.rvcRunMode as Record<string, unknown> | undefined;
+    const currentMode = runMode?.currentMode;
+    if (typeof currentMode === "number") {
+      this.lastPublishedRunMode = currentMode;
+    }
   }
 
   private async updateMatterStateFromMessage(data: unknown): Promise<void> {

@@ -103,7 +103,7 @@ describe("every surface that offers the switches says which QR code to scan", ()
 describe("the startup line answers the situation the user is actually in", () => {
   const platform = read("src/platform.ts");
   const hint = platform.slice(
-    platform.indexOf("private logActionSwitchPairingHint"),
+    platform.indexOf("private logHapPairingHint"),
     platform.indexOf("private removeActionSwitches")
   );
 
@@ -115,7 +115,7 @@ describe("the startup line answers the situation the user is actually in", () =>
     // code. The wrong instruction, in the release about giving the right one.
     const reader = platform.slice(
       platform.indexOf("private readOwnBridgeConfig"),
-      platform.indexOf("private logActionSwitchPairingHint")
+      platform.indexOf("private logHapPairingHint")
     );
 
     expect(reader).toMatch(/configPath/);
@@ -131,7 +131,7 @@ describe("the startup line answers the situation the user is actually in", () =>
     // a confident answer that happens to be wrong.
     const reader = platform.slice(
       platform.indexOf("private readOwnBridgeConfig"),
-      platform.indexOf("private logActionSwitchPairingHint")
+      platform.indexOf("private logHapPairingHint")
     );
 
     expect(reader).toMatch(/try \{/);
@@ -169,18 +169,33 @@ describe("the startup line answers the situation the user is actually in", () =>
   test("it is written once per start, not once per discovery pass", () => {
     // discoverDevices runs again on every reconnection; a five-line pairing
     // paragraph on repeat is how a useful warning becomes noise people filter.
-    expect(platform).toMatch(/actionSwitchPairingHintLogged/);
-    expect(hint).toMatch(/if \(this\.actionSwitchPairingHintLogged\)/);
+    expect(platform).toMatch(/hapPairingHintLogged/);
+    expect(hint).toMatch(/if \(this\.hapPairingHintLogged\)/);
   });
 
-  test("nothing is said when no switch was published", () => {
-    // A user who never turned the feature on must not be told how to pair it.
-    const sync = platform.slice(
-      platform.indexOf("private syncActionSwitches"),
-      platform.indexOf("private removeActionSwitches")
+  test("nothing is said when nothing was published", () => {
+    // A user who never turned either feature on must not be told how to pair
+    // accessories that do not exist.
+    expect(hint).toMatch(/if \(parts\.length === 0\) \{\s*return;/);
+  });
+
+  test("it counts every HAP accessory kind, not just the switches", () => {
+    // The pairing problem is a property of the bridge, not of the feature that
+    // put an accessory on it: somebody with the sensors on and the switches off
+    // is in exactly the same situation. A hint that only fired for switches
+    // would have left them with no instruction at all — the original 3.5.0 bug
+    // one feature over.
+    expect(hint).toMatch(/this\.actionSwitches\.size/);
+    expect(hint).toMatch(/this\.stateSensors\.size/);
+
+    // And it is called once, after both syncs, rather than from inside one of
+    // them — a call inside syncActionSwitches could not see the sensor count.
+    const discover = platform.slice(
+      platform.indexOf("async discoverDevices()"),
+      platform.indexOf("private removeLegacyHomeKitAccessories")
     );
-    expect(sync).toMatch(
-      /if \(wanted\.size > 0\) \{\s*this\.logActionSwitchPairingHint/
+    expect(discover).toMatch(
+      /this\.syncActionSwitches\([\s\S]{0,80}this\.syncStateSensors\([\s\S]{0,200}this\.logHapPairingHint\(\)/
     );
   });
 });
@@ -194,7 +209,10 @@ describe("the settings page keeps the pairing steps next to the switch", () => {
     // Shown when the feature is on, hidden when it is off: pairing steps for a
     // feature you have not enabled are noise, and noise is what gets skipped.
     expect(js).toMatch(/homeKitSwitchPairing/);
-    expect(js).toMatch(/classList\.toggle\("hidden", !on\)/);
+    // Shown when EITHER feature is on: both put HAP accessories on a bridge the
+    // user may never have paired, so hiding the steps for one of them would
+    // reproduce the failure this callout exists for.
+    expect(js).toMatch(/classList\.toggle\("hidden", !on && !sensorsOn\)/);
   });
 
   test("it explains why the Matter code is not enough", () => {
