@@ -1,11 +1,26 @@
 <link rel="stylesheet" href="styles.css" />
 
 <main class="container">
-  <header>
-    <h1>Roborock Vacuum</h1>
-    <p class="subtitle">
-      Configure account access, discovery filters, and connection diagnostics.
-    </p>
+  <header class="page-header">
+    <!-- The plugin's own icon, byte for byte the file in assets/ that npm and
+         the Homebridge plugin page show. Not a redrawing: a second copy of a
+         logo drifts from the first the moment either is touched, and then the
+         tile here and the tile on the plugin list stop matching. A test holds
+         the two files identical. -->
+    <img
+      class="brand-mark"
+      src="icon.png"
+      alt=""
+      width="54"
+      height="54"
+      decoding="async"
+    />
+    <div class="brand-text">
+      <h1>Roborock Vacuum</h1>
+      <p class="subtitle">
+        Configure account access, discovery filters, and connection diagnostics.
+      </p>
+    </div>
   </header>
 
   <section class="panel">

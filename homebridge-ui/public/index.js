@@ -1647,7 +1647,80 @@ async function updatePluginConfig(patch) {
   await window.homebridge.savePluginConfig();
 }
 
+/**
+ * Follow Homebridge's theme, not the operating system's.
+ *
+ * Homebridge UI reaches into this iframe's document and puts classes on our
+ * body: `dark-mode` (plus `config-ui-x-dark-mode-<theme>`) when the user has
+ * picked a dark theme, and `config-ui-x-<theme>` when they have picked a light
+ * one. It also tries to force the background with
+ * `body.style.backgroundColor = "#242424 !important"`, which the CSSOM rejects
+ * because a property value may not carry `!important` — so that line does
+ * nothing and the class is the only signal there is.
+ *
+ * The page used to read neither, so it stayed white inside a dark Homebridge.
+ *
+ * Precedence, and the order matters: Homebridge's own choice wins whenever it
+ * has expressed one, because a user who picked light in Homebridge on a dark
+ * Mac meant light. Only when no Homebridge class is present at all — the page
+ * opened on its own, or before the parent has painted — do we fall back to the
+ * OS preference, so the first frame is never the wrong colour.
+ */
+const DARK_CLASS = "dark-mode";
+const HOMEBRIDGE_THEME_CLASS = /^config-ui-x-/;
+
+function homebridgeHasChosenATheme() {
+  return Array.from(document.body.classList).some((name) =>
+    HOMEBRIDGE_THEME_CLASS.test(name)
+  );
+}
+
+function prefersDark() {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+}
+
+function applyTheme() {
+  const dark = document.body.classList.contains(DARK_CLASS)
+    ? true
+    : homebridgeHasChosenATheme()
+      ? false
+      : prefersDark();
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+
+/**
+ * Keep following it after the first paint.
+ *
+ * The theme can change while this page is open — the switch is in the same UI,
+ * one screen away — and the parent applies it by mutating our body's class
+ * list rather than reloading us. Without the observer the settings page is the
+ * one thing in Homebridge that stays the old colour until it is reopened.
+ */
+function watchTheme() {
+  applyTheme();
+
+  new MutationObserver(applyTheme).observe(document.body, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
+  if (typeof window.matchMedia === "function") {
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    // Only relevant while Homebridge has not chosen for us; applyTheme decides.
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", applyTheme);
+    }
+  }
+}
+
 function init() {
+  // Before anything else: a page that is briefly the wrong colour is the first
+  // thing the eye catches.
+  watchTheme();
+
   // The markup ships in the off state, but say it once here too: loadConfig()
   // can fail or find no config, and the alternative is a loud orange pairing
   // callout for a feature that is switched off.

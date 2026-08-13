@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.8.0
+
+**The settings page follows Homebridge's dark theme, and the icon is in the header.**
+
+The page stayed white inside a dark Homebridge, in every version. It was not reading the operating system's setting — that would have been wrong too. Homebridge UI reaches into this plugin's iframe and puts classes on our own `<body>`: `dark-mode` when the user picks a dark theme, `config-ui-x-<theme>` when they pick a light one. The stylesheet had `color-scheme: light` hard-coded and one set of colours, so there was nothing to follow it with.
+
+Every colour is now a token, the dark set is declared once, and `index.js` decides which applies and writes it to `<html data-theme>`. Homebridge's own choice wins over the OS, because someone who picked light in Homebridge on a dark Mac meant light; the OS is the fallback for a page opened outside Homebridge. A MutationObserver keeps up when the theme changes while the page is open — the switch is one screen away, and the parent applies it by mutating our body rather than reloading us.
+
+Two details worth writing down. Homebridge also assigns `body.style.backgroundColor = "#242424 !important"`; the CSSOM rejects a value carrying `!important`, so that line has never done anything and the class is the only signal there is. And the QR tile stays white in both themes on purpose — a camera cannot read a code without a light quiet zone. It is the one colour on the page that is not a token, and the test names it so the exemption cannot grow.
+
+**The plugin's icon now sits beside the title**, as on the other plugins' settings pages. It is `assets/icon.png` byte for byte rather than a redrawing or a resize, and a test holds the two files identical, so the tile here and the tile on the Homebridge plugin list cannot drift apart.
+
+787 tests, up from 773. Verified red against 3.7.1: 14 of 14 fail.
+
 ## 3.7.1
 
 **The Matter Pairing section told you to pair the wrong thing first.**

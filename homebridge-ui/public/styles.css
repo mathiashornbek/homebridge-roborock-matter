@@ -4,6 +4,17 @@
    also sent a request to Google from a local admin interface. The body rule
    below already falls back to the system stack. */
 
+/* Every colour on this page comes from a token below, and the dark set is
+   declared exactly once. That is a rule, not a preference: the page renders
+   inside Homebridge's own iframe, and a single hard-coded hex is all it takes
+   to put light-on-light or dark-on-dark somewhere nobody looks. The rule is
+   enforced by __tests__/the-settings-page-follows-homebridge-s-theme.test.js.
+
+   Which set applies is decided by index.js and written to
+   `<html data-theme>`, because Homebridge's theme is not the operating
+   system's: the UI reaches into this iframe and puts `dark-mode` on our body
+   when the user picks a dark theme, whatever the OS is set to. See
+   applyTheme() there for the precedence. */
 :root {
   color-scheme: light;
   --bg: #f4f6f9;
@@ -13,15 +24,72 @@
   --text: #17242f;
   --heading: #0c1a24;
   --muted: #5a6b7b;
+  --placeholder: #8a97a5;
   --primary: #0e7a6a;
   --primary-strong: #0b6357;
   --primary-text: #ffffff;
+  --primary-wash: rgba(14, 122, 106, 0.06);
+  --primary-ring: rgba(14, 122, 106, 0.16);
+  --primary-glow: rgba(14, 122, 106, 0.14);
+  --row-hover: #f1f7f5;
   --secondary: #eef2f5;
   --border: #d9e0e7;
   --shadow: 0 6px 18px rgba(15, 32, 44, 0.07);
   --warning: #9a5b00;
   --danger: #b42323;
   --link: #0e7a6a;
+
+  /* Status colours, as a face and a soft backing each. */
+  --good-line: #16a34a;
+  --good-bg: #e6f6ec;
+  --good-border: #b5e3c5;
+  --good-text: #14683a;
+  --warn-line: #d97706;
+  --warn-bg: #fdf3df;
+  --warn-border: #f0d9a8;
+  --warn-text: #8a5a00;
+  --danger-line: #dc2626;
+  --callout-border: #d9822b;
+  --callout-bg: rgba(217, 130, 43, 0.08);
+}
+
+/* The dark set. One block, same names, no extra rules — anything that needs
+   to change in dark mode changes here or it is not a token yet. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1c1c1c;
+  --panel: #242424;
+  --panel-soft: #2a2a2a;
+  --input: #1f1f1f;
+  --text: #e4e6e8;
+  --heading: #f5f7f8;
+  --muted: #a2adb6;
+  --placeholder: #7c8790;
+  --primary: #3fb39c;
+  --primary-strong: #56c7b0;
+  --primary-text: #10201d;
+  --primary-wash: rgba(63, 179, 156, 0.08);
+  --primary-ring: rgba(63, 179, 156, 0.28);
+  --primary-glow: rgba(0, 0, 0, 0.45);
+  --row-hover: #303634;
+  --secondary: #333333;
+  --border: #3a3a3a;
+  --shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --warning: #e0a458;
+  --danger: #f0736e;
+  --link: #56c7b0;
+
+  --good-line: #3fbf76;
+  --good-bg: rgba(63, 191, 118, 0.14);
+  --good-border: rgba(63, 191, 118, 0.42);
+  --good-text: #7fdca6;
+  --warn-line: #e0a458;
+  --warn-bg: rgba(224, 164, 88, 0.14);
+  --warn-border: rgba(224, 164, 88, 0.42);
+  --warn-text: #edc088;
+  --danger-line: #f0736e;
+  --callout-border: #d9822b;
+  --callout-bg: rgba(217, 130, 43, 0.14);
 }
 
 * {
@@ -31,11 +99,7 @@
 body {
   margin: 0;
   font-family: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
-  background: linear-gradient(
-      180deg,
-      rgba(14, 122, 106, 0.06),
-      transparent 260px
-    ),
+  background: linear-gradient(180deg, var(--primary-wash), transparent 260px),
     var(--bg);
   color: var(--text);
 }
@@ -46,6 +110,28 @@ body {
   padding: 28px 24px 24px;
   display: grid;
   gap: 18px;
+}
+
+/* The icon sits beside the title, the way it does on the other plugins'
+   settings pages. */
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand-mark {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  /* The artwork carries its own rounded tile; this only matches the corner so
+     the edges do not show against the page. */
+  border-radius: 12px;
+  display: block;
+}
+
+.brand-text {
+  min-width: 0;
 }
 
 /* Explicit heading colors: Homebridge UI injects its own theme stylesheet
@@ -146,11 +232,11 @@ select:focus,
 input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(14, 122, 106, 0.16);
+  box-shadow: 0 0 0 3px var(--primary-ring);
 }
 
 input::placeholder {
-  color: #8a97a5;
+  color: var(--placeholder);
 }
 
 .checkbox {
@@ -235,7 +321,7 @@ button {
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 20px rgba(14, 122, 106, 0.14);
+  box-shadow: 0 10px 20px var(--primary-glow);
 }
 
 button:active {
@@ -292,15 +378,15 @@ select:focus-visible {
 }
 
 .toast.success {
-  border-left-color: #16a34a;
+  border-left-color: var(--good-line);
 }
 
 .toast.error {
-  border-left-color: #dc2626;
+  border-left-color: var(--danger-line);
 }
 
 .toast.warning {
-  border-left-color: #d97706;
+  border-left-color: var(--warn-line);
 }
 
 .diagnostics-summary {
@@ -363,7 +449,7 @@ select:focus-visible {
 
 .device-row:hover {
   border-color: var(--primary);
-  background: #f1f7f5;
+  background: var(--row-hover);
 }
 
 .device-row input {
@@ -403,11 +489,11 @@ select:focus-visible {
 }
 
 .local-test-card.good {
-  border-color: rgba(22, 163, 74, 0.45);
+  border-color: var(--good-border);
 }
 
 .local-test-card.warn {
-  border-color: rgba(217, 119, 6, 0.45);
+  border-color: var(--warn-border);
 }
 
 .device-header {
@@ -450,10 +536,14 @@ select:focus-visible {
   height: 180px;
   border-radius: 8px;
   border: 1px solid var(--border);
+  /* Deliberately white in both themes, and the one colour on this page that
+     is not a token. A QR code needs a light quiet zone to scan; a camera
+     pointed at a dark tile gets nothing. */
   background: #ffffff;
 }
 
 .qr-placeholder {
+  background: var(--panel-soft);
   color: var(--muted);
   display: grid;
   place-items: center;
@@ -514,15 +604,15 @@ select:focus-visible {
 }
 
 .pill.good {
-  background: #e6f6ec;
-  border-color: #b5e3c5;
-  color: #14683a;
+  background: var(--good-bg);
+  border-color: var(--good-border);
+  color: var(--good-text);
 }
 
 .pill.warn {
-  background: #fdf3df;
-  border-color: #f0d9a8;
-  color: #8a5a00;
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
 }
 
 .status-pill {
@@ -537,15 +627,15 @@ select:focus-visible {
 }
 
 .status-pill.good {
-  background: #e4f5ef;
-  border-color: #a9dfcd;
-  color: #0c6b52;
+  background: var(--good-bg);
+  border-color: var(--good-border);
+  color: var(--good-text);
 }
 
 .status-pill.warn {
-  background: #fdf3df;
-  border-color: #edd39c;
-  color: #8a5a00;
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
 }
 
 .diagnostic-device dl,
@@ -584,6 +674,11 @@ select:focus-visible {
 @media (max-width: 640px) {
   header h1 {
     font-size: 1.85rem;
+  }
+
+  .brand-mark {
+    width: 44px;
+    height: 44px;
   }
 
   .container {
@@ -636,10 +731,10 @@ select:focus-visible {
 .pairing-callout {
   margin: 4px 0 16px 26px;
   padding: 12px 14px;
-  border: 1px solid #d9822b;
+  border: 1px solid var(--callout-border);
   border-left-width: 4px;
   border-radius: 6px;
-  background: rgba(217, 130, 43, 0.08);
+  background: var(--callout-bg);
 }
 
 .pairing-callout h3 {
