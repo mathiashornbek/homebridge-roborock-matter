@@ -426,6 +426,21 @@ export default class RoborockMatterVacuumAccessory {
   // unreadable right now" while suction levels are announced; cleared by an
   // explicit Apple Home selection so the user's choice always wins.
   private lastResolvedFanPowerCleanMode: number | null = null;
+  // The base clean TYPE this plugin applied for the run in progress, held
+  // until the robot's own report agrees with it once. A robot that has just
+  // acknowledged "water off" keeps reporting the old water level for a while,
+  // and the live derivation below reads that lagging value as vacuum+mop —
+  // contradicting a command this plugin sent and had acknowledged seconds
+  // earlier. Released when the robot's report catches up, when the run it was
+  // applied for ends, and by an explicit Apple Home selection.
+  private appliedCleanTypePin: {
+    /** The base clean type that was sent and acknowledged. */
+    cleanType: number;
+    /** Whether the run it was applied for has actually been seen running. */
+    runObserved: boolean;
+    /** Whether the robot's disagreement has already been reported once. */
+    reported: boolean;
+  } | null = null;
   private lastVacuumFanPower: number | null = null;
   private lastWaterBoxMode: number | null = null;
   private matterInitializationRetryAttempt = 0;
@@ -892,8 +907,11 @@ export default class RoborockMatterVacuumAccessory {
       this.selectedCleanModeNeedsApply = true;
       // Discard the level remembered from the robot: from here on the user
       // has said what they want, and an unreadable fan power must fall back
-      // to their choice rather than to what the robot said before it.
+      // to their choice rather than to what the robot said before it. The
+      // applied-type pin goes for the same reason — it records an older
+      // intent, and this selection supersedes it.
       this.lastResolvedFanPowerCleanMode = null;
+      this.appliedCleanTypePin = null;
       const state = {
         rvcCleanMode: { currentMode: newMode },
       };
@@ -1523,12 +1541,16 @@ export default class RoborockMatterVacuumAccessory {
     // signature and the active water-flow setting. A pending Matter
     // selection wins until it has been applied, and outside an active run
     // the (sticky) robot-side setting must not shadow the user's selection.
-    if (
-      !this.selectedCleanModeNeedsApply &&
-      this.isInCleaningRunMode(this.getOperationalState())
-    ) {
+    const inCleaningRun = this.isInCleaningRunMode(this.getOperationalState());
+    this.trackAppliedCleanTypeRun(inCleaningRun);
+
+    if (!this.selectedCleanModeNeedsApply && inCleaningRun) {
       const liveCleanType = this.getLiveCleanType();
-      if (liveCleanType !== null && this.isSupportedCleanMode(liveCleanType)) {
+      if (
+        liveCleanType !== null &&
+        this.isSupportedCleanMode(liveCleanType) &&
+        this.acceptLiveCleanType(liveCleanType)
+      ) {
         if (liveCleanType !== CLEAN_MODE_VACUUM) {
           return liveCleanType;
         }
@@ -1621,6 +1643,89 @@ export default class RoborockMatterVacuumAccessory {
       : CLEAN_MODE_VACUUM;
   }
 
+  /**
+   * The base clean TYPE a Matter clean mode belongs to. Suction-level modes
+   * are vacuum-family variants with a pinned fan power, so they reduce to
+   * plain Vacuum; the three base types reduce to themselves.
+   *
+   * Both the settings builder and the applied-type bookkeeping need this
+   * reduction. A second hand-written copy of it is how the two ends drift
+   * apart — the most repeated defect in this codebase — so there is one.
+   */
+  private getBaseCleanType(cleanMode: number): number {
+    return this.getFanPowerCleanMode(cleanMode) ? CLEAN_MODE_VACUUM : cleanMode;
+  }
+
+  /**
+   * Whether a clean type derived from the robot's live status may be reported.
+   *
+   * It may not when it contradicts a clean type this plugin applied for the
+   * run in progress and had acknowledged, and the robot has not yet caught up.
+   * Measured in #8 (skmzwanke, Saros 10, 12 Aug 2026) — 114 seconds of Apple
+   * Home showing a mode nobody asked for:
+   *
+   *   16:09:20  Applying Vacuum mode to Weebo before starting.
+   *   16:09:20  ...acknowledged by Roborock in 791 ms via cloud
+   *   16:09:22  Matter publish ... cleanMode=0   <- what was asked for
+   *   16:09:29  Matter publish ... cleanMode=2   <- the robot's lagging water
+   *   16:11:23  Matter publish ... cleanMode=0   <- it finally caught up
+   *
+   * The reading behind that `2` is the water-box level, and the prep path
+   * already documents that this very reading lies in this very window — it
+   * refuses to consult it when deciding whether to send. Publishing it as the
+   * truth from the other end was the inconsistency, not the robot's lag.
+   *
+   * Same rule as 3.4.11: when the plugin does not know, it says nothing new
+   * rather than something untrue. The pin is released the moment the robot's
+   * own report agrees, so a clean type changed in the Roborock app mid-run is
+   * still followed.
+   */
+  private acceptLiveCleanType(liveCleanType: number): boolean {
+    const pin = this.appliedCleanTypePin;
+    if (!pin) {
+      return true;
+    }
+
+    if (this.getBaseCleanType(liveCleanType) === pin.cleanType) {
+      this.appliedCleanTypePin = null;
+      return true;
+    }
+
+    // Never silently: a robot that acknowledges the command and then ignores
+    // it is a different and worse fault than a robot that lags, and the only
+    // way to tell them apart is for this to be in the log without debug on.
+    if (!pin.reported) {
+      pin.reported = true;
+      this.platform.log.warn(
+        `Roborock still reports ${this.getCleanModeLabel(liveCleanType)} for ${this.getVacuumName()} after ${this.getCleanModeLabel(pin.cleanType)} was applied and acknowledged; Apple Home keeps showing the mode that was asked for until the robot's own report agrees.`
+      );
+    }
+
+    return false;
+  }
+
+  /**
+   * Follow the run a pinned clean type belongs to, and drop the pin when that
+   * run ends so the next clean — which may be started from the Roborock app in
+   * a completely different mode — is reported from the robot's own signal.
+   *
+   * The pin is deliberately NOT dropped before the run has been seen running:
+   * a publish landing between the apply and the robot reporting that it has
+   * started would otherwise release it before it had done anything at all.
+   */
+  private trackAppliedCleanTypeRun(inCleaningRun: boolean): void {
+    const pin = this.appliedCleanTypePin;
+    if (!pin) {
+      return;
+    }
+
+    if (inCleaningRun) {
+      pin.runObserved = true;
+    } else if (pin.runObserved) {
+      this.appliedCleanTypePin = null;
+    }
+  }
+
   private isSupportedCleanMode(mode?: number): mode is number {
     return this.getSupportedCleanModes().some(
       (supportedMode) => supportedMode.mode === mode
@@ -1670,19 +1775,22 @@ export default class RoborockMatterVacuumAccessory {
     const applySettings = this.api.applyMatterCleanModeSettings;
     if (typeof applySettings !== "function") {
       this.selectedCleanModeNeedsApply = false;
+      this.appliedCleanTypePin = null;
       return;
     }
 
-    const settings = this.getRoborockCleanModeSettings(
-      this.getCurrentCleanMode()
-    );
+    // Read the displayed mode ONCE. It is what is being promised to the user,
+    // and the bookkeeping below has to record the same value that was sent.
+    const cleanMode = this.getCurrentCleanMode();
+    const settings = this.getRoborockCleanModeSettings(cleanMode);
     if (!settings) {
       this.selectedCleanModeNeedsApply = false;
+      this.appliedCleanTypePin = null;
       return;
     }
 
     this.platform.log.info(
-      `Applying ${this.getCleanModeLabel(this.getCurrentCleanMode())} mode to ${this.getVacuumName()} before starting.`
+      `Applying ${this.getCleanModeLabel(cleanMode)} mode to ${this.getVacuumName()} before starting.`
     );
     try {
       await this.withCleanModePrepTimeout(
@@ -1693,9 +1801,19 @@ export default class RoborockMatterVacuumAccessory {
           this.getMatterCleanModePrepCommandOptions()
         )
       );
+      // Sent AND acknowledged, so this is known ground truth about the run
+      // that is starting. It outranks a robot report that has not caught up.
+      this.appliedCleanTypePin = {
+        cleanType: this.getBaseCleanType(cleanMode),
+        runObserved: false,
+        reported: false,
+      };
     } catch (error) {
+      // Nothing was confirmed, so nothing is known: the robot's own report is
+      // the only signal there is about this run, and it keeps its authority.
+      this.appliedCleanTypePin = null;
       this.platform.log.warn(
-        `Unable to apply ${this.getCleanModeLabel(this.getCurrentCleanMode())} mode to ${this.getVacuumName()} before starting; continuing with the start command. ${this.getErrorMessage(error)}`
+        `Unable to apply ${this.getCleanModeLabel(cleanMode)} mode to ${this.getVacuumName()} before starting; continuing with the start command. ${this.getErrorMessage(error)}`
       );
     } finally {
       this.selectedCleanModeNeedsApply = false;
@@ -1732,7 +1850,7 @@ export default class RoborockMatterVacuumAccessory {
     // level: protocol layers only understand the three base clean types, so
     // translate before handing over.
     const fanPowerMode = this.getFanPowerCleanMode(cleanMode);
-    const baseCleanMode = fanPowerMode ? CLEAN_MODE_VACUUM : cleanMode;
+    const baseCleanMode = this.getBaseCleanType(cleanMode);
 
     // Always carry the selected Matter clean mode; protocol layers that have
     // a native clean-type concept (B01/Q7) apply it directly and ignore the

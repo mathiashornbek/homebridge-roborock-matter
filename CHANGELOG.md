@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.5.2
+
+**Apple Home showed a clean mode nobody asked for for the first minute or two of every vacuum-only clean started from Home.** The clean itself was always correct; only the tile lied.
+
+Measured in [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) (skmzwanke, Saros 10, 12 August 2026) — 114 seconds of it:
+
+```
+16:09:20  Applying Vacuum mode to Weebo before starting.
+16:09:20  ...acknowledged by Roborock in 791 ms via cloud
+16:09:22  Matter publish for Weebo: ... runMode=1, cleanMode=0   <- what was asked for
+16:09:29  Matter publish for Weebo: ... runMode=1, cleanMode=2   <- vacuum+mop
+16:11:23  Matter publish for Weebo: ... runMode=1, cleanMode=0   <- the robot caught up
+```
+
+That `2` is derived from the robot's water-box level, which was still reporting its old value seven seconds after the robot had **acknowledged** the command to turn water off. So this is not the robot being slow and the plugin being right — the plugin contradicted itself. The prep path already documents that this exact reading lies in this exact window and refuses to consult it when deciding whether to send; the reporting path published the same reading as truth.
+
+**The fix is about knowledge, not about the water box.** A clean type this plugin sent _and had acknowledged_ for the run in progress now outranks a clean type merely _derived_ from the robot's status, until the robot's own report agrees with it once. Same rule as 3.4.11: when the plugin does not know, it says nothing new rather than something untrue.
+
+It is deliberately bounded, because a pin that outlived its run would break the feature it sits inside — a clean started in the Roborock app is supposed to be reported in the mode the robot is actually running:
+
+- Released the moment the robot's own report agrees, so a clean type changed mid-run in the Roborock app is still followed.
+- Released when the run it was applied for ends — but **not** before that run has been seen running, or a publish landing in the gap between the acknowledgement and the robot reporting it had started would have released it before it did anything.
+- Dropped by an explicit Apple Home selection, and never taken at all when the apply failed: without an acknowledgement there is nothing known, and pinning an unconfirmed intent would hide a real failure.
+- The disagreement is reported **once per run on warn**, not silently and not once per publish. A robot that acknowledges the command and then ignores it is a different and worse fault than a robot that lags, and the log is the only way to tell them apart without debug logging on.
+
+The clean-type family reduction (a suction-level mode is a vacuum-family variant) was written out by hand in the settings builder and was needed in a second place for this. It is now one helper called from both, and a test counts the copies — two hand-written copies of one fact drifting apart is the most repeated defect in this codebase.
+
+`__tests__/applied-clean-type-outranks-a-lagging-robot-report.test.js` (20 tests). **Verified red against untouched 3.5.1: 16 of 20 fail**, and the symptom test fails with the symptom itself — `Expected: 0, Received: 2`, exactly the 16:09:29 publish. The 4 that pass in both are the no-regression guards.
+
 ## 3.5.1
 
 **The README shipped saying two things were unverified, eight minutes after they had been verified.** No behaviour changes in this release.
