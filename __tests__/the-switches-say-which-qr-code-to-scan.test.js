@@ -102,43 +102,74 @@ describe("every surface that offers the switches says which QR code to scan", ()
 
 describe("the startup line answers the situation the user is actually in", () => {
   const platform = read("src/platform.ts");
+  const hint = platform.slice(
+    platform.indexOf("private logActionSwitchPairingHint"),
+    platform.indexOf("private removeActionSwitches")
+  );
+
+  test("the bridge config is read from disk, not from the config object", () => {
+    // 3.5.3 read `_bridge` off the platform config and shipped. Homebridge's
+    // childBridgeFork deletes that key before a plugin is loaded — "some
+    // plugins do not like unknown config" — so on the very setup the release
+    // was written for, the line confidently named the main Homebridge QR
+    // code. The wrong instruction, in the release about giving the right one.
+    const reader = platform.slice(
+      platform.indexOf("private readOwnBridgeConfig"),
+      platform.indexOf("private logActionSwitchPairingHint")
+    );
+
+    expect(reader).toMatch(/configPath/);
+    expect(reader).toMatch(/readFileSync/);
+    expect(hint).toMatch(/this\.readOwnBridgeConfig\(\)/);
+    expect(hint).not.toMatch(/platformConfig[^)]*_bridge/);
+  });
+
+  test("a config it cannot read produces the general line, not a guess", () => {
+    // The reader returns null for a missing file, bad JSON, no platforms
+    // array or no matching block. Every one of those must fall through to the
+    // line that covers both bridges, because the failure mode being fixed is
+    // a confident answer that happens to be wrong.
+    const reader = platform.slice(
+      platform.indexOf("private readOwnBridgeConfig"),
+      platform.indexOf("private logActionSwitchPairingHint")
+    );
+
+    expect(reader).toMatch(/try \{/);
+    expect(reader).toMatch(/catch \{\s*return null;/);
+    expect(hint).toMatch(/if \(!bridge\) \{/);
+  });
 
   test("the HAP-disabled case is a warning, not an info line", () => {
     // An info line about a feature that cannot work is indistinguishable from
     // the ninety other info lines a Homebridge start produces.
-    const hint = platform.slice(
-      platform.indexOf("private logActionSwitchPairingHint"),
-      platform.indexOf("private removeActionSwitches")
-    );
-
     expect(hint).toMatch(/hap\?\.enabled === false/);
     const disabledBranch = hint.slice(hint.indexOf("hap?.enabled === false"));
     expect(disabledBranch).toMatch(/log\.warn/);
   });
 
-  test("all three bridge situations are answered separately", () => {
-    const hint = platform.slice(
-      platform.indexOf("private logActionSwitchPairingHint"),
-      platform.indexOf("private removeActionSwitches")
-    );
-
-    // No child bridge at all, child bridge with HAP off, child bridge with HAP
-    // on. One paragraph covering all three would send two thirds of readers
-    // to the wrong screen.
-    expect(hint).toMatch(/main Homebridge bridge/);
+  test("all three situations are answered separately", () => {
+    // Bridge unknown or main, child bridge with HAP off, child bridge with
+    // HAP on. One paragraph covering all three sends most readers to the
+    // wrong screen.
+    expect(hint).toMatch(/status page/);
     expect(hint).toMatch(/turned OFF/);
     expect(hint).toMatch(/paired with Apple Home separately/);
   });
 
+  test("every branch names the pairing screen and rules out both wrong codes", () => {
+    // The strings are shared rather than repeated three times, which is what
+    // keeps a later edit from fixing one branch and leaving two.
+    const branches = (hint.match(/this\.log\.(?:info|warn)\(/g) || []).length;
+    expect(branches).toBe(3);
+    expect(hint).toMatch(/Child Bridge Config/);
+    expect(hint).toMatch(/const notThese =/);
+    expect((hint.match(/\$\{notThese\}/g) || []).length).toBe(3);
+  });
+
   test("it is written once per start, not once per discovery pass", () => {
     // discoverDevices runs again on every reconnection; a five-line pairing
-    // paragraph on repeat is how a useful warning becomes log noise people
-    // filter out.
+    // paragraph on repeat is how a useful warning becomes noise people filter.
     expect(platform).toMatch(/actionSwitchPairingHintLogged/);
-    const hint = platform.slice(
-      platform.indexOf("private logActionSwitchPairingHint"),
-      platform.indexOf("private removeActionSwitches")
-    );
     expect(hint).toMatch(/if \(this\.actionSwitchPairingHintLogged\)/);
   });
 

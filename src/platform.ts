@@ -26,6 +26,7 @@ import {
 } from "./types";
 import { HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME, PLUGIN_NAME } from "./settings";
 import { decryptSession } from "./crypto";
+import { readFileSync } from "node:fs";
 
 const DEP0040_CODE = "DEP0040";
 let dep0040FilterInstalled = false;
@@ -604,18 +605,61 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   }
 
   /**
+   * The `_bridge` block for this platform, read from config.json.
+   *
+   * It cannot be read from the config object Homebridge hands the platform:
+   * childBridgeFork deletes the key before the plugin is loaded, with the
+   * comment "some plugins do not like unknown config". 3.5.3 assumed it was
+   * there, and the line it produced on a child bridge confidently pointed the
+   * user at the main Homebridge QR code — the exact wrong instruction, in the
+   * release written to stop exactly that. Measured on a live server within
+   * minutes of shipping.
+   *
+   * So it is read from disk, from the platform block whose `platform` matches
+   * this one. The schema is singular, so there is exactly one. Anything
+   * unexpected returns null and the caller says the honest general thing
+   * rather than a confident specific one.
+   */
+  private readOwnBridgeConfig(): {
+    name?: string;
+    hap?: { enabled?: boolean };
+  } | null {
+    try {
+      const configPath = this.api.user?.configPath?.();
+      if (!configPath) {
+        return null;
+      }
+
+      const raw = readFileSync(configPath, "utf8");
+      const platforms = JSON.parse(raw)?.platforms;
+      if (!Array.isArray(platforms)) {
+        return null;
+      }
+
+      const own = platforms.find(
+        (entry) => entry?.platform === PLATFORM_NAME
+      ) as Record<string, unknown> | undefined;
+      const bridge = own?._bridge;
+
+      return bridge && typeof bridge === "object"
+        ? (bridge as { name?: string; hap?: { enabled?: boolean } })
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Say, once per start, which QR code makes these switches appear.
    *
    * This is the single most likely way the feature disappoints somebody, and
    * it disappoints them silently: the switches register, the log says they
    * were added, Homebridge is happy — and Apple Home never shows them, because
    * the accessories go out over HAP while this plugin's users have only ever
-   * paired the robot over Matter. Mathias' own server was in the worst version
-   * of that state on 13 August: `hap: { enabled: false }` on the plugin's
-   * child bridge, so there was no QR code to scan anywhere.
-   *
-   * The three cases need three different answers, so the line reads the
-   * bridge config rather than printing one hopeful paragraph for everyone.
+   * paired the robot over Matter. A Matter-only setup can also carry
+   * `hap: { enabled: false }` on the plugin's child bridge, which was
+   * reasonable while this plugin published nothing over HAP; in that state no
+   * QR code anywhere helps until HAP is switched back on.
    */
   private logActionSwitchPairingHint(count: number): void {
     if (this.actionSwitchPairingHintLogged) {
@@ -624,13 +668,18 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     this.actionSwitchPairingHintLogged = true;
 
     const switches = `${count} Home app switch${count === 1 ? "" : "es"}`;
-    const bridge = (this.platformConfig as Record<string, any>)._bridge as
-      | { name?: string; hap?: { enabled?: boolean } }
-      | undefined;
+    const where =
+      "Homebridge UI -> Plugins -> homebridge-roborock-matter -> Child Bridge Config";
+    const notThese =
+      "not the main Homebridge QR code, and not the robot's Matter pairing code, which covers the vacuum only";
+    const bridge = this.readOwnBridgeConfig();
 
     if (!bridge) {
+      // Either the plugin runs on the main bridge, or the config could not be
+      // read. Both get the same line, because the alternative is asserting one
+      // of them and being wrong half the time.
       this.log.info(
-        `${switches} published on the main Homebridge bridge. If they do not show up in Apple Home, that bridge is not paired yet — scan the QR code on the Homebridge UI status page. It is not the robot's Matter pairing code: that one covers the vacuum only.`
+        `${switches} published over HomeKit, which is a different pairing from the robot's Matter one. If they do not show up in Apple Home, the bridge carrying them is not paired yet: on a child bridge that is ${where} -> Connect to HomeKit, and otherwise it is the QR code on the Homebridge UI status page. Either way it is ${notThese}.`
       );
       return;
     }
@@ -639,13 +688,13 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
 
     if (bridge.hap?.enabled === false) {
       this.log.warn(
-        `${switches} published, but HAP is turned OFF for '${bridgeName}', so Apple Home cannot see them at all and no QR code will help until that changes. Homebridge UI -> Plugins -> homebridge-roborock-matter -> Child Bridge Config -> Enable HAP, then restart Homebridge. After the restart, pair the bridge from that same screen with Connect to HomeKit and scan THAT QR code — not the main Homebridge QR code, and not the robot's Matter pairing code, which covers the vacuum only.`
+        `${switches} published, but HAP is turned OFF for '${bridgeName}', so Apple Home cannot see them at all and no QR code will help until that changes. ${where} -> Enable HAP, then restart Homebridge. After the restart, pair the bridge from that same screen with Connect to HomeKit and scan THAT QR code — ${notThese}.`
       );
       return;
     }
 
     this.log.info(
-      `${switches} published on '${bridgeName}'. A child bridge is paired with Apple Home separately from the rest of Homebridge, so if the switches do not show up: Homebridge UI -> Plugins -> homebridge-roborock-matter -> Child Bridge Config -> Connect to HomeKit, and scan THAT QR code — not the main Homebridge QR code, and not the robot's Matter pairing code, which covers the vacuum only.`
+      `${switches} published on '${bridgeName}'. A child bridge is paired with Apple Home separately from the rest of Homebridge, so if the switches do not show up: ${where} -> Connect to HomeKit, and scan THAT QR code — ${notThese}.`
     );
   }
 
