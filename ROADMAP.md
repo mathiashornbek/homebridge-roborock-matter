@@ -11,7 +11,11 @@
   acknowledgement wait, the #4 forward-anyway decision, the dock retry and the
   optimistic tile update instead of re-earning all four. The switches are
   partitioned out of the Matter-only accessory sweep by a context marker, and
-  registered under the real package name rather than PLUGIN_NAME.
+  registered under the real package name rather than PLUGIN_NAME. The full
+  measurement is now on the record (3.5.0, 3.5.1): starting a clean — all rooms
+  or a chosen set — stopping one, and pausing one **are** offered as automation
+  actions; sending the robot to its dock is **not**, and a Matter vacuum is
+  **not** selectable as an automation trigger at all.
 - Repo cleanup (3.4.12): removed the ioBroker-era leftovers this fork never
   used — the orphaned map viewer and MITM sniffing script, ten locale files no
   code path could ever load, ten unreferenced functions, and the last dead
@@ -108,6 +112,14 @@
 
 ## Worth Evaluating Carefully
 
+- A read-only accessory per robot — a contact or occupancy sensor mirroring
+  docked / cleaning — so that an automation can **trigger** on the robot rather
+  than only act on it. Measured absent in issue #3: a Matter vacuum cannot be
+  selected as an automation trigger at all, and the 3.5.0 action switches do
+  not close that half, because they are inputs an automation turns on rather
+  than accessories that report what the robot is doing. Deliberately unbuilt:
+  the right shape depends on what people actually want to automate on, and that
+  question is open with the reporter. Do not guess it into existence.
 - Optional manual overrides for model mapping when Roborock metadata is incomplete.
 - Optional manual local IP override or reconnect tools in the UI.
 - Native HomeKit vacuum support if Homebridge/HAP exposes a stable service in the future.

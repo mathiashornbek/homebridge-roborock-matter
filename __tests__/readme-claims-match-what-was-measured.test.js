@@ -89,102 +89,178 @@ function section(heading) {
   return (end === -1 ? rest : rest.slice(0, end)).join("\n");
 }
 
-/** The one automation action measured ABSENT (pponce, #3). */
-const DOCK_VERBS =
-  /\b(dock|docking|send(?:s|ing)? (?:the )?(?:robot|vacuum) home|return to dock)\b/i;
-
 /**
- * Never measured by anyone, in either direction: pause and resume as actions,
- * and a vacuum as an automation *trigger*. These stay qualified until somebody
- * goes and looks — which is the state the whole feature table was in before
- * pponce did.
- */
-const UNMEASURED_VERBS = /\b(pause|resume|trigger)\b/i;
-
-/** The two actions measured PRESENT (pponce, #3, 12 Aug 23:51). */
-const START_VERB = /\bstart(?:s|ing|ed)?\b/i;
-const STOP_VERB = /\bstop(?:s|ping|ped)?\b/i;
-
-/**
- * A sentence that puts docking and automations together has to deny
- * availability in its own words. `isQualified` is deliberately NOT reused
- * here: it is broad enough that "automations can start, stop and dock the
- * robot, but only from the tile" would sail through on the word "only" — and
- * now that two of the three commands genuinely ARE available, a sentence
- * listing all three is a realistic way for the dock promise to creep back.
- * Same lesson as the EXONERATION rule below: a rule about one specific claim
- * has to demand that claim's own evidence.
+ * A denial in the claim's own words, one per absent finding.
+ *
+ * Deliberately not the broad `isQualified`: it is loose enough that
+ * "automations can start, pause, stop and dock the robot, but only from the
+ * tile" would sail through on the word "only" — and now that three of the four
+ * commands genuinely ARE available, a sentence listing all four is a realistic
+ * way for the dock promise to creep back.
  */
 const DOCK_DENIAL =
   /(?:does|do|did|will|would)\s*n(?:o|')t\s+(?:offer|list|include|expose|surface|have)|\b(?:is|are|was|were)\s+not\s+(?:offered|available|listed|among|on)\b|\bno\s+(?:return-to-dock|send-home|dock(?:ing)?)\s+(?:action|option)\b|\bcannot\s+(?:call|send|dock|return)\b/i;
 
-describe("the README does not promise the automation action Apple does not offer", () => {
-  test("every sentence pairing automations with docking denies it", () => {
-    const claims = mentioning(plain(README), /automation/i).filter((sentence) =>
-      DOCK_VERBS.test(sentence)
+const TRIGGER_DENIAL =
+  /\b(?:is|are|was|were)\s+not\s+(?:offered|available|selectable|listed)\b|(?:could|can|does|do|would)\s*n(?:o|')t\s+(?:be\s+)?(?:select|choose|pick|appear|offer)|\bnot\s+expressible\b/i;
+
+/**
+ * Everything anyone has measured about Apple's automation editor, and
+ * everything nobody has.
+ *
+ * A registry rather than a constant per finding, because the drift this file
+ * exists to stop has now happened twice in three days and both times the same
+ * way: a measurement arrived, one place was updated, and a second place went
+ * on describing the same fact the old way. 3.4.19 said "has not been verified
+ * here" about the entire action list, and pponce verified two of it that
+ * evening. 3.5.0 corrected those two and left "pause ... and whether a vacuum
+ * can act as an automation trigger ... are still unverified" standing — eight
+ * minutes, as it turned out, before he measured both of those too.
+ *
+ * Saying "unverified" after somebody verified it costs the user the exact
+ * opposite of what a broken promise costs them: they go and install a second
+ * plugin for a job this one never blocked. So both directions are enumerated,
+ * and adding a row is the whole edit.
+ */
+const MEASURED = [
+  {
+    key: "start",
+    name: "starting a clean",
+    verb: /\bstart(?:s|ing|ed)?\b/i,
+    verdict: "offered",
+  },
+  {
+    key: "stop",
+    name: "stopping a running clean",
+    verb: /\bstop(?:s|ping|ped)?\b/i,
+    verdict: "offered",
+  },
+  {
+    key: "pause",
+    name: "pausing a running clean",
+    verb: /\bpaus(?:e|es|ing|ed)\b/i,
+    verdict: "offered",
+  },
+  {
+    key: "dock",
+    name: "sending the robot to its dock",
+    verb: /\b(?:dock|docking|send(?:s|ing)? (?:the )?(?:robot|vacuum) home|return to dock)\b/i,
+    verdict: "absent",
+    denial: DOCK_DENIAL,
+  },
+  {
+    key: "trigger",
+    name: "a vacuum as an automation trigger",
+    verb: /\btrigger\b/i,
+    verdict: "absent",
+    denial: TRIGGER_DENIAL,
+  },
+];
+
+const UNMEASURED = [
+  {
+    key: "resume",
+    name: "resuming a clean",
+    verb: /\bresum(?:e|es|ing|ed)\b/i,
+  },
+];
+
+const AUTOMATIONS_HEADING = "Automations in Apple Home";
+
+/** Sentences anywhere in the README that pair automations with `verb`. */
+function automationSentencesAbout(verb) {
+  return mentioning(plain(README), /automation/i).filter((sentence) =>
+    verb.test(sentence)
+  );
+}
+
+describe("the README matches the automation measurements on record", () => {
+  test("no command is listed as both measured and unmeasured", () => {
+    // The 3.5.0 miss in one assertion: pause was being stated as available in
+    // one bullet while the bullet below it still called pause unverified.
+    const keys = [...MEASURED, ...UNMEASURED].map((entry) => entry.key);
+    expect(keys).toHaveLength(new Set(keys).size);
+
+    const clashes = MEASURED.flatMap((measured) =>
+      UNMEASURED.filter(
+        (unmeasured) =>
+          unmeasured.verb.test(measured.name) ||
+          measured.verb.test(unmeasured.name)
+      ).map((unmeasured) => `${measured.key} / ${unmeasured.key}`)
+    );
+    expect(clashes).toEqual([]);
+  });
+
+  test.each([...MEASURED, ...UNMEASURED].map((entry) => [entry.name, entry]))(
+    "%s is discussed at all",
+    (_name, entry) => {
+      // A finding dropped in an edit would leave every rule below it green and
+      // quiet. Whatever the section says about a row, it has to say something.
+      expect(entry.verb.test(plain(section(AUTOMATIONS_HEADING)))).toBe(true);
+    }
+  );
+
+  test.each(
+    MEASURED.filter((entry) => entry.verdict === "offered").map((entry) => [
+      entry.name,
+      entry,
+    ])
+  )("%s is stated as an available automation action", (_name, entry) => {
+    // Demands a positive statement, which is why a README that quietly
+    // reverts to "unverified" fails here instead of going quiet.
+    const positive = sentences(plain(section(AUTOMATIONS_HEADING))).filter(
+      (sentence) =>
+        /automation/i.test(sentence) &&
+        entry.verb.test(sentence) &&
+        !/\b(not|cannot|unverified|never)\b|n't/i.test(sentence)
     );
 
-    expect(claims.filter((sentence) => !DOCK_DENIAL.test(sentence))).toEqual(
+    expect(positive.length).toBeGreaterThan(0);
+  });
+
+  test.each(
+    MEASURED.filter((entry) => entry.verdict === "absent").map((entry) => [
+      entry.name,
+      entry,
+    ])
+  )("%s is denied wherever it meets an automation", (_name, entry) => {
+    const claims = automationSentencesAbout(entry.verb);
+
+    expect(claims.filter((sentence) => !entry.denial.test(sentence))).toEqual(
       []
     );
   });
 
-  test("commands nobody has measured stay qualified", () => {
-    const claims = mentioning(plain(README), /automation/i).filter((sentence) =>
-      UNMEASURED_VERBS.test(sentence)
-    );
-
-    expect(claims.filter((sentence) => !isQualified(sentence))).toEqual([]);
+  test.each(
+    MEASURED.filter((entry) => entry.verdict === "absent").map((entry) => [
+      entry.name,
+      entry,
+    ])
+  )("%s is stated as absent, not merely left out", (_name, entry) => {
+    // The rule above is satisfied by silence. A user who needs this has to be
+    // told it is missing, not left to infer it from an absence of promises.
+    expect(automationSentencesAbout(entry.verb).length).toBeGreaterThan(0);
   });
 
-  test("the rules are not passing vacuously", () => {
-    // If a rewrite ever drops the subject entirely, the rules above would go
-    // quiet rather than wrong. The README is expected to keep explaining the
-    // gap, because a user who needs scheduled docking has to know it is the
-    // one thing an automation cannot ask for.
-    const paired = mentioning(plain(README), /automation/i).filter((sentence) =>
-      DOCK_VERBS.test(sentence)
-    );
+  test.each(UNMEASURED.map((entry) => [entry.name, entry]))(
+    "%s stays qualified until somebody measures it",
+    (_name, entry) => {
+      const claims = automationSentencesAbout(entry.verb);
 
-    expect(paired.length).toBeGreaterThan(0);
-  });
-});
+      expect(claims.filter((sentence) => !isQualified(sentence))).toEqual([]);
+    }
+  );
 
-describe("the README states the automation actions measured to exist", () => {
-  const AUTOMATIONS = "Automations in Apple Home";
-
-  /**
-   * Sentences in the section that claim a command IS reachable from an
-   * automation. Denials are filtered out, so this demands a positive
-   * statement — the exact opposite of the dock rule, and the reason a README
-   * that reverts to "unverified" fails here instead of going quiet.
-   */
-  const claimsFor = (verb) =>
-    sentences(plain(section(AUTOMATIONS))).filter(
-      (sentence) =>
-        /automation/i.test(sentence) &&
-        verb.test(sentence) &&
-        !/\b(not|cannot|unverified|never)\b|n't/i.test(sentence)
-    );
-
-  test("starting a clean is stated as an available action", () => {
-    expect(claimsFor(START_VERB).length).toBeGreaterThan(0);
+  test("room selection is not dropped from the start finding", () => {
+    // The start action carries room selection, and that detail is what decides
+    // whether an Apple Home schedule can replace the Roborock app's own.
+    // Losing it in an edit would leave the finding technically present and
+    // practically useless.
+    expect(plain(section(AUTOMATIONS_HEADING))).toMatch(/room/i);
   });
 
-  test("stopping a running clean is stated as an available action", () => {
-    expect(claimsFor(STOP_VERB).length).toBeGreaterThan(0);
-  });
-
-  test("room selection is not dropped from the finding", () => {
-    // The start action carries room selection, and that detail is what
-    // decides whether an Apple Home schedule can replace the Roborock app's
-    // own. Losing it in an edit would leave the finding technically present
-    // and practically useless.
-    expect(plain(section(AUTOMATIONS))).toMatch(/room/i);
-  });
-
-  test("the measurement is attributed, not asserted", () => {
-    expect(section(AUTOMATIONS)).toMatch(/issues\/3\b/);
+  test("the measurements are attributed, not asserted", () => {
+    expect(section(AUTOMATIONS_HEADING)).toMatch(/issues\/3\b/);
   });
 });
 

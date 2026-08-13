@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 613 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 623 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -132,11 +132,12 @@ A detached water tank or mop pad is never treated as a fault either: that is the
 
 Every command lives on the tile: start, stop, pause and send-to-dock all work from the Home app and from Siri, because the plugin implements Matter's own `RvcOperationalState` commands — including **GoHome**, which is exactly what the dock button sends.
 
-What Apple offers _inside_ Home automations is a separate question, and it is Apple's to answer, not the plugin's. It has now been measured twice by the same user in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3), and the answer turns out to be partial rather than flat:
+What Apple offers _inside_ Home automations is a separate question, and it is Apple's to answer, not the plugin's. It has now been measured three times by the same user in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3), and the answer turns out to be partial rather than flat:
 
-- **Starting a clean is offered as an automation action** — either the whole home or a chosen set of rooms — and so is **stopping a clean that is already running**. An Apple Home schedule can therefore do the two things most schedules are built for, without any help from this section.
+- **Starting a clean is offered as an automation action** — either the whole home or a chosen set of rooms — and so is **stopping** or **pausing** a clean that is already running. An Apple Home schedule can therefore do the things most schedules are built for, without any help from this section.
 - **Sending the vacuum to its dock is not offered as an automation action.** A robot that finishes a clean normally returns to its dock by itself, so the gap only shows up when you want to end a clean early: the automation can cut it short, but it cannot call the robot home.
-- **Pause, resume, and whether a vacuum can act as an automation _trigger_ rather than an action, are still unverified.** Nobody has measured them, so this page claims nothing about them in either direction.
+- **A Matter vacuum is not offered as an automation _trigger_ at all.** The vacuum could not be selected when setting an automation's trigger — only when choosing its action. "When the robot finishes cleaning, close the balcony door" is therefore not expressible in Apple Home today, and the switches below do not change it: they are inputs an automation can turn on, not accessories that report what the robot is doing.
+- **Whether an automation can resume a paused clean has not been measured.** Nobody has looked, so this page claims nothing about it in either direction.
 
 **Optional Home app switches close the docking gap.** Turn on **Add Home app switches for Dock, Pause and Find** in the plugin settings and each robot gets one plain HomeKit switch per action you pick — `Vicky Return to Dock`, `Vicky Pause`, `Vicky Find`. A switch is something every automation, scene and Shortcut can turn on, which is the whole point: an automation that cannot send the robot to its dock directly can flip a switch that does it instead. Each one is momentary and turns itself off again about a second and a half after it is pressed, so it never claims a command is still running.
 
@@ -166,7 +167,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 613 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 623 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.1
+
+**The README shipped saying two things were unverified, eight minutes after they had been verified.** No behaviour changes in this release.
+
+pponce finished the survey in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3) while 3.5.0 was being published: **pausing** a running clean _is_ offered as an automation action, and a Matter vacuum is **not** offered as an automation _trigger_ at all — the vacuum cannot be selected when setting a trigger, only when choosing an action. The page that went out with 3.5.0 still called both of those unmeasured.
+
+The trigger finding is the one worth reading twice. It means "when the robot finishes cleaning, do X" cannot be built in Apple Home today — and the switches added in 3.5.0 do not change it, because they are inputs an automation turns on, not accessories that report what the robot is doing. Something read-only would be needed for that. It is on the roadmap as a question, not a plan, because the right shape depends on what people actually want to automate on.
+
+`__tests__/readme-claims-match-what-was-measured.test.js` is now driven by one registry of findings instead of a constant per finding, and that is the real fix. The same drift has now happened twice in three days, both times because a measurement landed, one sentence was corrected, and a second sentence about the same fact was left behind. Each row carries the command, the verdict, and — for an absent finding — the denial its own claim has to make. The rules then demand that every offered command is positively stated, every absent one is denied wherever the README pairs it with automations _and_ stated as absent at least once, every unmeasured one stays qualified, and no command sits in both lists — which is exactly the shape of the 3.5.0 miss. Verified red against the shipped 3.5.0 README: 2 of 20 fail.
+
 ## 3.5.0
 
 **Apple Home cannot send a Matter vacuum to its dock from an automation, so the plugin now offers a switch that can.** The measurement is pponce's, in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3): the commands all work from the tile and from Siri, but "send the vacuum to its dock" is not on Apple's list of automation actions for a Matter vacuum, and he moved that part of his setup to a HAP-based plugin rather than go without it. 3.4.19 stopped the README from promising what could not be delivered. This release delivers it.
