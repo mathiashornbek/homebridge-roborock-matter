@@ -561,6 +561,9 @@ export default class RoborockMatterVacuumAccessory {
    */
   async runHomeKitAction(action: HomeKitActionKey): Promise<void> {
     switch (action) {
+      case "clean":
+        await this.startCleaning(HOME_SWITCH_SURFACE);
+        return;
       case "dock":
         await this.returnToDock(HOME_SWITCH_SURFACE);
         return;
@@ -826,63 +829,7 @@ export default class RoborockMatterVacuumAccessory {
     );
 
     if (newMode === RUN_MODE_CLEANING) {
-      const selectedAreas = this.getSelectedServiceAreaSegments();
-      if (selectedAreas.length > 0) {
-        const selectedMapIds = this.getSelectedServiceAreaMapIds(selectedAreas);
-        const targetMapId = selectedMapIds[0] ?? null;
-        // Roborock can only clean room segments from one map at a time. Service
-        // area selection already constrains this to a single map, so this only
-        // guards an unexpected multi-map selection by cleaning the first map
-        // instead of throwing out of the Matter command handler.
-        const areasToClean =
-          selectedMapIds.length > 1
-            ? selectedAreas.filter((area) => area.mapId === targetMapId)
-            : selectedAreas;
-        if (selectedMapIds.length > 1) {
-          this.platform.log.warn(
-            `Matter requested room cleaning across multiple Roborock maps for ${name}; cleaning only the areas on map ${targetMapId}.`
-          );
-        }
-
-        const selectedAreaNames = areasToClean.map((area) =>
-          this.formatServiceAreaName(area)
-        );
-        this.platform.log.info(
-          `Starting ${name} from Matter for selected service area(s): ${selectedAreaNames.join(", ")}.`
-        );
-        const state = {
-          rvcRunMode: { currentMode: RUN_MODE_CLEANING },
-          rvcOperationalState: {
-            operationalState: RVC_OPERATIONAL_STATE.RUNNING,
-          },
-        };
-        this.beginServiceAreaProgress(areasToClean.map((area) => area.areaId));
-        this.setAndScheduleOptimisticState(state, "selected-area start");
-        this.dispatchRoborockMatterCommand("service area clean", async () => {
-          await this.applyCleanModeBeforeStarting();
-          await this.loadMatterMapIfNeeded(duid, targetMapId);
-          await this.api.app_segment_clean_by_ids(
-            duid,
-            areasToClean.map((area) => area.segmentId),
-            this.getMatterCommandOptions()
-          );
-        });
-        return;
-      }
-
-      this.platform.log.info(`Starting ${name} from Matter.`);
-      const state = {
-        rvcRunMode: { currentMode: RUN_MODE_CLEANING },
-        rvcOperationalState: {
-          operationalState: RVC_OPERATIONAL_STATE.RUNNING,
-        },
-      };
-      this.beginFullCleanServiceAreaProgress();
-      this.setAndScheduleOptimisticState(state, "start");
-      this.dispatchRoborockMatterCommand("start", async () => {
-        await this.applyCleanModeBeforeStarting();
-        await this.api.app_start(duid, this.getMatterCommandOptions());
-      });
+      await this.startCleaning();
       return;
     }
 
@@ -905,6 +852,86 @@ export default class RoborockMatterVacuumAccessory {
 
     this.platform.log.warn(
       `Ignoring unsupported Matter run mode '${newMode}' for ${name}.`
+    );
+  }
+
+  /**
+   * Start a clean.
+   *
+   * Shared by the Matter run-mode handler and the optional "Start Cleaning"
+   * HAP switch, and deliberately so: the switch starts exactly the clean the
+   * Home tile's play button would, including any rooms selected on that tile.
+   * A switch with its own idea of what "start" means would be a second command
+   * path, and the room selection it ignored would be the one the user is
+   * looking at.
+   */
+  private async startCleaning(surface: string = MATTER_SURFACE): Promise<void> {
+    const name = this.getVacuumName();
+    const duid = this.getDuid();
+    const selectedAreas = this.getSelectedServiceAreaSegments();
+    if (selectedAreas.length > 0) {
+      const selectedMapIds = this.getSelectedServiceAreaMapIds(selectedAreas);
+      const targetMapId = selectedMapIds[0] ?? null;
+      // Roborock can only clean room segments from one map at a time. Service
+      // area selection already constrains this to a single map, so this only
+      // guards an unexpected multi-map selection by cleaning the first map
+      // instead of throwing out of the Matter command handler.
+      const areasToClean =
+        selectedMapIds.length > 1
+          ? selectedAreas.filter((area) => area.mapId === targetMapId)
+          : selectedAreas;
+      if (selectedMapIds.length > 1) {
+        this.platform.log.warn(
+          `Room cleaning across multiple Roborock maps was requested for ${name}; cleaning only the areas on map ${targetMapId}.`
+        );
+      }
+
+      const selectedAreaNames = areasToClean.map((area) =>
+        this.formatServiceAreaName(area)
+      );
+      this.platform.log.info(
+        `Starting ${name} from ${surfacePhrase(surface)} for selected service area(s): ${selectedAreaNames.join(", ")}.`
+      );
+      const state = {
+        rvcRunMode: { currentMode: RUN_MODE_CLEANING },
+        rvcOperationalState: {
+          operationalState: RVC_OPERATIONAL_STATE.RUNNING,
+        },
+      };
+      this.beginServiceAreaProgress(areasToClean.map((area) => area.areaId));
+      this.setAndScheduleOptimisticState(state, "selected-area start");
+      this.dispatchRoborockMatterCommand(
+        "service area clean",
+        async () => {
+          await this.applyCleanModeBeforeStarting();
+          await this.loadMatterMapIfNeeded(duid, targetMapId);
+          await this.api.app_segment_clean_by_ids(
+            duid,
+            areasToClean.map((area) => area.segmentId),
+            this.getMatterCommandOptions()
+          );
+        },
+        { surface }
+      );
+      return;
+    }
+
+    this.platform.log.info(`Starting ${name} from ${surfacePhrase(surface)}.`);
+    const state = {
+      rvcRunMode: { currentMode: RUN_MODE_CLEANING },
+      rvcOperationalState: {
+        operationalState: RVC_OPERATIONAL_STATE.RUNNING,
+      },
+    };
+    this.beginFullCleanServiceAreaProgress();
+    this.setAndScheduleOptimisticState(state, "start");
+    this.dispatchRoborockMatterCommand(
+      "start",
+      async () => {
+        await this.applyCleanModeBeforeStarting();
+        await this.api.app_start(duid, this.getMatterCommandOptions());
+      },
+      { surface }
     );
   }
 

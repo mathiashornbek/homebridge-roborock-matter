@@ -11,7 +11,12 @@ import { PlatformConfig } from "homebridge";
  * Declared here, not next to the switch, so the accessory and the vacuum can
  * both name the same keys without importing each other.
  */
-export const HOMEKIT_ACTION_KEYS = ["dock", "pause", "locate"] as const;
+export const HOMEKIT_ACTION_KEYS = [
+  "clean",
+  "dock",
+  "pause",
+  "locate",
+] as const;
 
 export type HomeKitActionKey = (typeof HOMEKIT_ACTION_KEYS)[number];
 

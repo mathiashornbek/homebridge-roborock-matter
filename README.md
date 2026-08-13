@@ -41,18 +41,18 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 
 ## Features
 
-|                                     |                                                                                                                                                                  |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🤖 **Full control from Apple Home** | Start, stop, pause and send the robot home to its dock — from the Home app or Siri                                                                               |
-| 🕹️ **Switches for automations**     | Optional per-robot Return to Dock, Pause and Find switches — Apple Home does not offer a dock action for a Matter vacuum ([details](#automations-in-apple-home)) |
-| 🚪 **Clean specific rooms**         | Pick rooms right in Apple Home, with the names you gave them in the Roborock app — multi-floor homes included                                                    |
-| 📍 **Live room tracking**           | See which room the robot is cleaning right now, updated as it moves ([details](#live-room-tracking))                                                             |
-| 📊 **Honest cleaning progress**     | Each room goes pending → cleaning → done — and a room only counts as done when the robot was actually there                                                      |
-| 🌀 **Cleaning & suction modes**     | Vacuum / Mop / Vacuum + Mop on models that support it — plus optional Quiet / Balanced / Turbo / Max suction levels (Max+ on Q7)                                 |
-| 🔋 **Battery & charging**           | Battery level and charging state on the accessory ([one Apple-side caveat](#battery-percentage-in-apple-home))                                                   |
-| 🧠 **New models just work**         | Brand-new Roborock models get sensible defaults automatically, and the plugin adapts to what each robot actually supports                                        |
-| 🩺 **Built-in diagnostics**         | Connection status, a one-click connection test, and a ready-to-share report if you ever need help                                                                |
-| 🔐 **Easy, safe login**             | Sign in with your Roborock account right in the settings — two-factor supported, session stored encrypted                                                        |
+|                                     |                                                                                                                                                                                  |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🤖 **Full control from Apple Home** | Start, stop, pause and send the robot home to its dock — from the Home app or Siri                                                                                               |
+| 🕹️ **Switches for automations**     | Optional per-robot Start Cleaning, Return to Dock, Pause and Find switches — Apple Home does not offer a dock action for a Matter vacuum ([details](#automations-in-apple-home)) |
+| 🚪 **Clean specific rooms**         | Pick rooms right in Apple Home, with the names you gave them in the Roborock app — multi-floor homes included                                                                    |
+| 📍 **Live room tracking**           | See which room the robot is cleaning right now, updated as it moves ([details](#live-room-tracking))                                                                             |
+| 📊 **Honest cleaning progress**     | Each room goes pending → cleaning → done — and a room only counts as done when the robot was actually there                                                                      |
+| 🌀 **Cleaning & suction modes**     | Vacuum / Mop / Vacuum + Mop on models that support it — plus optional Quiet / Balanced / Turbo / Max suction levels (Max+ on Q7)                                                 |
+| 🔋 **Battery & charging**           | Battery level and charging state on the accessory ([one Apple-side caveat](#battery-percentage-in-apple-home))                                                                   |
+| 🧠 **New models just work**         | Brand-new Roborock models get sensible defaults automatically, and the plugin adapts to what each robot actually supports                                                        |
+| 🩺 **Built-in diagnostics**         | Connection status, a one-click connection test, and a ready-to-share report if you ever need help                                                                                |
+| 🔐 **Easy, safe login**             | Sign in with your Roborock account right in the settings — two-factor supported, session stored encrypted                                                                        |
 
 ## Quick start
 
@@ -103,20 +103,20 @@ The clean mode follows the robot as well: start a vacuum+mop or mop-only clean f
 
 Everything is configurable from the Homebridge UI. The essentials:
 
-| Option                          | Default    | What it does                                                                                                                                                                                 |
-| ------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `email` / password              | —          | Your Roborock app account (2FA handled in the UI; the session token is stored encrypted)                                                                                                     |
-| `skipDevices`                   | —          | Comma-separated device IDs the plugin should ignore                                                                                                                                          |
-| `enableMatterServiceArea`       | `true`     | Room/map selection in Apple Home                                                                                                                                                             |
-| `enableLiveRoomTracking`        | `true`     | Live current-room from the robot's map position while cleaning                                                                                                                               |
-| `enableMatterCleanMode`         | `true`     | Vacuum / Mop / Vacuum + Mop mode selection                                                                                                                                                   |
-| `enableFanPowerCleanModes`      | `false`    | Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) suction modes to the Matter mode list. **Re-pair the robot once after toggling** — Matter locks the mode list at pairing                |
-| `enableMatterPowerSource`       | `true`     | Battery cluster                                                                                                                                                                              |
-| `enableMatterFaultReporting`    | `false`    | Report a robot that has genuinely halted as Error instead of Ready ([details](#why-the-robot-needs-attention))                                                                               |
-| `enableHomeKitActionSwitches`   | `false`    | Adds a plain Home app switch per robot for Return to Dock / Pause / Find, so automations can reach commands Apple does not offer for a Matter vacuum ([details](#automations-in-apple-home)) |
-| `homeKitActionSwitches`         | `["dock"]` | Which of those switches to publish: `dock`, `pause`, `locate`                                                                                                                                |
-| `cloudOnlyMode`                 | `false`    | Skip local TCP entirely and use the cloud for everything                                                                                                                                     |
-| `transientWarningThrottleHours` | `6`        | How often recurring transient-timeout warnings may repeat (0 = only in debug)                                                                                                                |
+| Option                          | Default    | What it does                                                                                                                                                                                                  |
+| ------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `email` / password              | —          | Your Roborock app account (2FA handled in the UI; the session token is stored encrypted)                                                                                                                      |
+| `skipDevices`                   | —          | Comma-separated device IDs the plugin should ignore                                                                                                                                                           |
+| `enableMatterServiceArea`       | `true`     | Room/map selection in Apple Home                                                                                                                                                                              |
+| `enableLiveRoomTracking`        | `true`     | Live current-room from the robot's map position while cleaning                                                                                                                                                |
+| `enableMatterCleanMode`         | `true`     | Vacuum / Mop / Vacuum + Mop mode selection                                                                                                                                                                    |
+| `enableFanPowerCleanModes`      | `false`    | Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) suction modes to the Matter mode list. **Re-pair the robot once after toggling** — Matter locks the mode list at pairing                                 |
+| `enableMatterPowerSource`       | `true`     | Battery cluster                                                                                                                                                                                               |
+| `enableMatterFaultReporting`    | `false`    | Report a robot that has genuinely halted as Error instead of Ready ([details](#why-the-robot-needs-attention))                                                                                                |
+| `enableHomeKitActionSwitches`   | `false`    | Adds a plain Home app switch per robot for Start Cleaning / Return to Dock / Pause / Find, so automations can reach commands Apple does not offer for a Matter vacuum ([details](#automations-in-apple-home)) |
+| `homeKitActionSwitches`         | `["dock"]` | Which of those switches to publish: `clean`, `dock`, `pause`, `locate`                                                                                                                                        |
+| `cloudOnlyMode`                 | `false`    | Skip local TCP entirely and use the cloud for everything                                                                                                                                                      |
+| `transientWarningThrottleHours` | `6`        | How often recurring transient-timeout warnings may repeat (0 = only in debug)                                                                                                                                 |
 
 ## Why the robot needs attention
 
@@ -139,7 +139,9 @@ What Apple offers _inside_ Home automations is a separate question, and it is Ap
 - **A Matter vacuum is not offered as an automation _trigger_ at all.** The vacuum could not be selected when setting an automation's trigger — only when choosing its action. "When the robot finishes cleaning, close the balcony door" is therefore not expressible in Apple Home today, and the switches below do not change it: they are inputs an automation can turn on, not accessories that report what the robot is doing.
 - **Whether an automation can resume a paused clean has not been measured.** Nobody has looked, so this page claims nothing about it in either direction.
 
-**Optional Home app switches close the docking gap.** Turn on **Add Home app switches for Dock, Pause and Find** in the plugin settings and each robot gets one plain HomeKit switch per action you pick — `Vicky Return to Dock`, `Vicky Pause`, `Vicky Find`. A switch is something every automation, scene and Shortcut can turn on, which is the whole point: an automation that cannot send the robot to its dock directly can flip a switch that does it instead. Each one is momentary and turns itself off again about a second and a half after it is pressed, so it never claims a command is still running.
+**Optional Home app switches close the docking gap.** Turn on **Add Home app switches for Start, Dock, Pause and Find** in the plugin settings and each robot gets one plain HomeKit switch per action you pick — `Vicky Start Cleaning`, `Vicky Return to Dock`, `Vicky Pause`, `Vicky Find`. A switch is something every automation, scene and Shortcut can turn on, which is the whole point: an automation that cannot send the robot to its dock directly can flip a switch that does it instead. Each one is momentary and turns itself off again about a second and a half after it is pressed, so it never claims a command is still running.
+
+**Start Cleaning starts the clean the tile would start.** That includes any rooms selected on the Matter tile: if the last thing you did in Apple Home was pick the kitchen, the switch cleans the kitchen. It is the same command with the same clean mode applied first, not a second idea of what starting means — a switch that ignored the selection you are looking at would be the surprising one. Clear the selection on the tile to get a whole-home clean.
 
 A press takes exactly the same route as a press on the tile — the same acknowledgement wait, the same timing line in the log, the same retry if Roborock times out while the robot is still cleaning — and it moves the tile with it, so a robot sent home by a schedule does not sit there reading Ready. The log line names which surface asked, so `Sending Vicky back to dock from the Home switch.` and `Sending Vicky back to dock from Matter.` are told apart when a schedule misfires.
 

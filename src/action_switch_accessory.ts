@@ -36,6 +36,12 @@ export type ActionSwitchDefinition = {
  */
 export const ACTION_SWITCH_DEFINITIONS: readonly ActionSwitchDefinition[] = [
   {
+    key: "clean",
+    nameSuffix: "Start Cleaning",
+    summary:
+      "starts the same clean the Home tile's play button would, rooms included",
+  },
+  {
     key: "dock",
     nameSuffix: "Return to Dock",
     summary: "sends the robot back to its dock",

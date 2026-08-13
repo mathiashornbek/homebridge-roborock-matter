@@ -281,7 +281,7 @@
     <label class="checkbox">
       <input id="enable-homekit-action-switches" type="checkbox" />
       <span>
-        Add Home app switches for Dock, Pause and Find
+        Add Home app switches for Start, Dock, Pause and Find
         <small
           >Apple Home does not offer &ldquo;send the vacuum to its dock&rdquo;
           as an automation action for a Matter vacuum &mdash; measured in issue
@@ -295,6 +295,16 @@
       </span>
     </label>
     <div id="homekit-action-switch-actions" class="checkbox-group disabled">
+      <label class="checkbox">
+        <input id="homekit-action-clean" type="checkbox" disabled />
+        <span
+          >Start Cleaning
+          <small
+            >Starts the same clean the Home tile&rsquo;s play button would,
+            including any rooms selected on that tile.</small
+          ></span
+        >
+      </label>
       <label class="checkbox">
         <input id="homekit-action-dock" type="checkbox" disabled />
         <span

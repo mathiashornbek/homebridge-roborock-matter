@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.7.0
+
+**A Start Cleaning switch for automations.**
+
+A fourth Home app switch per robot, alongside Return to Dock, Pause and Find. It starts exactly the clean the Home tile's play button would, rooms selected on the tile included, because it calls the same method the Matter run-mode handler calls — a switch with its own idea of what starting means would be a second command path, and the room selection it ignored would be the one the user is looking at. Clear the selection on the tile to get a whole-home clean.
+
+It comes with the clean-mode prep, the acknowledgement wait, the timing line and the optimistic tile update the tile's own start already had, for the same reason: one path. The log says which surface asked — `Starting Vicky from the Home switch.` against `Starting Vicky from Matter.` — so a misfiring automation is findable.
+
+Off by default like the other three, and no re-pairing: the switches are HAP accessories on this plugin's child bridge, not Matter. `__tests__/every-switch-is-wired-all-the-way-through.test.js` enumerates the rule over all five places an action has to be declared, because the failure mode of missing one is a tickable box that publishes nothing.
+
+749 tests, up from 726.
+
 ## 3.6.2
 
 **A dock emptying its own dust bin announced a cleaning that never happened.**
