@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.7.1
+
+**The Matter Pairing section told you to pair the wrong thing first.**
+
+It read "Pair the Roborock child/daughter bridge first, then add the external vacuum accessory if Apple Home asks for it." That sequence cannot happen. Homebridge publishes a robotic vacuum as a Matter node of its own, so the robot never arrives inside the bridge node, and Apple Home is never in a position to offer it as an extra afterwards ([#7](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/7) — reported by a user who had to reverse the instruction to get paired with a single code, and confirmed against a second installation where each robot is its own `matterOnly` node with its own setup code).
+
+Each robot's own code is now what the panel and the per-code hints point at, and the bridge entry says plainly that the robots do not need it. Both hints also name the code as a **Matter** code, because the other code in this product — the child bridge's HomeKit QR code for the action switches — is the one people reasonably confuse it with.
+
+Wording only; nothing about pairing itself changed, and no re-pairing is needed. `__tests__/matter-pairing-guidance-points-at-the-robots-own-code.test.js` enumerates the rule over all three surfaces in both directions: no surface may make the robot's code conditional on the bridge, and every surface has to say positively that the robot's own code adds the robot. The negative half alone is satisfied by deleting the paragraph.
+
+773 tests, up from 749. The README's count said 726 — it was not updated when 3.7.0 shipped.
+
 ## 3.7.0
 
 **A Start Cleaning switch for automations.**

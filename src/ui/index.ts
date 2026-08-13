@@ -648,10 +648,15 @@ class RoborockUiServer {
           ? commissioning.fabricCount
           : null,
       updatedAt: this.getFileUpdatedAt(filePath),
+      // Both hints used to describe a pairing order that cannot happen:
+      // Homebridge publishes a robotic vacuum as a Matter node of its own, so
+      // the robot never arrives inside the bridge node and Apple Home is never
+      // in a position to offer it as an extra afterwards. Reported in issue #7
+      // by a user who had to reverse the instruction to get paired at all.
       hint:
         kind === "bridge"
-          ? "Scan this QR code first when adding the Roborock child/daughter bridge to Apple Home."
-          : "Use this 11-digit setup code if Apple Home asks to add the external Roborock vacuum after the bridge is paired.",
+          ? "This code commissions the child bridge itself. The robots do not need it — each robot has its own Matter pairing code in this list."
+          : "Add this robot to Apple Home with its own 11-digit Matter setup code. Nothing else has to be paired for it to work.",
     };
   }
 
