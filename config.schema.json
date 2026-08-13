@@ -126,7 +126,7 @@
       },
       "enableHomeKitActionSwitches": {
         "title": "Add Home App Switches for Dock, Pause and Find",
-        "description": "Publishes one extra HomeKit switch per robot per action, so Apple Home automations and Shortcuts can send a command that Apple does not offer for a Matter vacuum. Measured in issue #3: Apple Home has no \"send the vacuum to its dock\" automation action for a Matter vacuum, and a plain switch is an automation action everywhere. Each switch is momentary: it turns itself off again about a second after it is pressed. Off by default, because turning it on adds accessories to your Home app.",
+        "description": "Publishes one extra HomeKit switch per robot per action, so Apple Home automations and Shortcuts can send a command that Apple does not offer for a Matter vacuum. Measured in issue #3: Apple Home has no \"send the vacuum to its dock\" automation action for a Matter vacuum, and a plain switch is an automation action everywhere. Each switch is momentary: it turns itself off again about a second after it is pressed. Off by default, because turning it on adds accessories to your Home app. IMPORTANT — THESE NEED THEIR OWN PAIRING: the robot reaches Apple Home over Matter, but the switches are HomeKit accessories on this plugin's Homebridge child bridge, which is paired separately. Go to Plugins -> homebridge-roborock-matter -> the three-dot menu -> Child Bridge Config, make sure Enable HAP is ON (on a Matter-only setup it is often off, and until it is on no QR code will work), restart, then press Connect to HomeKit on that same screen and scan THAT QR code. It is not the main Homebridge QR code, and not the robot's Matter pairing code.",
         "type": "boolean",
         "default": false
       },

@@ -300,6 +300,44 @@
       </label>
     </div>
 
+    <div id="homekit-switch-pairing" class="pairing-callout">
+      <h3>
+        &#9888; The switches need their own pairing &mdash; a different QR code
+      </h3>
+      <p>
+        The robot reaches Apple Home over <strong>Matter</strong>. These
+        switches are ordinary <strong>HomeKit</strong> accessories, and they
+        travel on this plugin&rsquo;s own Homebridge bridge. That bridge is
+        paired separately, so the code you scanned for the vacuum will not bring
+        the switches in.
+      </p>
+      <p class="pairing-steps">
+        In the Homebridge UI: <strong>Plugins</strong> &rarr;
+        <strong>homebridge-roborock-matter</strong> &rarr; the
+        <strong>&#8942;</strong> menu &rarr;
+        <strong>Child Bridge Config</strong>.
+      </p>
+      <ol>
+        <li>
+          Make sure <strong>Enable HAP</strong> is turned on. On a Matter-only
+          setup it is often off, and while it is off no QR code anywhere will
+          work.
+        </li>
+        <li>Save and restart Homebridge.</li>
+        <li>
+          Come back to the same screen and press
+          <strong>Connect to HomeKit</strong>. <strong>That</strong> is the QR
+          code to scan in the Home app.
+        </li>
+      </ol>
+      <p class="pairing-not">
+        It is <strong>not</strong> the main Homebridge QR code on the status
+        page, and <strong>not</strong> the robot&rsquo;s Matter pairing code
+        &mdash; that one covers the vacuum only. The Homebridge log says which
+        of the three situations you are in every time the plugin starts.
+      </p>
+    </div>
+
     <p class="help matter-setup-note">
       After saving and restarting the Roborock bridge, use the Matter Pairing
       section below. Apple Home may need both the bridge QR code and the

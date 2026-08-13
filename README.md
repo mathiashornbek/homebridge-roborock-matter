@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 643 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 669 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -143,7 +143,19 @@ What Apple offers _inside_ Home automations is a separate question, and it is Ap
 
 A press takes exactly the same route as a press on the tile — the same acknowledgement wait, the same timing line in the log, the same retry if Roborock times out while the robot is still cleaning — and it moves the tile with it, so a robot sent home by a schedule does not sit there reading Ready. The log line names which surface asked, so `Sending Vicky back to dock from the Home switch.` and `Sending Vicky back to dock from Matter.` are told apart when a schedule misfires.
 
-Three things are worth knowing before you turn it on. They are off by default because switching them on adds accessories to your Home app, one per robot per action. They are ordinary HomeKit accessories, so they arrive over the Homebridge bridge rather than over Matter — if you have only ever paired the Matter robot and never the Homebridge bridge itself, they will not show up until you pair the bridge too. And the Find switch is only published for robots that actually support the command, because a switch that silently does nothing is worse than no switch at all.
+### The switches need their own pairing — a different QR code
+
+This is the one step that quietly produces "I turned it on and nothing appeared", so it is worth reading before you do anything else. Your robot reaches Apple Home over **Matter**. These switches are ordinary **HomeKit** accessories, and they travel on this plugin's own Homebridge child bridge, which Apple Home pairs **separately**. The code you scanned for the vacuum does not cover them.
+
+In the Homebridge UI, go to **Plugins → homebridge-roborock-matter → ⋮ → Child Bridge Config**, and then:
+
+1. Check that **Enable HAP** is on. On a Matter-only setup it is frequently off — and while it is off, the switches exist inside Homebridge but are not published to anything, so no QR code anywhere will bring them in.
+2. Save and restart Homebridge.
+3. Return to the same screen and press **Connect to HomeKit**. That is the QR code to scan in the Home app.
+
+It is **not** the main Homebridge QR code on the status page, and **not** the robot's Matter pairing code. The plugin tells you which of those three situations you are in: every start it writes one line naming the bridge the switches went to and what, if anything, is still missing.
+
+Two smaller things. They are off by default because switching them on adds accessories to your Home app, one per robot per action. And the Find switch is only published for robots that actually support the command, because a switch that silently does nothing is worse than no switch at all.
 
 Deselecting an action, or turning the feature off, removes those switches on the next restart. The robot itself is untouched throughout: it stays a Matter vacuum, and no re-pairing is needed to add or remove the switches.
 
@@ -167,7 +179,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 643 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 669 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 

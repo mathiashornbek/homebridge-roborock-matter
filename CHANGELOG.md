@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.5.3
+
+**The switches were unreachable on the maintainer's own house, and everything reported success.** Turning the feature on registered three switches, the log said it had added them, Homebridge was content — and Apple Home never showed one. The plugin's Homebridge child bridge carried `hap: { enabled: false }`, which is a completely reasonable thing for a Matter-only setup to have done, because until 3.5.0 this plugin published nothing over HAP at all. In that state the switches exist inside Homebridge and are advertised to nobody, and **no QR code anywhere in the product would have helped**.
+
+3.5.0 said one sentence about this, in the middle of a paragraph of caveats, and the sentence was not even the whole truth: it assumed the bridge merely needed pairing, not enabling. This release says it properly, in every place a user can meet the feature.
+
+**The startup log now answers the situation you are actually in**, once per start, and picks between three of them by reading the bridge config rather than printing one hopeful paragraph for everyone. If HAP is off on the plugin's child bridge it is a **warning**, because an info line about a feature that cannot work is indistinguishable from the ninety other info lines a Homebridge start produces. If the bridge is fine it is an info line naming the bridge the switches went to. And if the plugin is not in a child bridge at all, it names the main bridge instead.
+
+The settings page grows a callout under the switch toggle — shown only when the feature is on — with the three steps in order: **Plugins → homebridge-roborock-matter → ⋮ → Child Bridge Config**, check **Enable HAP**, restart, then **Connect to HomeKit** on that same screen and scan _that_ QR code. The README gets the same steps as their own subsection, and the setting's own description carries the short version for anyone reading the raw schema.
+
+All four surfaces also name the two codes that look right and are not: the main Homebridge QR code on the status page, and the robot's Matter pairing code — the one nearly every user of this plugin has already scanned, which covers the vacuum and nothing else.
+
+`__tests__/the-switches-say-which-qr-code-to-scan.test.js` enumerates the rule over the surfaces rather than writing it once, because the original failure was that only one surface mentioned pairing at all: every place that offers the switches must name the screen, the toggle, the pairing action and both wrong codes. Matching is done on the wording with markup stripped, so a phrase in `<strong>` and the same phrase in `**bold**` count as the same instruction — the trap the README's own claim rules documented. Verified red against 3.5.2: 26 of 26 fail.
+
 ## 3.5.2
 
 **Apple Home showed a clean mode nobody asked for for the first minute or two of every vacuum-only clean started from Home.** The clean itself was always correct; only the tile lied.

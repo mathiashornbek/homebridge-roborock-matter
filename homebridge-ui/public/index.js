@@ -32,6 +32,7 @@ const elements = {
   homeKitActionSwitchActions: document.getElementById(
     "homekit-action-switch-actions"
   ),
+  homeKitSwitchPairing: document.getElementById("homekit-switch-pairing"),
   homeKitActionDock: document.getElementById("homekit-action-dock"),
   homeKitActionPause: document.getElementById("homekit-action-pause"),
   homeKitActionLocate: document.getElementById("homekit-action-locate"),
@@ -453,6 +454,11 @@ function syncActionSwitchAvailability() {
   const on = Boolean(elements.enableHomeKitActionSwitches?.checked);
   if (elements.homeKitActionSwitchActions) {
     elements.homeKitActionSwitchActions.classList.toggle("disabled", !on);
+  }
+  // The pairing steps are noise until the feature is on, and the single most
+  // important thing on the page the moment it is.
+  if (elements.homeKitSwitchPairing) {
+    elements.homeKitSwitchPairing.classList.toggle("hidden", !on);
   }
   ACTION_SWITCH_KEYS.forEach((key) => {
     const element = ACTION_SWITCH_ELEMENTS[key]();

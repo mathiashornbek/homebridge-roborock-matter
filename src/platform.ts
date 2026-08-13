@@ -93,6 +93,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   private readonly actionSwitches: Map<string, RoborockActionSwitchAccessory> =
     new Map();
   private matterUnavailableLogged = false;
+  private actionSwitchPairingHintLogged = false;
 
   public readonly roborockAPI: any;
   public readonly log: RoborockPlatformLogger;
@@ -585,6 +586,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       this.removeActionSwitches(obsolete);
     }
 
+    if (wanted.size > 0) {
+      this.logActionSwitchPairingHint(wanted.size);
+    }
+
     for (const [key, target] of wanted) {
       const existing = this.actionSwitches.get(key);
       if (existing) {
@@ -596,6 +601,52 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
 
       this.addActionSwitch(key, target.duid, target.action, target.vacuumName);
     }
+  }
+
+  /**
+   * Say, once per start, which QR code makes these switches appear.
+   *
+   * This is the single most likely way the feature disappoints somebody, and
+   * it disappoints them silently: the switches register, the log says they
+   * were added, Homebridge is happy — and Apple Home never shows them, because
+   * the accessories go out over HAP while this plugin's users have only ever
+   * paired the robot over Matter. Mathias' own server was in the worst version
+   * of that state on 13 August: `hap: { enabled: false }` on the plugin's
+   * child bridge, so there was no QR code to scan anywhere.
+   *
+   * The three cases need three different answers, so the line reads the
+   * bridge config rather than printing one hopeful paragraph for everyone.
+   */
+  private logActionSwitchPairingHint(count: number): void {
+    if (this.actionSwitchPairingHintLogged) {
+      return;
+    }
+    this.actionSwitchPairingHintLogged = true;
+
+    const switches = `${count} Home app switch${count === 1 ? "" : "es"}`;
+    const bridge = (this.platformConfig as Record<string, any>)._bridge as
+      | { name?: string; hap?: { enabled?: boolean } }
+      | undefined;
+
+    if (!bridge) {
+      this.log.info(
+        `${switches} published on the main Homebridge bridge. If they do not show up in Apple Home, that bridge is not paired yet — scan the QR code on the Homebridge UI status page. It is not the robot's Matter pairing code: that one covers the vacuum only.`
+      );
+      return;
+    }
+
+    const bridgeName = bridge.name || "this plugin's child bridge";
+
+    if (bridge.hap?.enabled === false) {
+      this.log.warn(
+        `${switches} published, but HAP is turned OFF for '${bridgeName}', so Apple Home cannot see them at all and no QR code will help until that changes. Homebridge UI -> Plugins -> homebridge-roborock-matter -> Child Bridge Config -> Enable HAP, then restart Homebridge. After the restart, pair the bridge from that same screen with Connect to HomeKit and scan THAT QR code — not the main Homebridge QR code, and not the robot's Matter pairing code, which covers the vacuum only.`
+      );
+      return;
+    }
+
+    this.log.info(
+      `${switches} published on '${bridgeName}'. A child bridge is paired with Apple Home separately from the rest of Homebridge, so if the switches do not show up: Homebridge UI -> Plugins -> homebridge-roborock-matter -> Child Bridge Config -> Connect to HomeKit, and scan THAT QR code — not the main Homebridge QR code, and not the robot's Matter pairing code, which covers the vacuum only.`
+    );
   }
 
   private removeActionSwitches(accessories: PlatformAccessory[]): void {
