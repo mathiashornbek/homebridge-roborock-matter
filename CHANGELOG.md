@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.6.1
+
+**Two of 3.6.0's own log fixes did not survive contact with my server.**
+
+The per-model poll-profile line still printed twice for two robots of the same model. 3.6.0 moved the dedupe key from the duid to the rendered line — and then interpolated the robot's name into that line, which made the key per-robot again. The key is now the model-derived sentence alone and the robot is named after the key is taken.
+
+The `Loading accessory 'X' from cache.` demotion was lost to a batch edit that failed on its second replacement and wrote neither. Its Matter twin shipped at debug; this one shipped at info.
+
+Both are pinned by rules rather than by the two lines: the dedupe key must carry no robot identity, and the emitted line must still name one.
+
 ## 3.6.0
 
 **A full pass over the log and the settings page. No new features; a lot of things that were quietly wrong.**

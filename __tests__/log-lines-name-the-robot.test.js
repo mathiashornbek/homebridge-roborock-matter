@@ -145,3 +145,33 @@ describe("log lines identify robots by name", () => {
     expect(lib.match(/describeDevice\(duid\)/g).length).toBeGreaterThan(10);
   });
 });
+
+describe("a line whose content is per-model is printed once, not once per robot", () => {
+  // 3.6.0 fixed this by keying the dedupe Set on the rendered line instead of
+  // the duid — and then interpolated the robot's name into that same line, so
+  // the key went back to being per-robot and the duplicate survived. His log
+  // printed it twice for two sc05 robots the same hour it shipped.
+  const source = fs.readFileSync(
+    path.join(ROOT, "roborockLib/roborockAPI.js"),
+    "utf8"
+  );
+
+  test("the poll-profile dedupe key carries no robot identity", () => {
+    const key = source.slice(
+      source.indexOf("const profileKey ="),
+      source.indexOf("loggedPollProfiles.add")
+    );
+
+    expect(key).toMatch(/robotModel/);
+    expect(key).not.toMatch(/describeDevice|getVacuumName|\$\{duid\}/);
+  });
+
+  test("the robot is still named, just outside the key", () => {
+    const emit = source.slice(
+      source.indexOf("loggedPollProfiles.add(profileKey)"),
+      source.indexOf("if (carpetSupported)")
+    );
+
+    expect(emit).toMatch(/describeDevice\(duid\)/);
+  });
+});

@@ -370,7 +370,11 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    * It should be used to set up event handlers for characteristics and update respective values.
    */
   configureAccessory(accessory: PlatformAccessory) {
-    this.log.info(`Loading accessory '${accessory.displayName}' from cache.`);
+    // Once per cached accessory, and Homebridge already summarises the cache
+    // restore. Three robots with three switches each would be nine info lines
+    // saying nothing happened. (3.6.0 demoted the Matter twin below and lost
+    // this one to a failed batch edit — caught in the field the same hour.)
+    this.log.debug(`Loading accessory '${accessory.displayName}' from cache.`);
 
     // Store restored accessory in the cached accessories list
     // remove duplicates accessories

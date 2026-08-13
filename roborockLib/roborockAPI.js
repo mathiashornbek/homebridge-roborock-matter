@@ -3056,10 +3056,17 @@ class Roborock {
           // is derived from the model, so a duid key printed the identical
           // sentence once per robot — and the sentence names no robot, so a
           // three-robot household could not tell which two it was about.
-          const profileLine = `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=${waterBoxProbe ? "yes" : "no, the Q7/B01 dialect has no such request"}). Requests the robot reports as unsupported are disabled automatically. First seen on ${this.describeDevice(duid)}. If states look wrong for this model, please open a model report issue on GitHub.`;
-          if (!this.loggedPollProfiles.has(profileLine)) {
-            this.loggedPollProfiles.add(profileLine);
-            this.log.info(profileLine);
+          // The key is the model-derived sentence ONLY. 3.6.0 keyed on the
+          // whole rendered line and then appended the robot's name to it,
+          // which made the key per-robot again and printed the duplicate it
+          // was meant to remove. The robot name is added after the key is
+          // taken, not before.
+          const profileKey = `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=${waterBoxProbe ? "yes" : "no, the Q7/B01 dialect has no such request"}). Requests the robot reports as unsupported are disabled automatically.`;
+          if (!this.loggedPollProfiles.has(profileKey)) {
+            this.loggedPollProfiles.add(profileKey);
+            this.log.info(
+              `${profileKey} First seen on ${this.describeDevice(duid)}. If states look wrong for this model, please open a model report issue on GitHub.`
+            );
           }
           if (carpetSupported) {
             await this.pollParameter(duid, vacuum, "get_carpet_mode", isB01);
