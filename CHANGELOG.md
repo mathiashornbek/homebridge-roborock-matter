@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.6.2
+
+**A dock emptying its own dust bin announced a cleaning that never happened.**
+
+Apple Home reads Matter's `RvcRunMode` as the answer to "is this robot cleaning?" — it announces a cleaning that started when the mode becomes Cleaning and one that finished when it returns to Idle. The plugin published Cleaning for all three dock chores (emptying the dust bin, washing the mop, updating maps), so a robot sitting idle in its dock produced a start and a finish notification every time the dock emptied itself ([#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9), Q Revo).
+
+A dock chore now inherits the run mode that was published before it began, rather than deciding one of its own. That is deliberately "inherit" and not "always Idle": a robot that empties its bin in the middle of a run must not announce that the run finished and started again either. Both directions are covered.
+
+The chore is recognised from the robot's own status code, not from the state shown to the controller — with **Extended Operational States** off, emptying the dust bin is rewritten to Running one level below, so a rule that read the controller-facing state would have worked only for the users who had enabled that toggle.
+
+The operational state is unchanged: with the toggle on, the tile still says the dock is emptying the bin. Only the run mode stopped claiming that it was a cleaning.
+
+Also documented: the plugin's **Debug Mode** is not enough on its own — Homebridge suppresses plugin debug output unless Homebridge itself runs with `-D`.
+
 ## 3.6.1
 
 **Two of 3.6.0's own log fixes did not survive contact with my server.**

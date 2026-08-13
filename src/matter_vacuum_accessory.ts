@@ -293,14 +293,23 @@ const RVC_OPERATIONAL_STATE_LIST = [
 // of the full list, without SEEKING_CHARGER.
 const RVC_BASIC_OPERATIONAL_STATE_LIST = RVC_OPERATIONAL_STATE_LIST.slice(0, 4);
 
-// The states that the "Extended Operational States" toggle unlocks. Publishing
-// any of these requires them to be advertised, which is why this set and
-// RVC_OPERATIONAL_STATE_LIST must stay in agreement.
-const EXTENDED_OPERATIONAL_STATES: ReadonlySet<number> = new Set([
-  RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+// Dock chores: the robot is parked in its dock doing housekeeping. None of
+// them starts or ends a cleaning run — whether one is in progress was decided
+// before the chore began, and is decided again when it is over.
+const DOCK_ACTIVITY_STATES: ReadonlySet<number> = new Set([
   RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN,
   RVC_OPERATIONAL_STATE.CLEANING_MOP,
   RVC_OPERATIONAL_STATE.UPDATING_MAPS,
+]);
+
+// The states that the "Extended Operational States" toggle unlocks. Publishing
+// any of these requires them to be advertised, which is why this set and
+// RVC_OPERATIONAL_STATE_LIST must stay in agreement. Derived from the dock
+// chores rather than re-listing them: a second hand-written copy of a list is
+// the most repeated defect in this codebase.
+const EXTENDED_OPERATIONAL_STATES: ReadonlySet<number> = new Set([
+  RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+  ...DOCK_ACTIVITY_STATES,
 ]);
 
 // Optional charging/docked additions. CHARGING (0x41) and DOCKED (0x42) are
@@ -421,6 +430,11 @@ export default class RoborockMatterVacuumAccessory {
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
+  // The run mode last decided by a state that was not a dock chore. Dock
+  // chores inherit it instead of deciding one of their own — see
+  // resolveRunMode(). Idle is the honest starting point: a plugin that boots
+  // while the dock is emptying knows of no run in progress.
+  private lastRunMode = RUN_MODE_IDLE;
   // The suction-level clean mode last derived from a fan power the plugin
   // could actually read. Used only as the answer to "the fan power is
   // unreadable right now" while suction levels are announced; cleared by an
@@ -1443,10 +1457,44 @@ export default class RoborockMatterVacuumAccessory {
           modeTags: [{ value: RVC_RUN_MODE_TAG_CLEANING }],
         },
       ],
-      currentMode: this.isInCleaningRunMode(this.getOperationalState())
-        ? RUN_MODE_CLEANING
-        : RUN_MODE_IDLE,
+      currentMode: this.resolveRunMode(),
     };
+  }
+
+  /**
+   * The Matter run mode to publish.
+   *
+   * Apple Home treats RvcRunMode as the answer to "is this robot cleaning?":
+   * it announces a cleaning that started when the mode goes to Cleaning and
+   * one that finished when it goes back to Idle. A dock chore is neither.
+   * Emptying the dust bin while the robot sat idle in its dock published
+   * Cleaning and then Idle again, so the dock's own housekeeping announced a
+   * cleaning that never happened (issue #9, Q Revo). The mirror image matters
+   * just as much: a robot that empties its bin in the MIDDLE of a run must not
+   * announce that the run finished and started again.
+   *
+   * So a dock chore inherits the run mode that was published before it began,
+   * instead of deciding one of its own.
+   *
+   * The chore is recognised from the robot's own state, not from the
+   * controller-facing one: with "Extended Operational States" off, emptying
+   * the dust bin is rewritten to RUNNING one level below, and reading that
+   * would leave the rule working only for the users who enabled the toggle.
+   */
+  private resolveRunMode(): number {
+    const roborockOperationalState = this.getRoborockOperationalState(
+      this.getNumberStatus("state"),
+      this.getNumberStatus("charge_status")
+    );
+
+    if (DOCK_ACTIVITY_STATES.has(roborockOperationalState)) {
+      return this.lastRunMode;
+    }
+
+    this.lastRunMode = this.isInCleaningRunMode(this.getOperationalState())
+      ? RUN_MODE_CLEANING
+      : RUN_MODE_IDLE;
+    return this.lastRunMode;
   }
 
   private buildCleanModeCluster(): Record<string, unknown> {
