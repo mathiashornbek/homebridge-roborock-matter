@@ -148,9 +148,20 @@ async function loadConfig() {
     ? configs.find((entry) => entry.platform === "RoborockVacuumPlatform")
     : null;
 
+  // A plugin that has never been configured returns no block at all. Falling
+  // through to `{}` rather than skipping the whole initialisation is the
+  // difference between the four default-on features reading as on and the
+  // form saving an explicit `false` for each of them on the user's first
+  // keystroke — the plugin treats absent as on and `false` as off, and three
+  // of the four are re-pair settings, so that mistake costs a re-pair.
+  const loaded = config || {};
+
   if (!config) {
     updateAuthStatus(false, false);
-  } else {
+  }
+
+  {
+    const config = loaded;
     if (config.email) {
       elements.email.value = config.email;
     }
@@ -202,6 +213,7 @@ async function loadConfig() {
     }
     applyActionSwitchSelection(readActionSwitchSelection(config));
     syncActionSwitchAvailability();
+    syncFeatureDependencies();
     if (elements.enableMatterFaultReporting) {
       elements.enableMatterFaultReporting.checked = Boolean(
         config.enableMatterFaultReporting
@@ -433,6 +445,24 @@ function readActionSwitchSelection(config) {
   return ACTION_SWITCH_KEYS.filter((key) => saved.includes(key));
 }
 
+/**
+ * What to persist: never an empty list while the feature is on.
+ *
+ * `[]` and "absent" mean different things to the plugin — absent falls back to
+ * Return to Dock, empty publishes nothing — so the form must not be able to
+ * produce the silent-nothing state.
+ */
+function getSavedActionSwitchSelection() {
+  const selection = getActionSwitchSelection();
+  if (
+    selection.length === 0 &&
+    Boolean(elements.enableHomeKitActionSwitches?.checked)
+  ) {
+    return ["dock"];
+  }
+  return selection;
+}
+
 /** The action switches the form currently shows. */
 function getActionSwitchSelection() {
   return ACTION_SWITCH_KEYS.filter((key) =>
@@ -447,6 +477,29 @@ function applyActionSwitchSelection(selection) {
       element.checked = selection.includes(key);
     }
   });
+}
+
+/**
+ * Grey out settings whose prerequisite is switched off.
+ *
+ * Three settings do nothing on their own and said so only in their help text.
+ * Two of them are re-pair settings, so a user could tick one, save, restart,
+ * remove the robot from Apple Home, pair it again — and only then find out it
+ * was never going to do anything.
+ */
+function syncFeatureDependencies() {
+  const cleanMode = Boolean(elements.enableMatterCleanMode?.checked);
+  if (elements.enableFanPowerCleanModes) {
+    elements.enableFanPowerCleanModes.disabled = !cleanMode;
+  }
+  const serviceArea = Boolean(elements.enableMatterServiceArea?.checked);
+  if (elements.enableLiveRoomTracking) {
+    elements.enableLiveRoomTracking.disabled = !serviceArea;
+  }
+  const chargingDocked = Boolean(elements.enableMatterChargingDocked?.checked);
+  if (elements.matterChargedBatteryThreshold) {
+    elements.matterChargedBatteryThreshold.disabled = !chargingDocked;
+  }
 }
 
 /** Grey out the per-action boxes while the feature itself is off. */
@@ -466,6 +519,34 @@ function syncActionSwitchAvailability() {
       element.disabled = !on;
     }
   });
+}
+
+/**
+ * Save, with the button saying so and a failure the user can see.
+ *
+ * The listeners used to drop the promise on the floor: a rejected save left
+ * the button untouched and produced no toast, so the only reading available
+ * to the user was that it had worked.
+ */
+async function handleSaveClick(button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    await saveCredentials(true);
+  } catch (error) {
+    showToast("error", error?.message || "Could not save settings.");
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+/** An auto-save that cannot fail silently. */
+function autoSave() {
+  saveCredentials(false).catch(() =>
+    showToast("error", "Could not save that change.")
+  );
 }
 
 function getTransientWarningThrottleHours() {
@@ -512,7 +593,7 @@ function getFormValues() {
     enableHomeKitActionSwitches: Boolean(
       elements.enableHomeKitActionSwitches?.checked
     ),
-    homeKitActionSwitches: getActionSwitchSelection(),
+    homeKitActionSwitches: getSavedActionSwitchSelection(),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
     cloudOnlyMode: getCloudOnlyMode(),
@@ -529,7 +610,12 @@ function getMatterChargedBatteryThreshold() {
   if (!Number.isFinite(value)) {
     return undefined;
   }
-  return Math.min(100, Math.max(1, Math.round(value)));
+  const clamped = Math.min(100, Math.max(1, Math.round(value)));
+  // Otherwise the box keeps showing the rejected 150 while 100 is saved.
+  if (elements.matterChargedBatteryThreshold) {
+    elements.matterChargedBatteryThreshold.value = String(clamped);
+  }
+  return clamped;
 }
 
 function getSkipTokenSet() {
@@ -777,6 +863,14 @@ async function verifyTwoFactorCode() {
     delete patch.password;
 
     await updatePluginConfig(patch);
+    // Same reason the password path clears it: the row is only hidden, and a
+    // hidden input keeps its value. Any later auto-save would then find a
+    // populated password in getFormValues() and write it back to config.json
+    // in cleartext, undoing the very thing this login just replaced.
+    if (elements.password) {
+      elements.password.value = "";
+    }
+    state.hasPassword = false;
     showToast("success", result.message || "Verification successful.");
     state.hasEncryptedToken = true;
     setLoggedInState(true, state.hasPassword);
@@ -1552,25 +1646,49 @@ async function updatePluginConfig(patch) {
 }
 
 function init() {
+  // The markup ships in the off state, but say it once here too: loadConfig()
+  // can fail or find no config, and the alternative is a loud orange pairing
+  // callout for a feature that is switched off.
+  syncActionSwitchAvailability();
+  syncFeatureDependencies();
   loadManagedDevices().catch(() => {});
   if (elements.refreshDevices) {
     elements.refreshDevices.addEventListener("click", () =>
       loadManagedDevices()
     );
   }
-  loadConfig().catch(() => {
-    showToast("error", "Failed to load current config.");
-  });
-  elements.saveSettings.addEventListener("click", () => saveCredentials(true));
+  loadConfig()
+    .then(() => {
+      // The device rows read the skip list out of the form, and the form is
+      // only populated once the config has loaded. Without this the two
+      // requests race and a deliberately skipped robot can render as active.
+      renderManagedDevices();
+    })
+    .catch(() => {
+      showToast("error", "Failed to load current config.");
+    });
+  elements.saveSettings.addEventListener("click", () =>
+    handleSaveClick(elements.saveSettings)
+  );
   if (elements.saveFeatureSettings) {
     elements.saveFeatureSettings.addEventListener("click", () =>
-      saveCredentials(true)
+      handleSaveClick(elements.saveFeatureSettings)
     );
   }
   if (elements.enableHomeKitActionSwitches) {
-    elements.enableHomeKitActionSwitches.addEventListener("change", () =>
-      syncActionSwitchAvailability()
-    );
+    elements.enableHomeKitActionSwitches.addEventListener("change", () => {
+      // Turning the feature on with nothing ticked would save an empty list,
+      // and an empty list is not the same as no list: the plugin falls back to
+      // ["dock"] only when the key is absent. The user would enable the
+      // feature, save, restart, and find no switch to pair.
+      if (
+        elements.enableHomeKitActionSwitches.checked &&
+        getActionSwitchSelection().length === 0
+      ) {
+        applyActionSwitchSelection(["dock"]);
+      }
+      syncActionSwitchAvailability();
+    });
   }
   elements.login.addEventListener("click", login);
   elements.send2fa.addEventListener("click", sendTwoFactorEmail);
@@ -1596,33 +1714,38 @@ function init() {
       showToast("error", "Failed to copy Matter pairing value.");
     });
   });
-  elements.baseUrl.addEventListener("change", () => saveCredentials(false));
+  elements.baseUrl.addEventListener("change", () => autoSave());
   elements.skipDevices.addEventListener("change", () => {
-    saveCredentials(false);
+    autoSave();
     renderManagedDevices();
     rerenderMatterPairing();
   });
-  elements.debugMode.addEventListener("change", () => saveCredentials(false));
+  elements.debugMode.addEventListener("change", () => autoSave());
+  for (const gate of [
+    elements.enableMatterCleanMode,
+    elements.enableMatterServiceArea,
+    elements.enableMatterChargingDocked,
+  ]) {
+    gate?.addEventListener("change", () => syncFeatureDependencies());
+  }
   if (elements.enableMatterChargingDocked) {
     elements.enableMatterChargingDocked.addEventListener("change", () =>
-      saveCredentials(false)
+      autoSave()
     );
   }
   if (elements.matterChargedBatteryThreshold) {
     elements.matterChargedBatteryThreshold.addEventListener("change", () =>
-      saveCredentials(false)
+      autoSave()
     );
   }
   elements.preferCloudForMatterCommands.addEventListener("change", () =>
-    saveCredentials(false)
+    autoSave()
   );
-  elements.cloudOnlyMode.addEventListener("change", () =>
-    saveCredentials(false)
-  );
+  elements.cloudOnlyMode.addEventListener("change", () => autoSave());
   elements.transientWarningThrottleHours.addEventListener("change", () =>
-    saveCredentials(false)
+    autoSave()
   );
-  elements.email.addEventListener("change", () => saveCredentials(false));
+  elements.email.addEventListener("change", () => autoSave());
   elements.refreshDiagnostics.addEventListener("click", () => {
     resetDiagnosticsAutoRefresh();
     loadDiagnostics().catch(() => {

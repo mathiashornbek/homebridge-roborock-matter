@@ -328,7 +328,7 @@ describe("messageQueueHandler transport selection", () => {
     const handler = new messageQueueHandler(adapter);
     await expect(
       handler.sendRequest("device-1", "get_status", [])
-    ).rejects.toThrow("Cloud connection not available");
+    ).rejects.toThrow("cloud connection is not available");
 
     expect(adapter.rr_mqtt_connector.sendMessage).not.toHaveBeenCalled();
     expect(adapter.localConnector.sendMessage).not.toHaveBeenCalled();

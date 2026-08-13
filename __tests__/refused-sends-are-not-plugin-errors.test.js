@@ -45,17 +45,41 @@ function renderTemplate(template) {
   });
 }
 
-function collectRejectionMessages() {
+/**
+ * Every refusal `sendRequest` can reject with, as {kind, message}.
+ *
+ * The rule used to read the reason back out of the prose, and the classifier
+ * did the same — so making the messages readable in 3.6.0 silently turned a
+ * calm transport condition back into an error with a stack trace once per
+ * poll. The reason now travels on the error as `transientKind`, and this
+ * extractor reads the tag rather than the sentence. A refusal that rejects
+ * with a bare `new Error` is a finding, not a message to classify.
+ */
+function collectRefusals() {
   const source = fs.readFileSync(MESSAGE_QUEUE_HANDLER_SOURCE, "utf8");
-  const pattern = /reject\(\s*new Error\(\s*`([^`]*)`/g;
-  const messages = [];
+  const tagged = /reject\(\s*refusal\(\s*"([^"]+)",\s*`([^`]*)`/g;
+  const refusals = [];
   let match;
 
-  while ((match = pattern.exec(source)) !== null) {
-    messages.push(renderTemplate(match[1]));
+  while ((match = tagged.exec(source)) !== null) {
+    refusals.push({ kind: match[1], message: renderTemplate(match[2]) });
   }
 
-  return messages;
+  return refusals;
+}
+
+/** Refusals that still reject with a plain Error, i.e. carry no reason. */
+function collectUntaggedRejections() {
+  const source = fs.readFileSync(MESSAGE_QUEUE_HANDLER_SOURCE, "utf8");
+  const bare = /reject\(\s*new Error\(\s*`([^`]*)`/g;
+  const found = [];
+  let match;
+
+  while ((match = bare.exec(source)) !== null) {
+    found.push(renderTemplate(match[1]));
+  }
+
+  return found;
 }
 
 function createLog() {
@@ -83,20 +107,45 @@ const LOCAL_UNAVAILABLE_MESSAGE =
   "Local connection not available for device-1. Not sending method get_status request.";
 
 describe("every refusal sendRequest can reject with is classified as transient", () => {
-  test("the source actually yields the refusal messages this rule guards", () => {
-    const messages = collectRejectionMessages();
-
+  test("the source actually yields the refusals this rule guards", () => {
     // Guards the extraction itself: if the shape of the source changes so the
-    // regex finds nothing, the rule below would pass vacuously.
-    expect(messages.length).toBeGreaterThanOrEqual(5);
+    // regex finds nothing, the rules below would pass vacuously.
+    expect(collectRefusals().length).toBeGreaterThanOrEqual(3);
   });
 
-  test.each(collectRejectionMessages())(
-    "getTransientErrorKind classifies: %s",
+  test.each(collectUntaggedRejections())(
+    "an untagged rejection is still classifiable from its prose: %s",
     (message) => {
+      // Tagging is the mechanism now, but anything that still rejects with a
+      // plain Error — the timeouts do — must remain recognisable, or it goes
+      // back to being logged as a plugin error with a stack once per poll.
       const api = createRoborock();
 
       expect(api.getTransientErrorKind(message)).not.toBeNull();
+    }
+  );
+
+  test.each(collectRefusals().map((r) => [r.kind, r.message]))(
+    "the %s refusal carries its reason and reads as a sentence: %s",
+    (kind, message) => {
+      expect(kind).toBeTruthy();
+      expect(message).toMatch(/\.$/);
+    }
+  );
+
+  test.each(collectRefusals().map((r) => [r.kind, r.message]))(
+    "a %s refusal is logged calmly, not as a plugin error: %s",
+    (kind, message) => {
+      const api = createRoborock();
+      const error = new Error(message);
+      error.code = "ROBOROCK_TRANSPORT_REFUSED";
+      error.transientKind = kind;
+
+      api.catchError(error, "get_status", "device-1");
+
+      // The whole point: no stack, no error level, for a decision the plugin
+      // made on purpose and already explained at debug where it made it.
+      expect(api.log.error).not.toHaveBeenCalled();
     }
   );
 

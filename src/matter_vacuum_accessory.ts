@@ -1243,7 +1243,7 @@ export default class RoborockMatterVacuumAccessory {
     }
     if (updated && resyncEligible) {
       this.powerSourceResyncDone = true;
-      this.platform.log.info(
+      this.platform.log.debug(
         `Battery resync for ${this.getVacuumName()}: republished the battery attributes to bump their Matter data version (battery=${(power.batPercentRemaining as number) / 2}%).`
       );
     }
@@ -2273,8 +2273,12 @@ export default class RoborockMatterVacuumAccessory {
     this.serviceAreaCurrentArea = area.areaId;
     this.persistServiceAreaProgress();
     if (changedCurrentArea) {
-      this.platform.log.info(
-        `Live room for ${this.getVacuumName()}: robot detected in ${this.formatServiceAreaName(area)}${
+      // The library logs the same transition one call earlier, with the
+      // segment id and the count of unresolved positions. Two info lines
+      // beginning "Live room for X" per room change is the busiest recurring
+      // pair in a cleaning log and the second carries nothing extra.
+      this.platform.log.debug(
+        `Matter currentArea for ${this.getVacuumName()} set to ${this.formatServiceAreaName(area)}${
           previousAreaId !== null ? "" : " (first detection this run)"
         }.`
       );

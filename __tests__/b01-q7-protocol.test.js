@@ -1198,8 +1198,11 @@ describe("Battery resync nudge (stuck-controller-cache defense)", () => {
     expect(powerPublishes[0].attributes.batChargeState).toBe(0);
     expect(powerPublishes[1].attributes.batPercentRemaining).toBe(200);
     // Named, not duid'd: this line sat directly above a "Matter publish for
-    // Garage" line in a field log and printed a raw identifier instead.
-    expect(platform.log.info).toHaveBeenCalledWith(
+    // Garage" line in a field log and printed a raw identifier instead. It
+    // moved to debug in 3.6.0 — it is internal Matter data-version plumbing in
+    // wording the user cannot act on — but the naming rule still holds, and
+    // the nudge itself is still asserted above by the two publishes.
+    expect(platform.log.debug).toHaveBeenCalledWith(
       expect.stringContaining("Battery resync for Q7 Test")
     );
 

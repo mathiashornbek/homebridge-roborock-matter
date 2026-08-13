@@ -1252,8 +1252,10 @@ class deviceFeatures {
         // Not an error: core controls (start/stop/dock/battery/rooms) and the
         // Matter capabilities derived from the cloud schema all work without a
         // per-model entry. The model just lacks extra diagnostic state setup.
-        this.adapter.log.warn(
-          `Model ${robotModel} has no explicit feature mapping; applying generic defaults. Core controls and Matter still work. Report the model upstream to enable model-specific extras.`
+        // Warn was wrong for something the same sentence calls harmless, and
+        // naming only the model printed it twice for two robots of one model.
+        this.adapter.log.debug(
+          `${this.adapter.describeDevice?.(this.duid) || "This robot"} (${robotModel}) has no per-model feature table; using generic defaults. Start/stop/dock, battery, rooms and every Matter capability are unaffected — only extra diagnostic states are missing. To have the model added, open a model report issue on GitHub with a diagnostics export from the plugin settings.`
         );
       }
 

@@ -78,8 +78,14 @@ describe("the diagnostic report quotes the saved config, never the form", () => 
   });
 
   test("nothing the report builder reaches reads the settings form", () => {
+    // `ACTION_SWITCH_ELEMENTS` is the blind spot this predicate used to have:
+    // it is a top-level const of thunks declared before the first function, so
+    // it sits in no body the parser sees, and the two functions that read the
+    // live form through it contain no literal `elements.` at all.
     const offenders = [...reachableFrom("buildDiagnosticsReport")]
-      .filter((name) => /\belements\./.test(FUNCTIONS.get(name)))
+      .filter((name) =>
+        /\belements\.|ACTION_SWITCH_ELEMENTS/.test(FUNCTIONS.get(name))
+      )
       .sort();
 
     expect(offenders).toEqual([]);

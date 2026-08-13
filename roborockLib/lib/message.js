@@ -248,7 +248,9 @@ class message {
           );
         }
 
-        const error = new Error(`No localKey found for device ${duid}`);
+        const error = new Error(
+          `No localKey found for ${describeDevice(this.adapter, duid)}`
+        );
         error.code = "ERR_MISSING_LOCAL_KEY";
         throw error;
       }
@@ -374,7 +376,9 @@ class message {
       typeof nonces.connectNonce !== "number" ||
       typeof nonces.ackNonce !== "number"
     ) {
-      throw new Error(`Missing L01 nonces for device ${duid}`);
+      throw new Error(
+        `Missing L01 nonces for ${describeDevice(this.adapter, duid)}`
+      );
     }
 
     return nonces;

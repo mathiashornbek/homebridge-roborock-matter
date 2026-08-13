@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.6.0
+
+**A full pass over the log and the settings page. No new features; a lot of things that were quietly wrong.**
+
+The settings page had four defects with the same shape — the form and the saved config disagreed and nobody was told:
+
+- **A brand-new install wrote `false` for the four features that default to on.** Every checkbox was initialised inside `loadConfig`'s `else` branch, so a plugin that had never been configured skipped the lot, and the first keystroke in the email field auto-saved nine unchecked boxes. Absent means on and `false` means off, so a first-time user silently disabled room selection, clean mode, battery and live room tracking. Three of those are re-pair settings.
+- **The cleartext password went back into `config.json` after a 2FA login.** The password path clears the field; the token path only hid the row, and a hidden input keeps its value, so the next auto-save of anything wrote it back.
+- **Ticking "add the switches" and pressing Save published nothing.** It saved `homeKitActionSwitches: []`, and an empty array is an array, so the plugin's fallback to `["dock"]` never fired. The user then went hunting for the QR code the page had just told them to scan.
+- **The pairing callout flashed on every page load** and stayed up permanently if the config failed to load, because its initial state lived only in a callback.
+
+Also on that page: saves report failure instead of looking like they worked, the three settings that do nothing without a prerequisite are greyed out until it is on, a clamped number is written back into the field instead of showing the rejected value, the Devices list no longer races the skip list, and the Google Fonts import is gone — a render-blocking request to Google from a local admin page that stalled the whole settings page on an offline Homebridge box.
+
+**The log.** Two lines were removed as duplicates: the poll-profile notice was keyed per robot while its text is per model, so two robots of one model printed the same sentence twice, naming neither; and every room change was announced by both the library and the Matter layer with the same prefix. `Service started` was printed on the failure path — the `getHomeDetail` catch falls through to the same callback — directly under the stack trace saying it had failed; it now says what actually happened. That stack trace is gone too: a Roborock outage or a DNS blip is a warning with a sentence, not an error with a Node stack. `Starting adapter. This might take a few minutes` (it takes one second) and `Lets go!!!!!!!` are gone with the rest of the ioBroker vocabulary, `Adapter not inited. Command not executed.` now names the robot and says to try again in a few seconds, and a robot going offline is a warning that says what to check — with the matching "back online" line uncommented after who knows how long.
+
+**Fourteen more log lines were printing a raw 22-character duid to users.** `log-lines-name-the-robot` only inspected template literals written inside the logging call, so anything built into a variable or an `Error` first was invisible — it was checking 39 of 59 calls in one file alone. It now follows the three laundering channels as well, and everything it found is fixed.
+
+**One resource leak.** `localConnector.js` opened its UDP discovery socket at module load, so requiring the file bound a socket a cloud-only install never uses, a second discovery pass attached a second set of handlers to it, and the first pass's `close()` left it unbindable for the next. It is now created per run and closed once. That also removes the "A worker process has failed to exit gracefully" warning the suite has printed for months, which was masking any real leak.
+
+**And one coupling that broke while I was fixing the wording.** The transient-error classifier read the reason out of the refusal message with a regex, so making those messages readable turned a calm transport condition back into an error with a stack trace once per poll. Refusals now carry the reason as a code on the error and the prose is free to change.
+
+688 tests, up from 672.
+
 ## 3.5.4
 
 **3.5.3's log line named the wrong bridge on exactly the setup it was written for.** It read `_bridge` off the platform config, and Homebridge's `childBridgeFork` deletes that key before a plugin loads — "some plugins do not like unknown config". So on a child bridge it fell through to the main-bridge branch and pointed at the status page QR code: the wrong instruction, in the release about giving the right one. My own server printed it four minutes after publish.

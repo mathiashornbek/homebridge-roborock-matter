@@ -17,19 +17,31 @@
           fallback.
         </p>
       </div>
-      <span id="auth-status" class="status-pill warn">Checking config</span>
+      <span id="auth-status" class="status-pill warn" role="status"
+        >Checking config</span
+      >
     </div>
 
     <div class="settings-grid">
       <label class="field">
         <span>Email</span>
-        <input id="email" type="email" placeholder="name@example.com" />
+        <input
+          id="email"
+          type="email"
+          autocomplete="username"
+          placeholder="name@example.com"
+        />
         <small>Roborock account email used for login and discovery.</small>
       </label>
 
       <label id="password-row" class="field">
         <span>Password</span>
-        <input id="password" type="password" placeholder="Password" />
+        <input
+          id="password"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Password"
+        />
         <small
           >Used to create a token or as a fallback if no token exists.</small
         >
@@ -125,7 +137,13 @@
     </details>
 
     <div class="actions">
-      <button id="save-settings" class="secondary">Save Settings</button>
+      <button
+        id="save-settings"
+        class="secondary"
+        aria-label="Save account settings"
+      >
+        Save Settings
+      </button>
       <button id="login" class="primary">Password Login</button>
       <button id="logout" class="secondary hidden">Logout</button>
     </div>
@@ -276,20 +294,20 @@
         >
       </span>
     </label>
-    <div id="homekit-action-switch-actions" class="checkbox-group">
+    <div id="homekit-action-switch-actions" class="checkbox-group disabled">
       <label class="checkbox">
-        <input id="homekit-action-dock" type="checkbox" />
+        <input id="homekit-action-dock" type="checkbox" disabled />
         <span
           >Return to Dock
           <small>The one Apple Home cannot do any other way.</small></span
         >
       </label>
       <label class="checkbox">
-        <input id="homekit-action-pause" type="checkbox" />
+        <input id="homekit-action-pause" type="checkbox" disabled />
         <span>Pause <small>Pauses the current clean.</small></span>
       </label>
       <label class="checkbox">
-        <input id="homekit-action-locate" type="checkbox" />
+        <input id="homekit-action-locate" type="checkbox" disabled />
         <span
           >Find
           <small
@@ -300,7 +318,7 @@
       </label>
     </div>
 
-    <div id="homekit-switch-pairing" class="pairing-callout">
+    <div id="homekit-switch-pairing" class="pairing-callout hidden">
       <h3>
         &#9888; The switches need their own pairing &mdash; a different QR code
       </h3>
@@ -345,7 +363,11 @@
     </p>
 
     <div class="actions">
-      <button id="save-feature-settings" class="secondary">
+      <button
+        id="save-feature-settings"
+        class="secondary"
+        aria-label="Save Apple Home feature settings"
+      >
         Save Settings
       </button>
     </div>
@@ -439,6 +461,11 @@
   </section>
 </main>
 
-<div id="toast-container" class="toast-container"></div>
+<div
+  id="toast-container"
+  class="toast-container"
+  role="status"
+  aria-live="polite"
+></div>
 
 <script src="index.js"></script>

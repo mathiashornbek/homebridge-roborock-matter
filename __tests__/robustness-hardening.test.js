@@ -73,6 +73,8 @@ describe("Roborock API commands before device initialization", () => {
       })
     ).rejects.toMatchObject({
       code: "ROBOROCK_DEVICE_NOT_READY",
+      // The thrown error keeps the contract phrase isDeviceNotReadyError
+      // matches on; only the line the user reads was reworded.
       message: expect.stringContaining("is not initialized yet"),
     });
   });
@@ -85,7 +87,9 @@ describe("Roborock API commands before device initialization", () => {
       api.startCommand("unknown-device", "app_start", null)
     ).resolves.toBeUndefined();
     expect(api.log.warn).toHaveBeenCalledWith(
-      expect.stringContaining("is not initialized yet")
+      // Reworded in 3.6.0: the warn used to print the Error's message, which
+      // carried a raw duid straight to the user.
+      expect.stringContaining("is not ready yet")
     );
   });
 

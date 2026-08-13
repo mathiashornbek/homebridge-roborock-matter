@@ -303,7 +303,7 @@ class roborock_mqtt_connector {
   }
 
   async initMQTT_Message() {
-    this.adapter.log.info(`MQTT initialized`);
+    this.adapter.log.debug(`MQTT initialized.`);
 
     client.on("message", (topic, message) => {
       try {
@@ -507,11 +507,19 @@ class roborock_mqtt_connector {
 
           // Check if the device is online
           if (parsedData.online == false) {
-            this.adapter.log.info(
-              `Couldn't process message. ${describeDevice(this.adapter, duid)} is offline.`
+            // A robot dropping off is the single most common thing users open
+            // issues about, and the old wording ("Couldn't process message")
+            // described a failure that did not happen — the message parsed
+            // fine, and what it said was "offline".
+            this.adapter.log.warn(
+              `${describeDevice(this.adapter, duid)} reports itself offline; commands will fail until it reconnects. Check that the robot is powered on and on Wi-Fi.`
             );
           } else if (parsedData.online == true) {
-            // this.adapter.log.info(`${describeDevice(this.adapter, duid)} is online.`);
+            // The counterpart was commented out, so a robot that dropped and
+            // came back left the log asserting it was offline forever.
+            this.adapter.log.info(
+              `${describeDevice(this.adapter, duid)} is back online.`
+            );
           } else if (
             // Check for firmware update information
             parsedData.mqttOtaData
@@ -653,7 +661,7 @@ function resolveB01PendingResponse(adapter, duid, dps) {
     if (dps.code !== undefined && dps.code !== 0) {
       pendingB01.reject(
         new Error(
-          `B01 command ${dps.method || "(unknown method)"} failed with code ${dps.code} for ${duid}.`
+          `B01 command ${dps.method || "(unknown method)"} failed with code ${dps.code} for ${describeDevice(adapter, duid)}.`
         )
       );
     } else {
@@ -661,7 +669,7 @@ function resolveB01PendingResponse(adapter, duid, dps) {
     }
   } else {
     adapter.log.debug(
-      `Unsolicited B01 message for ${duid} (${dps.method || "no method"}); scheduling a status refresh.`
+      `Unsolicited B01 message for ${describeDevice(adapter, duid)} (${dps.method || "no method"}); scheduling a status refresh.`
     );
     if (typeof adapter.getStatus === "function") {
       void adapter.getStatus(duid, { force: true }).catch(() => undefined);

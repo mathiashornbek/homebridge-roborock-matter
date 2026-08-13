@@ -4,8 +4,8 @@ const crypto = require("crypto");
 const Parser = require("binary-parser").Parser;
 const net = require("net");
 const dgram = require("dgram");
+const { describeDevice } = require("./describeDevice");
 
-const server = dgram.createSocket("udp4");
 const PORT = 58866;
 const TIMEOUT = 5000; // 5 Sekunden Timeout
 const LOCAL_RECONNECT_DELAY_MS = 60000;
@@ -210,7 +210,9 @@ class localConnector {
       this.adapter.clearTimeout(waiter.timeout);
       this.l01HandshakeWaiters.delete(duid);
       waiter.reject(
-        new Error(`TCP client reset during L01 handshake for ${duid}`)
+        new Error(
+          `TCP client reset during L01 handshake for ${describeDevice(this.adapter, duid)}`
+        )
       );
     }
 
@@ -270,7 +272,7 @@ class localConnector {
         client.destroy();
         reject(
           new Error(
-            `Timed out connecting local TCP client for ${duid} at ${ip}`
+            `Timed out connecting local TCP client for ${describeDevice(this.adapter, duid)} at ${ip}`
           )
         );
       }, LOCAL_CONNECT_TIMEOUT_MS);
@@ -345,7 +347,9 @@ class localConnector {
         this.adapter.clearTimeout(waiter.timeout);
         this.l01HandshakeWaiters.delete(duid);
         waiter.reject(
-          new Error(`TCP client closed during L01 handshake for ${duid}`)
+          new Error(
+            `TCP client closed during L01 handshake for ${describeDevice(this.adapter, duid)}`
+          )
         );
       }
       this.adapter.localL01Nonces.delete(duid);
@@ -409,7 +413,7 @@ class localConnector {
         // Throw the buffer away and re-align on whatever arrives next.
         const dropped = client.chunkBuffer.length;
         client.chunkBuffer = Buffer.alloc(0);
-        const reason = `Local TCP stream for ${duid} is out of sync: a frame of ${scan.declaredLength} bytes was announced at offset ${scan.consumed} (max ${MAX_LOCAL_FRAME_BYTES}). Dropping ${dropped} buffered bytes and resyncing.`;
+        const reason = `Local TCP stream for ${describeDevice(this.adapter, duid)} is out of sync: a frame of ${scan.declaredLength} bytes was announced at offset ${scan.consumed} (max ${MAX_LOCAL_FRAME_BYTES}). Dropping ${dropped} buffered bytes and resyncing.`;
         if (client.desyncReported) {
           this.adapter.log.debug(reason);
         } else {
@@ -653,7 +657,7 @@ class localConnector {
     );
     if (!handshakeMessage) {
       throw new Error(
-        `Failed to build protocol 1 handshake message for ${duid}`
+        `Failed to build protocol 1 handshake message for ${describeDevice(this.adapter, duid)}`
       );
     }
 
@@ -673,7 +677,9 @@ class localConnector {
       const timeout = this.adapter.setTimeout(() => {
         this.l01HandshakeWaiters.delete(duid);
         reject(
-          new Error(`Timed out waiting for L01 handshake response for ${duid}`)
+          new Error(
+            `Timed out waiting for L01 handshake response for ${describeDevice(this.adapter, duid)}`
+          )
         );
       }, 3000);
 
@@ -691,6 +697,31 @@ class localConnector {
   async getLocalDevices() {
     return new Promise((resolve, reject) => {
       const devices = {};
+
+      // One socket per discovery run, created here rather than at module load.
+      //
+      // A module-scope socket was wrong three ways. It was opened by the mere
+      // act of requiring this file, so a cloud-only install held a bound UDP
+      // socket it never used — and it kept the Jest workers alive, which is
+      // the "worker process has failed to exit gracefully" warning the suite
+      // has printed for months and which would mask a real leak. Worse, the
+      // handlers below were attached to that one shared socket on every call,
+      // so a second discovery pass double-handled every datagram, and the
+      // close() at the end of the first pass left the socket unbindable for
+      // the next one.
+      const server = dgram.createSocket("udp4");
+      let closed = false;
+      const closeServer = () => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        try {
+          server.close();
+        } catch {
+          // Already closed, or never bound. Nothing to release.
+        }
+      };
 
       // The discovery socket is bound to 0.0.0.0 and receives whatever any
       // host on the LAN broadcasts to this port — the Roborock phone app doing
@@ -754,14 +785,14 @@ class localConnector {
 
       server.on("error", (error) => {
         this.adapter.catchError(`Discover server error: ${error.stack}`);
-        server.close();
+        closeServer();
         reject(error);
       });
 
       server.bind(PORT);
 
       this.localDevicesTimeout = this.adapter.setTimeout(() => {
-        server.close();
+        closeServer();
 
         resolve(devices);
       }, TIMEOUT);

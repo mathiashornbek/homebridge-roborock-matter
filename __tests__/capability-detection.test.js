@@ -37,7 +37,11 @@ describe("self-healing unsupported poll detection", () => {
     expect(api.isPollCommandUnsupported("duid-1", "get_carpet_mode")).toBe(
       true
     );
-    expect(api.log.info).toHaveBeenCalledTimes(1);
+    // Debug since 3.6.0: this is routine self-healing that needs no user
+    // action, and the old info line named the model rather than the robot —
+    // so two robots of one model produced two identical lines about "this
+    // device". The once-only rule is what matters and is unchanged.
+    expect(api.log.debug).toHaveBeenCalledTimes(1);
 
     // Remembering again does not log twice; other commands/devices unaffected.
     expect(
@@ -47,7 +51,7 @@ describe("self-healing unsupported poll detection", () => {
         unsupported
       )
     ).toBe(true);
-    expect(api.log.info).toHaveBeenCalledTimes(1);
+    expect(api.log.debug).toHaveBeenCalledTimes(1);
     expect(api.isPollCommandUnsupported("duid-1", "get_timer")).toBe(false);
     expect(api.isPollCommandUnsupported("duid-2", "get_carpet_mode")).toBe(
       false

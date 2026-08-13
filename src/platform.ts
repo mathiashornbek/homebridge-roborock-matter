@@ -240,8 +240,17 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     // treat that as a plugin crash).
     Promise.resolve(
       self.roborockAPI.startService(function () {
-        self.log.info("Service started");
-        //call the discoverDevices function
+        // startService() invokes this callback on the failure path too — the
+        // getHomeDetail catch logs and falls through — so an unconditional
+        // "Service started" asserted success directly underneath the line
+        // saying it had failed.
+        if (self.roborockAPI.isInited()) {
+          self.log.debug("Roborock service started.");
+        } else {
+          self.log.warn(
+            "Roborock startup did not complete, so no robots were loaded this time. The reason is in the line above. Anything already paired in Apple Home is left alone, and the plugin tries again on the next Homebridge restart."
+          );
+        }
         self.discoverDevices();
       })
     ).catch((error: unknown) => {
@@ -390,7 +399,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    * and runtime-typed so Homebridge 1.x users remain fully supported.
    */
   configureMatterAccessory(accessory: any) {
-    this.log.info(
+    // Once per cached accessory, and Homebridge already summarises the cache
+    // restore. Three robots with three switches each would be nine info lines
+    // saying nothing happened.
+    this.log.debug(
       `Loading Matter accessory '${accessory.displayName}' from cache.`
     );
     this.matterAccessories.push(accessory);
@@ -428,7 +440,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    * must not be registered again to prevent "duplicate UUID" errors.
    */
   async discoverDevices() {
-    this.log.info("Discovering vacuum devices...");
+    this.log.debug("Discovering vacuum devices...");
 
     try {
       const self = this;

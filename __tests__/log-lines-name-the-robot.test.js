@@ -52,25 +52,50 @@ function sourceFiles(dir = ".") {
 }
 
 /**
- * Every template literal in a file that is passed to log.info/warn/error,
- * paired with the line it starts on.
+ * Every template literal in a file that reaches a user, paired with its line.
+ *
+ * Two shapes, not one. The direct `log.info(`…`)` call is the obvious half.
+ * The other half is a template built into a variable or an Error and handed
+ * to the logger afterwards — `this.log.warn(notReadyError.message)` printed
+ * `Roborock device 3tELc5hUekaTlOJEW3YetI is not initialized yet` at warn for
+ * months, and this file passed the whole time, because the rule only looked
+ * at what was written inside the parentheses. The laundering channels are
+ * enumerated rather than the instances: anything assigned to a name that ends
+ * in message/line/reason/warning, and anything handed to `new Error(`.
  */
 function userVisibleLogTemplates(relativePath) {
   const source = fs.readFileSync(path.join(ROOT, relativePath), "utf8");
   const found = [];
-  const call = /log\.(?:info|warn|error)\(\s*(`(?:[^`\\]|\\.)*`)/g;
+  const patterns = [
+    /log\.(?:info|warn|error)\(\s*(`(?:[^`\\]|\\.)*`)/g,
+    /(?:const|let|var)\s+\w*(?:[Mm]essage|[Ll]ine|[Rr]eason|[Ww]arning)\s*=\s*(`(?:[^`\\]|\\.)*`)/g,
+    /new Error\(\s*(`(?:[^`\\]|\\.)*`)/g,
+  ];
 
-  let match;
-  while ((match = call.exec(source)) !== null) {
-    found.push({
-      template: match[1],
-      line: source.slice(0, match.index).split("\n").length,
-      file: relativePath,
-    });
+  for (const call of patterns) {
+    let match;
+    while ((match = call.exec(source)) !== null) {
+      found.push({
+        template: match[1],
+        line: source.slice(0, match.index).split("\n").length,
+        file: relativePath,
+      });
+    }
   }
 
   return found;
 }
+
+/**
+ * Templates that carry a duid on purpose and never reach a user.
+ *
+ * One entry, and it earns its place: the ROBOROCK_DEVICE_NOT_READY error is
+ * matched by message elsewhere, so its wording is a contract. The line the
+ * user actually sees is built separately, right below it, and names the robot.
+ */
+const INTERNAL_CONTRACT_MESSAGES = [
+  /Roborock device \$\{duid\} is not initialized yet/,
+];
 
 // Interpolations that put a raw device identifier in front of a human.
 // `describeDevice(duid)` and `getVacuumName()` are the sanctioned wrappers.
@@ -81,7 +106,13 @@ describe("log lines identify robots by name", () => {
   test("no info/warn/error line in any source file prints a bare duid", () => {
     const offenders = sourceFiles()
       .flatMap((file) => userVisibleLogTemplates(file))
-      .filter((entry) => BARE_DUID.test(entry.template))
+      .filter(
+        (entry) =>
+          BARE_DUID.test(entry.template) &&
+          !INTERNAL_CONTRACT_MESSAGES.some((allowed) =>
+            allowed.test(entry.template)
+          )
+      )
       .map(
         (entry) => `${entry.file}:${entry.line} ${entry.template.slice(0, 90)}`
       );

@@ -1,4 +1,8 @@
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap");
+/* No webfont import. A CSS @import blocks rendering until it resolves, and a
+   Homebridge box is routinely on an isolated VLAN or offline, so the settings
+   page stalled for the full connect timeout on every open — for a font. It
+   also sent a request to Google from a local admin interface. The body rule
+   below already falls back to the system stack. */
 
 :root {
   color-scheme: light;
@@ -620,7 +624,11 @@ select:focus-visible {
 }
 
 .checkbox-group.disabled {
-  opacity: 0.5;
+  /* Not lower: the small print under each switch explains what it does, and
+     that is exactly what the user is reading while deciding to enable the
+     feature. At 0.5 it fell below readable contrast. */
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 /* The pairing callout under the Home app switches. Loud on purpose: this is
@@ -654,8 +662,4 @@ select:focus-visible {
 
 .pairing-callout .pairing-not {
   margin-bottom: 0;
-}
-
-.pairing-callout.hidden {
-  display: none;
 }

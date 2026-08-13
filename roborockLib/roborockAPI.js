@@ -1487,9 +1487,7 @@ class Roborock {
    * Is called when databases are connected and adapter received configuration.
    */
   async startService(callback) {
-    this.log.info(
-      `Starting adapter. This might take a few minutes depending on your setup. Please wait.`
-    );
+    this.log.info(`Connecting to your Roborock account…`);
     this.translations = require(
       `./i18n/${this.language || "en"}/translations.json`
     );
@@ -1773,7 +1771,9 @@ class Roborock {
           await this.initializeDeviceUpdates();
 
           this.bInited = true;
-          this.log.info(`Starting adapter finished. Lets go!!!!!!!`);
+          this.log.info(
+            `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
+          );
 
           // LAN attach runs to completion in the background. Everything above
           // works over the cloud, and the transport layer already falls back
@@ -1781,14 +1781,21 @@ class Roborock {
           // broadcast listen only delayed the Apple Home tiles.
           void this.attachLocalTransports(localDiscovery, localKeyDevices);
         } else {
-          this.log.info(
-            `Most likely failed to login. Deleting UserData to force new login!`
+          this.log.warn(
+            `Roborock returned no home details, so the saved session has been cleared and the plugin will log in from scratch on the next start. If this repeats, re-enter your credentials in the plugin settings.`
           );
           await this.deleteStateAsync(`UserData`);
         }
       }
     } catch (error) {
-      this.log.error("Failed to get home details: " + error.stack);
+      // Not an error with a stack: this catch is reached by Roborock
+      // maintenance, a rate-limited response and plain DNS failure. The stack
+      // tells the user nothing and the line used to end without saying what
+      // now happens.
+      this.log.warn(
+        `Could not fetch your Roborock home details: ${error?.message || error}. This is almost always a temporary Roborock cloud or network problem; no robots will load until the next successful start.`
+      );
+      this.log.debug(error?.stack || String(error));
     }
 
     if (callback) {
@@ -2693,13 +2700,17 @@ class Roborock {
 
   async runMatterSettingCommand(duid, command, value, options = {}) {
     if (!this.isInited()) {
-      this.log.warn("Adapter not inited. Command not executed.");
+      this.log.warn(
+        `Command for ${this.describeDevice(duid)} was dropped because the Roborock connection has not finished starting up. Try again in a few seconds.`
+      );
       return;
     }
 
     const vacuum = this.vacuums[duid];
     if (!vacuum || typeof vacuum.command != "function") {
-      throw new Error(`Vacuum ${duid} is not initialized.`);
+      throw new Error(
+        `Vacuum ${this.describeDevice(duid)} is not initialized.`
+      );
     }
 
     const result = await vacuum.command(duid, command, value, options);
@@ -2759,9 +2770,12 @@ class Roborock {
     const key = `${duid}:${parameter}`;
     if (!this.unsupportedPollCommands.has(key)) {
       this.unsupportedPollCommands.add(key);
-      const model = this.getProductAttribute(duid, "model") || duid;
-      this.log.info(
-        `${model} answered '${parameter}' with an unsupported-method error; skipping that request for this device until the next restart.`
+      // `|| duid` used to put a raw 22-character id in front of the user
+      // whenever the product lookup missed, and laundering it through a local
+      // variable hid that from the log-naming rule.
+      const model = this.getProductAttribute(duid, "model") || "unknown model";
+      this.log.debug(
+        `${this.describeDevice(duid)} (${model}) answered '${parameter}' with an unsupported-method error; that request is skipped for this robot until the next restart.`
       );
     }
     return true;
@@ -3038,12 +3052,14 @@ class Roborock {
           const waterBoxProbe =
             !isB01 ||
             b01Q7Adapter.canAnswerV1Method("get_water_box_custom_mode");
-          const profileKey = `${duid}:${robotModel}`;
-          if (!this.loggedPollProfiles.has(profileKey)) {
-            this.loggedPollProfiles.add(profileKey);
-            this.log.info(
-              `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=${waterBoxProbe ? "yes" : "no, the Q7/B01 dialect has no such request"}). Requests the robot reports as unsupported are disabled automatically. If states look wrong for this model, please open a model report issue on GitHub.`
-            );
+          // Keyed on the rendered line, not on the duid. Every value in it
+          // is derived from the model, so a duid key printed the identical
+          // sentence once per robot — and the sentence names no robot, so a
+          // three-robot household could not tell which two it was about.
+          const profileLine = `No dedicated poll profile for model '${robotModel}'; using ${featureList ? "capability-derived" : "generic"} polls (carpet=${carpetSupported ? "yes" : "no"}, water-box probe=${waterBoxProbe ? "yes" : "no, the Q7/B01 dialect has no such request"}). Requests the robot reports as unsupported are disabled automatically. First seen on ${this.describeDevice(duid)}. If states look wrong for this model, please open a model report issue on GitHub.`;
+          if (!this.loggedPollProfiles.has(profileLine)) {
+            this.loggedPollProfiles.add(profileLine);
+            this.log.info(profileLine);
           }
           if (carpetSupported) {
             await this.pollParameter(duid, vacuum, "get_carpet_mode", isB01);
@@ -3685,7 +3701,9 @@ class Roborock {
 
   async startCommand(duid, command, parameters, options = {}) {
     if (!this.isInited()) {
-      this.log.warn("Adapter not inited. Command not executed.");
+      this.log.warn(
+        `Command for ${this.describeDevice(duid)} was dropped because the Roborock connection has not finished starting up. Try again in a few seconds.`
+      );
       return;
     }
 
@@ -3694,6 +3712,11 @@ class Roborock {
     // this.vacuums. Fail with a classifiable error instead of a raw TypeError
     // so callers can log a clear "still starting up" message and recover.
     if (!this.vacuums[duid]) {
+      // The thrown message keeps the "is not initialized" phrase because
+      // isDeviceNotReadyError() matches on it. The line a user reads is built
+      // separately and names the robot — passing the Error's message straight
+      // to log.warn put a raw 22-character duid in front of them, and hid it
+      // from the naming rule by laundering it through an Error.
       const notReadyError = new Error(
         `Roborock device ${duid} is not initialized yet; the plugin is still starting up or the device is missing from the account.`
       );
@@ -3702,7 +3725,9 @@ class Roborock {
         throw notReadyError;
       }
 
-      this.log.warn(notReadyError.message);
+      this.log.warn(
+        `${this.describeDevice(duid)} is not ready yet; the plugin is still starting up, or the robot is missing from your Roborock account. Try again in a few seconds.`
+      );
       return;
     }
 
@@ -3779,7 +3804,9 @@ class Roborock {
         return;
       }
 
-      const transientErrorKind = this.getTransientErrorKind(errorText);
+      const transientErrorKind =
+        (typeof error === "object" && error?.transientKind) ||
+        this.getTransientErrorKind(errorText);
       // Some callers only pass a message (no attribute/duid). Do not render
       // "Failed to execute undefined on robot undefined (unknown model)" for
       // those; log the message as-is instead.
@@ -3834,14 +3861,23 @@ class Roborock {
     // trace once per poll buried real problems whenever a robot dropped off
     // the Roborock cloud. Each reason keeps its own kind so that one outage
     // does not silence the reporting of another.
+    // Kept as a fallback for a refusal that arrives as a plain string — the
+    // reason normally travels on the error as `transientKind`, which is what
+    // the caller above prefers. Matching on prose is what made a wording
+    // change able to turn a calm transport condition back into an error with
+    // a stack trace once per poll.
     if (/Not sending method .+ request\./.test(text)) {
       if (text.includes("is offline")) {
         return "device offline";
       }
-      if (text.includes("Cloud connection not available")) {
+      if (
+        /cloud connection is not available|Cloud connection not available/.test(
+          text
+        )
+      ) {
         return "cloud unavailable";
       }
-      if (text.includes("Local connection not available")) {
+      if (/No local connection to|Local connection not available/.test(text)) {
         return "local connection unavailable";
       }
 
@@ -3952,7 +3988,9 @@ class Roborock {
 
   async getServerTimers(duid) {
     if (!this.vacuums[duid]) {
-      throw new Error(`Vacuum ${duid} is not initialized.`);
+      throw new Error(
+        `Vacuum ${this.describeDevice(duid)} is not initialized.`
+      );
     }
 
     return await this.vacuums[duid].getServerTimers(duid);
@@ -3960,7 +3998,9 @@ class Roborock {
 
   async updateServerTimer(duid, timerId, enabled) {
     if (!this.vacuums[duid]) {
-      throw new Error(`Vacuum ${duid} is not initialized.`);
+      throw new Error(
+        `Vacuum ${this.describeDevice(duid)} is not initialized.`
+      );
     }
 
     return await this.vacuums[duid].updateServerTimer(duid, timerId, enabled);
@@ -3970,7 +4010,7 @@ class Roborock {
     try {
       if (!this.vacuums[duid]) {
         this.log.debug(
-          `Skipping status refresh for ${duid}; the Roborock device runtime is not initialized yet.`
+          `Skipping status refresh for ${this.describeDevice(duid)}; the Roborock device runtime is not initialized yet.`
         );
         return;
       }
@@ -4081,7 +4121,7 @@ class Roborock {
 
         if (refreshState.consecutiveFailures > 0) {
           this.log.info(
-            `B01 status for ${this.describeDevice(duid)} recovered after ${refreshState.consecutiveFailures} failed attempt(s).`
+            `B01 status for ${this.describeDevice(duid)} recovered after ${refreshState.consecutiveFailures} failed attempt(s) (the attempts themselves are debug-level).`
           );
         }
         refreshState.consecutiveFailures = 0;
@@ -4299,14 +4339,20 @@ class Roborock {
       payload
     );
     if (!roborockMessage) {
-      throw new Error(`Failed to build B01 map request for ${duid}.`);
+      throw new Error(
+        `Failed to build the B01 map request for ${this.describeDevice(duid)}.`
+      );
     }
 
     let entry;
     const promise = new Promise((resolve, reject) => {
       const timeout = this.setTimeout(() => {
         this.pendingB01MapRequests.delete(duid);
-        reject(new Error(`B01 map request timed out after 20s for ${duid}.`));
+        reject(
+          new Error(
+            `B01 map request timed out after 20s for ${this.describeDevice(duid)}.`
+          )
+        );
       }, 20000);
       if (typeof timeout?.unref === "function") {
         timeout.unref();

@@ -2,6 +2,32 @@
 "use strict";
 
 const b01Q7Adapter = require("./b01Q7Adapter");
+const { describeDevice } = require("./describeDevice");
+
+/**
+ * A refusal to put a request on the wire, tagged with why.
+ *
+ * The classifier used to read these back out of the prose — a regex for
+ * "Not sending method … request." plus substring tests for "is offline" and
+ * "Cloud connection not available". That coupling broke the moment the
+ * wording was made readable, and it broke silently in the direction that
+ * matters: an unclassified refusal is logged as a plugin error with a stack,
+ * once per poll, for as long as the robot is away. The reason now travels as
+ * a code and the prose is free to change.
+ */
+/**
+ * @param {string} kind
+ * @param {string} message
+ * @returns {Error & { code: string, transientKind: string }}
+ */
+function refusal(kind, message) {
+  const error = /** @type {Error & { code: string, transientKind: string }} */ (
+    new Error(message)
+  );
+  error.code = "ROBOROCK_TRANSPORT_REFUSED";
+  error.transientKind = kind;
+  return error;
+}
 
 const DEFAULT_REQUEST_TIMEOUT = 10000; // 10s
 // Some commands legitimately take longer to acknowledge. Switching the active
@@ -91,6 +117,7 @@ function getRequestTimeout(method, requestTimeoutMs) {
  * @property {(duid: string, update: TransportDiagnosticsUpdate) => Promise<void>} updateTransportDiagnostics
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(message: string, location: string, duid?: string) => void} catchError
+ * @property {(duid: string) => string} [describeDevice]
  */
 
 /**
@@ -175,7 +202,7 @@ class messageQueueHandler {
 
         const unsupported = /** @type {Error & {code?: string}} */ (
           new Error(
-            `Method ${method} is not supported on B01/Q7 devices yet (${duid}).`
+            `Method ${method} is not supported on B01/Q7 robots yet (${describeDevice(this.adapter, duid)}).`
           )
         );
         unsupported.code = "B01_METHOD_UNSUPPORTED";
@@ -265,8 +292,9 @@ class messageQueueHandler {
             `Device ${duid} offline. Not sending for method ${method} request!`
           );
           reject(
-            new Error(
-              `Device ${duid} is offline. Not sending method ${method} request.`
+            refusal(
+              "device offline",
+              `${describeDevice(this.adapter, duid)} is offline, so the ${method} request was not sent.`
             )
           );
         } else if (!mqttConnectionState && useCloudConnection) {
@@ -282,8 +310,9 @@ class messageQueueHandler {
             `Cloud connection not available. Not sending for method ${method} request!`
           );
           reject(
-            new Error(
-              `Cloud connection not available. Not sending method ${method} request.`
+            refusal(
+              "cloud unavailable",
+              `The Roborock cloud connection is not available, so the ${method} request was not sent.`
             )
           );
         } else if (!localConnectionState && !useCloudConnection) {
@@ -296,8 +325,9 @@ class messageQueueHandler {
             `Adapter not connect locally to robot ${duid}. Not sending for method ${method} request!`
           );
           reject(
-            new Error(
-              `Local connection not available for ${duid}. Not sending method ${method} request.`
+            refusal(
+              "local connection unavailable",
+              `No local connection to ${describeDevice(this.adapter, duid)}, so the ${method} request was not sent.`
             )
           );
         } else {
@@ -408,7 +438,7 @@ class messageQueueHandler {
         duid
       );
       throw new Error(
-        `Failed to build Roborock message for method ${method} on ${duid}; the command was not sent.`
+        `Failed to build the Roborock message for ${method} on ${describeDevice(this.adapter, duid)}; the command was not sent.`
       );
     }
   }
