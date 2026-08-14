@@ -162,9 +162,21 @@ describe("the dock chores are named once", () => {
       source.indexOf("private resolveRunMode(): number {")
     );
     expect(resolver).toContain("this.getRoborockOperationalState(");
+    // The gate widened to RUN_MODE_INHERITED_STATES when transit joined the
+    // dock chores in inheriting the run mode instead of deciding one. What
+    // this test is here to hold is that the chores still reach that gate, so
+    // assert the derivation rather than the literal name of the set.
     expect(
-      resolver.indexOf("DOCK_ACTIVITY_STATES.has(roborockOperationalState)")
+      resolver.indexOf(
+        "RUN_MODE_INHERITED_STATES.has(roborockOperationalState)"
+      )
     ).toBeGreaterThan(-1);
+
+    const inherited = source.match(
+      /const RUN_MODE_INHERITED_STATES: ReadonlySet<number> = new Set\(\[([\s\S]*?)\]\);/
+    );
+    expect(inherited).not.toBeNull();
+    expect(inherited[1]).toContain("...DOCK_ACTIVITY_STATES");
   });
 });
 

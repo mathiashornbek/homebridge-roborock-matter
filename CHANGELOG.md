@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.9.3
+
+**The dock still announced a phantom cleaning — one second after the one 3.6.2 removed.**
+
+3.6.2 stopped the dust bin emptying from announcing a cleaning, and the reporter of [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9) confirmed in the field that it worked. He then added one sentence: after the emptying, the robot briefly returns to the dock and sends another notification.
+
+That is a second bug with the same shape. When the chore ends the robot reports "returning to dock" for about a second before it charges again, and that state counted as cleaning. So the blip published Cleaning and then Idle — a cleaning that started and finished, from a robot that never left its dock. It fired the `cleaning` state sensor too, so any automation built on the robot starting or finishing a clean ran with it.
+
+Transit now inherits the run mode instead of deciding one, exactly as a dock chore does. Driving somewhere is never the start of a cleaning; it is how a real run ends. One rule covers both directions: a robot that was cleaning keeps saying Cleaning until it is actually home, and a robot that never left its dock stays Idle throughout.
+
+The rule reads the robot's own state rather than the one shown to the controller, which is what let this survive 3.6.2: with **Extended Operational States** off, "returning to dock" is rewritten one level below and never reached the test, so the bug hit only the users who had turned that toggle on. Two smaller faults fell out with it — with the toggle off, a mid-run trip to wash the mop announced the run had finished and restarted, and Apple Home announced a cleaning finished the moment the robot set off home instead of when it docked. The toggle no longer changes whether, or when, a cleaning is announced.
+
 ## 3.9.2
 
 **The tile showed a robot that was idle on plain Vacuum for the first half-minute after every restart — even after 3.9.1 made the robot report itself correctly one second in.**

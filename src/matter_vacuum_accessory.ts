@@ -302,6 +302,25 @@ const DOCK_ACTIVITY_STATES: ReadonlySet<number> = new Set([
   RVC_OPERATIONAL_STATE.UPDATING_MAPS,
 ]);
 
+// The states that must not DECIDE a run mode, only inherit the one already
+// published: the dock chores plus every kind of transit (returning to dock,
+// docking, going to wash the mop, all of which derive to SEEKING_CHARGER).
+//
+// Driving somewhere is never the start of a cleaning, and it is not the end of
+// one either — a run ends when the robot docks. Inheriting delivers both: a
+// robot that was cleaning keeps saying Cleaning until it is home, and a robot
+// that never left its dock stays Idle through the one-second transit blip the
+// dock leaves behind after emptying the dust bin (issue #9, second report).
+//
+// This happens to hold the same members as EXTENDED_OPERATIONAL_STATES today.
+// That is a coincidence of Roborock's state table, not a shared meaning — one
+// says what a toggle may display, the other says what may claim a cleaning —
+// so do not merge them.
+const RUN_MODE_INHERITED_STATES: ReadonlySet<number> = new Set([
+  ...DOCK_ACTIVITY_STATES,
+  RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+]);
+
 // The states that the "Extended Operational States" toggle unlocks. Publishing
 // any of these requires them to be advertised, which is why this set and
 // RVC_OPERATIONAL_STATE_LIST must stay in agreement. Derived from the dock
@@ -1117,9 +1136,12 @@ export default class RoborockMatterVacuumAccessory {
       : RVC_OPERATIONAL_STATE.STOPPED;
     const state = {
       rvcRunMode: {
-        currentMode: this.isInCleaningRunMode(returnOperationalState)
-          ? RUN_MODE_CLEANING
-          : RUN_MODE_IDLE,
+        // Docking inherits the run mode instead of deciding one, the same rule
+        // the live status follows. Deciding here published Cleaning for a dock
+        // command sent to an idle robot — and only for users with Extended
+        // Operational States on, because the decision read the displayed state
+        // — which the next live frame then silently withdrew.
+        currentMode: this.lastPublishedRunMode ?? this.lastRunMode,
       },
       rvcOperationalState: {
         operationalState: returnOperationalState,
@@ -1624,12 +1646,20 @@ export default class RoborockMatterVacuumAccessory {
    * announce that the run finished and started again.
    *
    * So a dock chore inherits the run mode that was published before it began,
-   * instead of deciding one of its own.
+   * instead of deciding one of its own. Transit does the same, and for the same
+   * reason: after the dock empties the bin the robot reports "returning to
+   * dock" for about a second before it charges again, and publishing Cleaning
+   * for that blip announced a second cleaning that started and finished from a
+   * robot that never moved (issue #9, the reporter's follow-up). Driving home
+   * is how a real run ENDS, never how one begins.
    *
-   * The chore is recognised from the robot's own state, not from the
+   * Both are recognised from the robot's own state, not from the
    * controller-facing one: with "Extended Operational States" off, emptying
-   * the dust bin is rewritten to RUNNING one level below, and reading that
-   * would leave the rule working only for the users who enabled the toggle.
+   * the dust bin is rewritten to RUNNING one level below and seeking the
+   * charger to STOPPED, so reading that would leave the rule working only for
+   * the users who enabled the toggle — which is exactly how the transit blip
+   * survived 3.6.2 and reached the field. The toggle decides how a state is
+   * displayed; it never decides whether a cleaning happened.
    */
   private resolveRunMode(): number {
     const roborockOperationalState = this.getRoborockOperationalState(
@@ -1637,7 +1667,7 @@ export default class RoborockMatterVacuumAccessory {
       this.getNumberStatus("charge_status")
     );
 
-    if (DOCK_ACTIVITY_STATES.has(roborockOperationalState)) {
+    if (RUN_MODE_INHERITED_STATES.has(roborockOperationalState)) {
       return this.lastRunMode;
     }
 

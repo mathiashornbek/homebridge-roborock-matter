@@ -881,17 +881,25 @@ describe("Matter operational state", () => {
     );
   });
 
-  test("keeps Matter run mode active while Roborock is returning to dock when extended states are enabled", () => {
+  test("maps returning to seeking charger when extended states are enabled", () => {
     const platform = createPlatform({
       enableMatterExtendedOperationalStates: true,
       status: { state: 6, battery: 100 },
     });
     const { accessory } = createAccessory(platform);
 
-    expect(accessory.clusters.rvcRunMode.currentMode).toBe(RUN_MODE_CLEANING);
+    // The operational state is the subject here and it is unchanged: the
+    // toggle is what lets SEEKING_CHARGER reach Apple Home at all.
     expect(accessory.clusters.rvcOperationalState.operationalState).toBe(
       RVC_OPERATIONAL_STATE_SEEKING_CHARGER
     );
+    // The run mode used to read Cleaning here, which made this toggle decide
+    // whether a cleaning was happening — the test two above shows the same
+    // robot publishing Idle with the toggle off. Transit now inherits the run
+    // mode instead of deciding one, and at registration there is no run to
+    // inherit. Keeping a REAL run going while the robot drives home is covered
+    // in returning-to-the-dock-does-not-start-a-cleaning.test.js.
+    expect(accessory.clusters.rvcRunMode.currentMode).toBe(RUN_MODE_IDLE);
   });
 
   test("keeps charging stopped when extended returning state is enabled", () => {
