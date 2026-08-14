@@ -185,6 +185,12 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
     // ---- Boot: the real createDevices + initializeDeviceUpdates,
     // exactly like the login flow ----
     await api.createDevices();
+    // The login flow waits for the MQTT session here and only then starts the
+    // B01 loop, because the loop's first poll is a cloud request. Mirror that
+    // order rather than the old one, where the loop started inside
+    // createDevices() and its boot poll was refused on every startup.
+    api.rr_mqtt_connector.connected = true;
+    api.startB01StatusLoop();
     await api.initializeDeviceUpdates();
 
     // The dedicated loop must start regardless of device ordering.

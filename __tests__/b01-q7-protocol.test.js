@@ -1095,6 +1095,9 @@ describe("Interval lifecycle surgery (2.0.0-matter.7)", () => {
     );
     api.getStatus = jest.fn().mockResolvedValue(undefined);
     api.manageDeviceIntervals = jest.fn().mockResolvedValue(true);
+    // The boot poll is a cloud request and is held back until the session is
+    // up; this test is about WHICH robots the loop polls, so give it one.
+    api.rr_mqtt_connector.connected = true;
 
     api.startB01StatusLoop();
     // Immediate boot poll (forced) plus the first 15s tick.

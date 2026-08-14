@@ -1767,6 +1767,13 @@ class Roborock {
           // up releases the wait and the requests fail as they would have.
           await this.rr_mqtt_connector.waitUntilConnected();
 
+          // First on the wire once the session is up, because it is the one
+          // request an Apple Home tile is waiting for: until a Q7's real
+          // status lands, the tile shows the registration snapshot from the
+          // Matter store. Started here rather than at the end of
+          // createDevices() so the boot poll cannot precede the wait above.
+          this.startB01StatusLoop();
+
           await this.getNetworkInfo();
           await this.initializeDeviceUpdates();
 
@@ -2158,10 +2165,14 @@ class Roborock {
       this.subscribeStates("Devices." + duid + ".deviceInfo.online");
     }
 
-    // Start AFTER the loop: the loop's device gate reads
-    // initializedVacuumDuids, which is only fully populated at this point.
-    // (Calling it per-device made the start depend on device ordering.)
-    this.startB01StatusLoop();
+    // The B01 status loop is deliberately NOT started here. Its device gate
+    // reads initializedVacuumDuids, which is only fully populated at this
+    // point, so this looked like the earliest safe place — but the loop polls
+    // immediately, and a B01 request is cloud-only by construction, and the
+    // caller does not wait for the MQTT session until after this method
+    // returns. The first status of every single startup was therefore refused
+    // with "cloud unavailable". It is started by the caller instead, straight
+    // after that wait.
   }
 
   async initializeDeviceUpdates() {
@@ -4240,7 +4251,28 @@ class Roborock {
     // First poll immediately: after a restart the Matter store holds the
     // registration snapshot (HomeData fallback), and the sooner the real
     // values land, the sooner controllers receive a genuine change report.
-    pollAllB01({ force: true });
+    //
+    // But only into a cloud session that is actually up. A B01 request is
+    // cloud-only, so one issued before the MQTT session is established is
+    // refused before it reaches the wire — and a refused attempt still stamps
+    // the attempt throttle, which pushes the retry past the 15s tick and into
+    // the one at 30s. Skipping the attempt costs nothing and buys both: no
+    // spurious "recovered after 1 failed attempt(s)" line, and a first real
+    // status at the next tick instead of the one after it.
+    //
+    // A connector that cannot answer the question is treated as usable, so a
+    // caller without a live connector keeps the behaviour it always had.
+    const cloudSessionUp =
+      typeof this.rr_mqtt_connector?.isConnected === "function"
+        ? this.rr_mqtt_connector.isConnected()
+        : true;
+    if (cloudSessionUp) {
+      pollAllB01({ force: true });
+    } else {
+      this.log.debug(
+        "Holding the first B01/Q7 status poll until the Roborock cloud session is up; the loop tick will take it."
+      );
+    }
     this.b01StatusLoopHandle = this.setInterval(pollAllB01, B01_STATUS_TICK_MS);
     if (typeof this.b01StatusLoopHandle?.unref === "function") {
       this.b01StatusLoopHandle.unref();

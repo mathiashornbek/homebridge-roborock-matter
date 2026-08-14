@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.9.1
+
+**The first status request of every startup was refused, on every Q7, on every restart.**
+
+The log said so plainly and had for weeks: `B01 status for 1. Sal recovered after 1 failed attempt(s).` It looked like the Roborock cloud being briefly unreachable, so it was left alone.
+
+It was not the cloud. Measured over 30,224 log lines covering 49 restarts: 92 recoveries, one per Q7 per restart, without a single exception. Always exactly one failed attempt, never two. Always between 2 and 32 seconds after startup, never later. The robot on the older protocol had none of them.
+
+A flaky connection does not look like that. It gives a varying number of attempts at varying times. One attempt, every time, only at startup, only on the cloud-only protocol is a race — and it was an ordering mistake in the startup sequence. The dedicated Q7 status loop was started at the end of device creation, and it polls immediately; the sequence did not wait for the MQTT session until after device creation had returned. A Q7 request is cloud-only by construction, so that first poll was rejected before anything reached the wire. The wait was already there, with a comment explaining this exact hazard for the two calls after it. The loop start had simply slipped in front of it.
+
+The same event explains the other half, which had been observed fourteen times and never connected to it: for about 27 seconds after every restart, a Q7's tile in Apple Home showed `battery=100%, operationalState=0, runMode=0` — the snapshot taken at registration rather than the robot. That window is not a separate phenomenon. A refused attempt still stamps the request throttle, so the 15-second tick that followed fell inside the 25-second idle gap and was dropped, and the robot's real status did not arrive until the tick at 30 seconds. Measured median: 31 seconds.
+
+Two changes, because the ordering fix alone leaves the hazard reachable — the wait resolves on a 10-second timeout whether or not the broker came up:
+
+- The loop is started by the login sequence, immediately after it has waited for the MQTT session, instead of at the end of `createDevices()`. A source-level test now asserts that order and that device creation does not start the loop, so it cannot drift back.
+- The loop's own boot poll is skipped when the cloud session is known to be down. A request that is never sent cannot stamp the throttle either, so even in that case the first real status arrives at the next tick rather than the one after it. A connector that cannot report its state is treated as usable, so nothing changes for callers without a live session.
+
+Verified red against 3.9.0: 7 of 12 assertions failed, and the symptom test failed by producing the field log line verbatim.
+
+934 tests, up from 922.
+
 ## 3.9.0
 
 **Automations can now be triggered by the robot.**
