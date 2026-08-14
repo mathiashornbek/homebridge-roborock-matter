@@ -4059,6 +4059,31 @@ class Roborock {
     }
   }
 
+  /**
+   * The freshest status this robot has actually reported, if the dedicated B01
+   * poll loop has already had a successful answer for it.
+   *
+   * The loop keeps this so a later full cluster rebuild can prefer it over the
+   * slower HomeData snapshot. It is exposed because the accessory that needs it
+   * may not exist yet at the moment it arrives: discovery runs in the
+   * startService callback, so a live frame can be dropped twice over in silence
+   * — `notifyVacuumByDuid` finds no accessory for the duid, and
+   * `updateMatterStateFromMessage` returns early while `registered` is false —
+   * with nothing to redeliver it afterwards. Reading it back is what lets a
+   * newly usable accessory start from the robot's real status instead of the
+   * pairing-day snapshot.
+   *
+   * Only the cloud-only B01 dialect keeps such a store; classic robots stream
+   * their status over MQTT and have no equivalent gap, so this answers `null`
+   * for them and callers must treat that as "nothing known", never as a value.
+   *
+   * @param {string} duid
+   * @returns {Record<string, unknown> | null}
+   */
+  getLastKnownLiveStatus(duid) {
+    return this._b01StatusState?.get(duid)?.lastV1Status || null;
+  }
+
   async refreshB01Status(duid, options = {}) {
     // Q7/B01 status snapshot via prop.get, mapped to v1-shaped fields and
     // dispatched on the existing live-message path so the Matter accessory

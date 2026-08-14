@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.9.2
+
+**The tile showed a robot that was idle on plain Vacuum for the first half-minute after every restart — even after 3.9.1 made the robot report itself correctly one second in.**
+
+3.9.1 fixed the refused first status request, and the field log proves it worked: both Q7s reported `B01 status online … state=8` a second after startup, with no recovery lines at all. The tile was still wrong for 28 seconds afterwards, which means the two symptoms were never the same event — the status was already online _before_ the accessory was added.
+
+The status simply had nowhere to go. Discovery runs after the status loop is already answering, and a live status that arrives before its accessory exists is dropped twice over in silence: once because there is no accessory registered for that robot yet, and again because an accessory that is not yet registered ignores live updates by design. Nothing redelivered it. The tile therefore fell back on the cloud snapshot — pairing-day values — and corrected itself only on the next poll tick.
+
+Now an accessory that has just become usable is handed the status the robot already reported, replayed on the same channel every other update arrives on, so one piece of code interprets it. Robots that have reported nothing are left alone rather than being given a guess: an invented value would move when real data arrived, and moving is what automations trigger on.
+
+Both discovery paths get it, not only the one that was measured — a robot restored from the accessory cache had the same gap.
+
 ## 3.9.1
 
 **The first status request of every startup was refused, on every Q7, on every restart.**

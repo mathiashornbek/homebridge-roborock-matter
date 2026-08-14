@@ -1148,6 +1148,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
 
     if (existingAccessory) {
       await matter.updatePlatformAccessories([accessory]);
+      await this.deliverKnownLiveStatus(String(device.duid), vacuum);
       vacuum.scheduleMatterStateRefresh("cached accessory update", 1000);
       return;
     }
@@ -1160,7 +1161,69 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     ]);
     this.matterAccessories.push(accessory);
     vacuum.markRegistered();
+    await this.deliverKnownLiveStatus(String(device.duid), vacuum);
     vacuum.scheduleMatterStateRefresh("accessory registration", 1000);
+  }
+
+  /**
+   * Hand an accessory that has just become usable the robot's real status, if
+   * one is already known.
+   *
+   * The robot's status can be known a full poll gap before anything is able to
+   * display it. Discovery runs in the startService callback, so a status that
+   * arrives first is dropped by whichever gate it reaches — no accessory for
+   * the duid yet, or an accessory whose `registered` is still false — and
+   * nothing redelivers it. The tile then fell back on the HomeData snapshot and
+   * stated a status the robot was not in until the next poll tick corrected it:
+   * measured at 28 seconds after every restart, on both Q7s on the
+   * maintainer's own account, publishing operationalState=0 runMode=0
+   * cleanMode=0 for a robot that had already reported itself charging in its
+   * dock one second earlier.
+   *
+   * Replayed on the live-message channel instead of being published from here,
+   * so this frame is interpreted by the same code that interprets every other
+   * frame. There is no second opinion about the same bytes to keep in step.
+   *
+   * Called AFTER markRegistered() for exactly the reason the bug exists: a seed
+   * delivered while `registered` is false is dropped without a trace, and the
+   * resulting test looks green because nothing happens.
+   *
+   * Both discovery paths get it, not just the one that was measured. A cached
+   * accessory is re-attached after the same callback and has the same hole,
+   * differing only in that the guard which drops the frame is the missing map
+   * entry rather than the registration flag.
+   */
+  private async deliverKnownLiveStatus(
+    duid: string,
+    vacuum: RoborockMatterVacuumAccessory
+  ): Promise<void> {
+    const api = this.roborockAPI as unknown as {
+      getLastKnownLiveStatus?: (duid: string) => unknown;
+    };
+    if (typeof api.getLastKnownLiveStatus !== "function") {
+      return;
+    }
+
+    const status = api.getLastKnownLiveStatus(duid);
+    if (!status) {
+      return;
+    }
+
+    try {
+      await vacuum.notifyDeviceUpdater("CloudMessage", {
+        duid,
+        payload: [status],
+      });
+    } catch (error) {
+      // A seed is an optimisation over waiting for the next tick, never a
+      // precondition for discovery: a robot that fails to take it must still
+      // finish being discovered.
+      this.log.debug(
+        `Unable to seed ${this.roborockAPI.describeDevice(duid)} from its last known status: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 
   private createMatterAccessory(device: any, deviceType: unknown): any {
