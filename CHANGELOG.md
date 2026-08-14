@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.9.4
+
+**A robot out cleaning your hallway was recorded as sitting in its dock, because of a charging flag it left behind there.**
+
+The reporter of [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) was asked whether a particular warning appeared every time he sent his Saros 10 home mid-clean, or only sometimes. He reproduced it: twice out of two attempts, on two different plugin versions. In one of them the plugin had been publishing "running" for eight minutes, with the battery falling 100 → 97 % and live room tracking following the robot from room to room, and still called its own snapshot docked.
+
+Two fields disagreed, and the wrong one won. A non-zero `charge_status` was treated as sufficient proof of being in the dock — enough to overrule a `state` that positively said the robot was out cleaning. The plugin already applies the opposite rule when it decides what to publish, where the charging flag is consulted only if the state says nothing useful, so the same two values read at the same instant produced "running" in one place and "docked" in another.
+
+They disagree because they are not the same age. A live frame carrying only the state field moves `state` and leaves `charge_status` at whatever it held before the robot undocked, and any field a live frame omits falls back to the slower cloud snapshot. "Room cleaning" beside "charging" is not a robot contradicting itself; it is one fresh reading next to one stale one.
+
+The charging flag is now a tiebreaker for a state that does not answer the question, never an override of one that does.
+
+The visible half of this was a log line. The costly half was silent: the retry that re-sends a dock command when the first one times out asks whether the robot is docked before it asks whether it is still cleaning, so it gave up on the leftover flag. That retry was therefore disarmed for precisely the robots it was written for — the ones on cloud-only connections whose commands time out in the first place. The **Docked** state sensor was reporting docked for a robot out on the floor for the length of a run, which any automation built on it would have acted on.
+
+Robots that really are in the dock are unchanged, and the charging flag still decides for a robot that reports no usable state at all.
+
 ## 3.9.3
 
 **The dock still announced a phantom cleaning — one second after the one 3.6.2 removed.**

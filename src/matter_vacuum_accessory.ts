@@ -3525,11 +3525,49 @@ export default class RoborockMatterVacuumAccessory {
     );
   }
 
+  /**
+   * Whether the robot is in its dock.
+   *
+   * charge_status is a TIEBREAKER for a state that does not answer the
+   * question, never an override of one that does. It used to be an independent
+   * sufficient condition (`|| !!chargeStatus`), which contradicted the rule
+   * this file already applies one function below: getRoborockOperationalState()
+   * consults charge_status only in its `default:` arm — a robot reporting
+   * state 5 is RUNNING no matter what charge_status says.
+   *
+   * The two fields are not read at the same instant. A sparse live frame
+   * carrying only dps 121 moves `state` while `charge_status` keeps whatever it
+   * held before the robot left its dock, and getNumberStatus() falls back to
+   * the slower HomeData snapshot for any field the live frame omits. So the
+   * pair "state = Room Clean, charge_status = 1" is not a contradiction in the
+   * robot; it is one fresh field beside one stale one, and letting the stale
+   * one win made the plugin call a robot mid-run docked.
+   *
+   * Measured in issue #8 on a Saros 10, twice out of two attempts on different
+   * versions: the plugin published operationalState=1 for eight minutes with a
+   * falling battery and live room tracking moving between rooms, and still
+   * logged "despite a docked snapshot" when the run was ended from Apple Home.
+   * The log line was the visible half. The costly half was shouldRetryReturnToDock(),
+   * which asks this first and gave up before it reached
+   * isRoborockActivelyCleaningAwayFromDock() — so the dock-retry never armed for
+   * exactly the robots whose charge_status lags.
+   *
+   * Reuses that predicate rather than listing the states again: a second
+   * hand-written copy of a list is the most repeated defect in this codebase.
+   */
   private isRoborockDockedOrCharging(
     roborockState: number | null,
     chargeStatus: number | null
   ): boolean {
-    return roborockState === 8 || roborockState === 100 || !!chargeStatus;
+    if (roborockState === 8 || roborockState === 100) {
+      return true;
+    }
+
+    if (this.isRoborockActivelyCleaningAwayFromDock(roborockState)) {
+      return false;
+    }
+
+    return !!chargeStatus;
   }
 
   private isDockedOrChargingNow(): boolean {
