@@ -89,6 +89,15 @@ The clean mode follows the robot as well: start a vacuum+mop or mop-only clean f
 
 > ⚠️ **Re-pairing required:** Matter locks an accessory's mode list at commissioning. After enabling (or disabling) this option, restart Homebridge, then **remove the robot from Apple Home and pair it again** — otherwise the new modes will not appear. The same applies to any option that changes announced capabilities.
 
+> 🛑 **Turn a suction level off in Apple Home _before_ you disable this option.** Matter stores the selected clean mode on disk and restores it on every start, but it does not store the list of modes it is allowed to come from. So if a suction level (mode 3–7) is the one selected when you disable the option, the restored value is no longer in the announced list, and Matter refuses to bring the accessory up at all:
+>
+> ```
+> Failed to register Matter accessory <name>: [endpoint-behaviors] Behaviors have errors
+>   Caused by: [unsupported-mode] Can not use unsupported mode: 6. Allowed modes are 0, 1, 2
+> ```
+>
+> The robot then disappears from Apple Home, and it stays gone on every restart — the stored value never becomes valid again on its own. **Recovery:** re-enable the option, restart, pick **Vacuum**, **Mop** or **Vacuum + Mop** in Apple Home, then disable the option and restart again. This is an upstream limitation rather than a plugin setting gone wrong; the full evidence is written up in [`docs/matter-clean-mode-shrink-issue-draft.md`](./docs/matter-clean-mode-shrink-issue-draft.md).
+
 ## Supported robots
 
 **The entire Roborock lineup.** If it runs in the Roborock app, this plugin can control it:
@@ -125,7 +134,7 @@ Everything is configurable from the Homebridge UI. The essentials:
 
 By default a robot that has stopped for any reason shows as **Ready** in Apple Home — whether it finished the job or is wedged under the sofa. Turning on **Report faults in Apple Home** changes that: a robot that is stuck, has a blocked brush or wheel, a missing dust bin, a flat battery or a dock it cannot reach reports the Matter **Error** state instead of Ready. It is off by default because a robot in Error may be refused a Start command by Apple Home.
 
-**Dock and tank conditions are not reported through Matter, and this is worth explaining.** The plugin can read them all accurately — empty clean-water tank, full waste-water tank, missing dust bag, blocked air duct — and two releases tried to surface them through Matter's fault attribute (`OperationalError`). Four controlled tests on an S8 Pro Ultra with a genuinely empty clean-water tank showed it does not work: Apple Home drew no warning when the fault was published beside a Charging state, and drew no warning in the final test either, where the robot was raised all the way to the Matter **Error** state carrying "Clean water tank empty" — the tile simply kept reading Ready. **Apple Home does not appear to render Matter vacuum faults from a bridged accessory at all** — which is also why an earlier version removed the same write back in 1.4.61. Reporting them was therefore pure cost, and the attribute is no longer published in any configuration.
+**Dock and tank conditions are not reported through Matter, and this is worth explaining.** The plugin can read them all accurately — empty clean-water tank, full waste-water tank, missing dust bag, blocked air duct — and two releases tried to surface them through Matter's fault attribute (`OperationalError`). Four controlled tests on an S8 Pro Ultra with a genuinely empty clean-water tank showed it does not work: Apple Home drew no warning when the fault was published beside a Charging state, and drew no warning in the final test either, where the robot was raised all the way to the Matter **Error** state carrying "Clean water tank empty" — the tile simply kept reading Ready. **Apple Home drew nothing in any of those tests** — which is also why an earlier version removed the same write back in 1.4.61. The condition under which it _does_ draw one is not known; it is not "bridged versus not", because this plugin gives every robot its own Matter node and never publishes a bridged accessory. Reporting them was therefore pure cost, and the attribute is no longer published in any configuration.
 
 The one condition worth acting on has a way out that does not depend on any of that. **Turn on the `Water Tank Empty` sensor** under [Home app sensors](#automations-in-apple-home) and the robot can notify you, run an automation, or both, entirely outside Matter — a HomeKit contact sensor is rendered and triggerable everywhere, no fault attribute involved.
 

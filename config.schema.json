@@ -94,7 +94,7 @@
       },
       "enableFanPowerCleanModes": {
         "title": "Enable Suction-Level Cleaning Modes",
-        "description": "Adds Quiet / Balanced / Turbo / Max vacuum modes to the Matter cleaning mode list, so suction can be chosen directly from Apple Home. IMPORTANT: Matter fixes the mode list when the robot is paired, so after enabling or disabling this you must remove the robot from Apple Home and re-pair it once. Requires Matter Cleaning Mode Selection.",
+        "description": "Adds Quiet / Balanced / Turbo / Max vacuum modes to the Matter cleaning mode list, so suction can be chosen directly from Apple Home. IMPORTANT: Matter fixes the mode list when the robot is paired, so after enabling or disabling this you must remove the robot from Apple Home and re-pair it once. BEFORE TURNING THIS OFF, select Vacuum, Mop or Vacuum + Mop in Apple Home: Matter restores the stored cleaning mode on every start, and a stored suction level that is no longer offered stops the robot from registering at all, so it disappears from Apple Home until this is switched back on. Requires Matter Cleaning Mode Selection.",
         "type": "boolean",
         "default": false
       },

@@ -859,7 +859,7 @@ export default class RoborockMatterVacuumAccessory {
       | undefined;
     // No fault field here on purpose. 3.4.0 published RVC OperationalError and
     // 3.4.1 withdrew it after three controlled field tests showed Apple Home
-    // draws no Matter vacuum fault from a bridged accessory at all. The line
+    // drew no Matter vacuum fault at all. The line
     // kept rendering `fault=…` from an attribute that is now never published,
     // so the branch was permanently dead — and worse, it read as evidence that
     // the feature still existed. If faults ever come back, this line gets the
@@ -2238,10 +2238,15 @@ export default class RoborockMatterVacuumAccessory {
     // tank settled it. Apple Home drew no warning when the fault was sent
     // beside a Charging state, and drew no warning when the fault was sent
     // beside a forced Error state either — while the tile went to a stuck
-    // "Updating…" that needed a manual poke. Apple does not appear to render
-    // RVC OperationalError from a bridged accessory at all, so publishing it
-    // is pure risk for a benefit that has never once materialised. That is
-    // also why 1.4.61 removed the plugin's original write.
+    // "Updating…" that needed a manual poke. Apple rendered no RVC
+    // OperationalError in any of those tests, so publishing it is pure risk
+    // for a benefit that has never once materialised. That is also why
+    // 1.4.61 removed the plugin's original write. Do NOT explain this by
+    // "bridged accessory": every robot here gets its own Matter node, which
+    // is why each is scanned separately, so a bridge is never involved. #9
+    // has the same attribute rendering correctly elsewhere; the condition
+    // that separates the two cases is still unknown, and guessing at it has
+    // cost this plugin two round trips already.
     //
     // The Error operational STATE is a different matter and is still
     // reported below: Apple renders operational states perfectly well (the

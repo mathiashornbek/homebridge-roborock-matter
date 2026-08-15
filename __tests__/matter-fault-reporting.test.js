@@ -11,10 +11,15 @@
 // empty clean water tank killed that idea: Apple drew no warning with the
 // fault sent beside a Charging state, drew no warning with it sent beside a
 // forced Error state either, and the tile went to a stuck "Updating..." that
-// needed a manual poke. Apple does not appear to render RVC OperationalError
-// from a bridged accessory at all — the same reason 1.4.61 removed the
-// original write. So the attribute is gone again, and these tests pin that it
-// stays gone.
+// needed a manual poke. Apple rendered no RVC OperationalError in any of them
+// — the same reason 1.4.61 removed the original write. So the attribute is
+// gone again, and these tests pin that it stays gone.
+//
+// The mechanism is NOT "a bridged accessory": this plugin gives every robot
+// its own Matter node, so nothing here is ever behind a bridge. #9 shows the
+// same attribute rendered correctly by the same controller, and what
+// separates the two cases is still open. These tests pin the outcome, which
+// was measured; they do not pin an explanation, which was not.
 
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
