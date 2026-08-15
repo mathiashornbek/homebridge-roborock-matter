@@ -18,6 +18,8 @@ openspec/
 !.github/workflows/**
 !.github/ISSUE_TEMPLATE/
 !.github/ISSUE_TEMPLATE/**
+!.github/scripts/
+!.github/scripts/**
 .gemini/
 AGENTS.md
 CLAUDE.md

@@ -58,8 +58,15 @@ jobs:
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          # npm 11 aborts on a prerelease with no --tag, so the channel is
+          # derived here rather than left to npm's default. The rule lives in
+          # a script so it can be tested off-CI; see
+          # __tests__/a-prerelease-must-never-publish-as-latest.test.js
+          DIST_TAG=$(node .github/scripts/npm-dist-tag.js "$PACKAGE_VERSION")
           echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to dist-tag $DIST_TAG"
 
       - name: Check npm for existing version
         id: npm
@@ -79,7 +86,7 @@ jobs:
         # 11.5 authenticates via OIDC and the (then empty) token is ignored.
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance=false
+        run: npm publish --provenance=false --tag "${{ steps.package.outputs.dist_tag }}"
 
       - name: Set release tag
         id: release
@@ -87,6 +94,13 @@ jobs:
         run: |
           TAG="v${{ steps.package.outputs.version }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # A beta must not take the "Latest" slot on the repo front page
+          # either — same mistake as the dist-tag, different surface.
+          if [ "${{ steps.package.outputs.dist_tag }}" = "latest" ]; then
+            echo "prerelease_flag=--prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease_flag=--prerelease" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Extract release notes from changelog
         shell: bash
@@ -122,10 +136,12 @@ jobs:
             gh release edit "${{ steps.release.outputs.tag }}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "${{ steps.release.outputs.tag }}" \
+              ${{ steps.release.outputs.prerelease_flag }} \
               --notes-file release-notes.md
           else
             gh release create "${{ steps.release.outputs.tag }}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "${{ steps.release.outputs.tag }}" \
+              ${{ steps.release.outputs.prerelease_flag }} \
               --notes-file release-notes.md
           fi
