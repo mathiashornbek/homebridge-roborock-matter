@@ -44,7 +44,11 @@ export function isHomeKitActionKey(value: unknown): value is HomeKitActionKey {
  * one is a timeout over these two, and it belongs in his automation where he
  * can pick the timeout, not in a plugin that would pick it for him.
  */
-export const HOMEKIT_STATE_SENSOR_KEYS = ["docked", "cleaning"] as const;
+export const HOMEKIT_STATE_SENSOR_KEYS = [
+  "docked",
+  "cleaning",
+  "waterTankEmpty",
+] as const;
 
 export type HomeKitStateSensorKey = (typeof HOMEKIT_STATE_SENSOR_KEYS)[number];
 

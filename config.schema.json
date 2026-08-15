@@ -167,13 +167,13 @@
       },
       "homeKitStateSensors": {
         "title": "Which Sensors to Add",
-        "description": "Which states get a sensor. Docked is the one to start with: it is the state most automations read, and \"not docked\" is its own answer. Cleaning is the pair for it — not docked AND not cleaning means the robot is probably stuck somewhere, which is the automation this was asked for. Only used when the setting above is on.",
+        "description": "Which states get a sensor. Docked is the one to start with: it is the state most automations read, and \"not docked\" is its own answer. Cleaning is the pair for it — not docked AND not cleaning means the robot is probably stuck somewhere, which is the automation this was asked for. Water Tank Empty is the one Apple Home cannot show any other way: Matter's vacuum device type has no water-tank attribute, so a sensor is the only route to a notification. Only used when the setting above is on.",
         "type": "array",
         "uniqueItems": true,
         "default": ["docked"],
         "items": {
           "type": "string",
-          "enum": ["docked", "cleaning"],
+          "enum": ["docked", "cleaning", "waterTankEmpty"],
           "oneOf": [
             {
               "title": "Docked (Closed while the robot is in its dock)",
@@ -182,6 +182,10 @@
             {
               "title": "Cleaning (Closed while the robot is on a cleaning run)",
               "enum": ["cleaning"]
+            },
+            {
+              "title": "Water Tank Empty (Closed while the robot reports no clean water)",
+              "enum": ["waterTankEmpty"]
             }
           ]
         }

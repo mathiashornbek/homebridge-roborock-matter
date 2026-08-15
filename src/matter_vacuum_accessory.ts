@@ -274,6 +274,21 @@ const RVC_OPERATIONAL_STATE = {
   UPDATING_MAPS: 70,
 } as const;
 
+/**
+ * The dock's own code for "the clean-water tank is empty".
+ *
+ * Field-measured rather than inferred. Wazza151 emptied and refilled the tank
+ * on an S8 Pro Ultra (issue #5) and `dock_error_status` tracked it exactly;
+ * vp-debug12's Q Revo carried the same 38 while confirming in issue #9 that
+ * the tank was empty. Both are named here because the two robots disagree on
+ * everything else about this condition — see isWaterTankEmpty().
+ *
+ * Only 38 is claimed. `dock_error_status` carries the dock's whole family of
+ * housekeeping faults (full waste-water tank, missing dust bag, blocked duct),
+ * and "non-zero" would report a full waste-water tank as an empty clean one.
+ */
+const DOCK_ERROR_CLEAN_WATER_TANK_EMPTY = 38;
+
 const RVC_OPERATIONAL_STATE_LIST = [
   RVC_OPERATIONAL_STATE.STOPPED,
   RVC_OPERATIONAL_STATE.RUNNING,
@@ -615,9 +630,46 @@ export default class RoborockMatterVacuumAccessory {
         return (
           (this.lastPublishedRunMode ?? this.lastRunMode) === RUN_MODE_CLEANING
         );
+      case "waterTankEmpty":
+        return this.isWaterTankEmpty();
       default:
         return null;
     }
+  }
+
+  /**
+   * Whether the robot says it has no water, or null if it has not said.
+   *
+   * Two robots have now been measured with a physically empty clean-water tank
+   * and they do NOT agree on how they say so:
+   *
+   *   a70  (S8 Pro Ultra, issue #5)  dock_error_status 38, water_shortage_status 0
+   *   a75  (Q Revo,       issue #9)  dock_error_status 38, water_shortage_status 1
+   *
+   * So neither field alone covers both, and the a70's zero is the reason this
+   * is an OR rather than a preference order: reading `water_shortage_status`
+   * first and trusting its 0 would report a full tank on the very robot the
+   * condition was field-measured on. Robots that carry their water onboard and
+   * have no dock tank at all are the mirror case — nothing sets
+   * `dock_error_status` for them, and the shortage flag is all there is.
+   *
+   * Null when neither field is present. That is not the same as "not empty":
+   * an absent field is the robot declining to answer, and a sensor that
+   * answered "full" on its behalf would be inventing the one reading a user
+   * would act on. Null leaves the sensor at rest instead, and rest is Open.
+   */
+  private isWaterTankEmpty(): boolean | null {
+    const dockError = this.getNumberStatus("dock_error_status");
+    const shortage = this.getNumberStatus("water_shortage_status");
+
+    if (dockError === null && shortage === null) {
+      return null;
+    }
+
+    return (
+      dockError === DOCK_ERROR_CLEAN_WATER_TANK_EMPTY ||
+      (shortage !== null && shortage !== 0)
+    );
   }
 
   /**

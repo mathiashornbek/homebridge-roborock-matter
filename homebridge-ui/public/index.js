@@ -45,6 +45,9 @@ const elements = {
   ),
   homeKitStateDocked: document.getElementById("homekit-state-docked"),
   homeKitStateCleaning: document.getElementById("homekit-state-cleaning"),
+  homeKitStateWaterTankEmpty: document.getElementById(
+    "homekit-state-water-tank-empty"
+  ),
   enableMatterFaultReporting: document.getElementById(
     "enable-matter-fault-reporting"
   ),
@@ -106,10 +109,11 @@ const ACTION_SWITCH_ELEMENTS = {
 
 // Kept in the same order as HOMEKIT_STATE_SENSOR_KEYS in src/types.ts, for the
 // same reason as above.
-const STATE_SENSOR_KEYS = ["docked", "cleaning"];
+const STATE_SENSOR_KEYS = ["docked", "cleaning", "waterTankEmpty"];
 const STATE_SENSOR_ELEMENTS = {
   docked: () => elements.homeKitStateDocked,
   cleaning: () => elements.homeKitStateCleaning,
+  waterTankEmpty: () => elements.homeKitStateWaterTankEmpty,
 };
 
 function showToast(type, message) {

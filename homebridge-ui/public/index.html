@@ -384,6 +384,22 @@
           ></span
         >
       </label>
+      <label class="checkbox">
+        <input id="homekit-state-water-tank-empty" type="checkbox" disabled />
+        <span
+          >Water Tank Empty
+          <small
+            >Closed while the robot reports its clean-water tank empty, Open
+            otherwise. Matter&rsquo;s robot vacuum device type has no water-tank
+            attribute at all, so this sensor is the only way the condition can
+            reach the Home app &mdash; and it is the one that is actually worth
+            a notification, because a mop run with no water is a wasted run. It
+            only reports; it never stops a clean. Robots differ in how they say
+            it, so both signals are read; a robot that reports neither leaves
+            the sensor at Open.</small
+          ></span
+        >
+      </label>
     </div>
 
     <div id="homekit-switch-pairing" class="pairing-callout hidden">

@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.10.0
+
+**An empty clean-water tank can now notify you, which Matter has never had a way to say.**
+
+The robot vacuum device type has no water-tank attribute of any kind — not level, not presence, nothing. I have had to write that sentence to three people now: to Wazza151 in [#5](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/5), who asked for the tank warning he used to get from another bridge, and twice in [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9). Two releases tried to say it through the fault attribute instead and both came back out, and the plugin has been reading the condition accurately the whole time with nowhere to put it.
+
+A HomeKit contact sensor has no such gap. Turn on **Water Tank Empty** under the Home app sensors and each robot gets a read-only sensor that reads Closed while it has no clean water. Point a Home notification at it and a mop run that would have been wasted becomes a message instead. Nothing about the tile changes, no re-pairing is needed, and it is off by default like the other two.
+
+Robots do not agree on how they say it, which is the whole difficulty. Wazza151's S8 Pro Ultra reports `dock_error_status: 38` and leaves `water_shortage_status` at 0 — he emptied and refilled the tank and watched the first field track it exactly. vp-debug12's Q Revo sets both. A robot that carries its water onboard and has no dock tank is the mirror case and sets only the second. So both are read, and the a70 is the reason it is an OR rather than a preference order: consulting the shortage flag first and believing its 0 would report a full tank on the very robot the condition was measured on. Only 38 counts as empty — that field also carries a full waste-water tank, a missing dust bag and a blocked duct, and a sensor that sent you to fill an already-full tank would be worse than none.
+
+It reports and nothing else. It will not refuse to start a mop run, and that is deliberate: this plugin has already shipped the bug where it declined to forward a command because its own cached snapshot said the command was unnecessary, and a robot that will not start because the plugin believes the tank is empty is that bug with a worse failure mode. The Roborock app owns the tank sensor and is the right place for a hard block.
+
+**Also fixed, and it was live for both existing sensors.** With no reading yet — a fresh install, or a sensor just switched on — every sensor answered Closed, on the reasoning that Closed is the resting state of a robot on its dock. That is true for `Docked` and false for `Cleaning`, which therefore claimed a robot was cleaning until the robot first said otherwise, and then moved. Moving is exactly what an automation triggers on, so a new `Cleaning` sensor announced a finished cleaning on its first startup, from a robot that had done nothing. Each sensor now declares its own resting state, and a test pins the general rule: whatever a robot sitting idle in its dock reports, that is what every sensor must already be showing.
+
 ## 3.9.4
 
 **A robot out cleaning your hallway was recorded as sitting in its dock, because of a charging flag it left behind there.**

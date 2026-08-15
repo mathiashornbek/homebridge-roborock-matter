@@ -9,12 +9,25 @@ export type StateSensorDefinition = {
   nameSuffix: string;
   /** What "detected" means, for the line written when the sensor appears. */
   summary: string;
+  /**
+   * What the sensor reads before the robot has reported anything.
+   *
+   * A HAP sensor must answer a read immediately, and at startup there is
+   * nothing to answer with. Whatever is answered is the value the sensor will
+   * MOVE AWAY FROM when real data lands, and a move is what an automation
+   * triggers on — so this has to be the state that is overwhelmingly the true
+   * one, per sensor. It is not a shared default: "docked" resting true is the
+   * resting state of every robot on a dock, while "cleaning" resting true would
+   * announce a finished cleaning on every restart of a robot that was doing
+   * nothing. That was live for both shipped sensors until this field existed.
+   */
+  restingState: boolean;
 };
 
 /**
  * Every state a sensor can mirror.
  *
- * Same shape as ACTION_SWITCH_DEFINITIONS on purpose: a third state is a row
+ * Same shape as ACTION_SWITCH_DEFINITIONS on purpose: a fourth state is a row
  * here plus an arm in getHomeKitStateSensorValue, and nothing else.
  */
 export const STATE_SENSOR_DEFINITIONS: readonly StateSensorDefinition[] = [
@@ -23,12 +36,21 @@ export const STATE_SENSOR_DEFINITIONS: readonly StateSensorDefinition[] = [
     nameSuffix: "Docked",
     summary:
       "reads Closed while the robot is in its dock and Open once it leaves",
+    restingState: true,
   },
   {
     key: "cleaning",
     nameSuffix: "Cleaning",
     summary:
       "reads Closed while the robot is on a cleaning run and Open when it is not",
+    restingState: false,
+  },
+  {
+    key: "waterTankEmpty",
+    nameSuffix: "Water Tank Empty",
+    summary:
+      "reads Closed while the robot reports its clean-water tank empty and Open otherwise",
+    restingState: false,
   },
 ];
 
@@ -230,13 +252,12 @@ export default class RoborockStateSensorAccessory {
   }
 
   private toCharacteristicValue(value: boolean | null): number {
-    // No reading yet: answer with the state the sensor is named after being
-    // true. For "Docked" that is the resting state of every robot on a dock,
-    // so the common case is also the one that does not move when data arrives.
-    if (value === null) {
-      return CONTACT_DETECTED;
-    }
+    // No reading yet: answer with this sensor's own resting state, which is
+    // the one it will not have to move away from when the robot reports in.
+    // See the comment on restingState — a single shared default was wrong for
+    // every sensor except "docked".
+    const resolved = value === null ? this.definition.restingState : value;
 
-    return value ? CONTACT_DETECTED : CONTACT_NOT_DETECTED;
+    return resolved ? CONTACT_DETECTED : CONTACT_NOT_DETECTED;
   }
 }
