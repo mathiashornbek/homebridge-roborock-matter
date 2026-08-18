@@ -80,6 +80,17 @@ type RoborockCleanModePrepOptions = RoborockCommandOptions & {
   prepWindowMs: number;
 };
 
+// What the prep sequence resolved with. It resolves rather than rejecting on a
+// partial apply — the start command goes out either way — so this is the only
+// place the caller can learn that the user's clean TYPE never landed.
+// `cleanTypeConfirmed` is false only when a type-carrying command went
+// unconfirmed; an unconfirmed suction level is a level inside the type and
+// leaves it true.
+type RoborockCleanModePrepResult = {
+  unconfirmedSettings?: string[];
+  cleanTypeConfirmed?: boolean;
+};
+
 type RoborockStatusRefreshOptions = {
   force?: boolean;
   preferCloud?: boolean;
@@ -134,7 +145,7 @@ interface RoborockApi {
     duid: string,
     settings: RoborockCleanModeSettings,
     options?: RoborockCleanModePrepOptions
-  ): Promise<void>;
+  ): Promise<RoborockCleanModePrepResult | void>;
   load_multi_map?(
     duid: string,
     mapId: number,
@@ -880,11 +891,31 @@ export default class RoborockMatterVacuumAccessory {
    * hand-written list of interesting fields — means any value the line names
    * triggers it, including one added to the message later. A heartbeat's
    * forced republish of unchanged values still says nothing new, so the
-   * self-healing full write stays silent.
+   * self-healing full write stays silent at INFO.
+   *
+   * It is not silent at debug, and that gap cost issue #7 a round trip. A
+   * docked robot at 100 % renders an identical line every time, so its publish
+   * evidence appeared once at startup and never again — and the reporter was
+   * asked to check whether these lines were still being written while his Apple
+   * Home tile was dead. He looked, correctly found none in eleven minutes, and
+   * the answer meant nothing: absence was what this method does, not evidence
+   * that the plugin had stopped. "Is this plugin still publishing?" was
+   * unanswerable from the log at any level. One debug line per suppressed
+   * publish makes it answerable without spending a single INFO line, which is
+   * the whole point of the deduplication above.
    */
-  private logMatterPublishIfChanged(clusters: MatterClusterState): void {
+  private logMatterPublishIfChanged(
+    clusters: MatterClusterState,
+    reason: string
+  ): void {
     const line = this.buildMatterPublishLogLine(clusters);
     if (line === this.lastLoggedMatterPublishLine) {
+      // Names the reason so the two liveness questions stay separable: the
+      // 60-second heartbeat proves the Matter write path is still running, a
+      // poll proves the Roborock side still answers.
+      this.platform.log.debug(
+        `${line} Unchanged since the last logged line, so it was written but not repeated at info (${reason}).`
+      );
       return;
     }
     this.lastLoggedMatterPublishLine = line;
@@ -1414,7 +1445,7 @@ export default class RoborockMatterVacuumAccessory {
       }
       if (Object.keys(changed).length === 0) {
         // Everything already published: a no-op is a successful publish.
-        this.logMatterPublishIfChanged(snapshot);
+        this.logMatterPublishIfChanged(snapshot, reason);
         return true;
       }
       clusters = changed;
@@ -1442,7 +1473,7 @@ export default class RoborockMatterVacuumAccessory {
 
     const updated = await this.updateMatterState(clusters, reason);
     if (updated) {
-      this.logMatterPublishIfChanged(snapshot);
+      this.logMatterPublishIfChanged(snapshot, reason);
     }
     if (updated && resyncEligible) {
       this.powerSourceResyncDone = true;
@@ -2073,7 +2104,7 @@ export default class RoborockMatterVacuumAccessory {
       `Applying ${this.getCleanModeLabel(cleanMode)} mode to ${this.getVacuumName()} before starting.`
     );
     try {
-      await this.withCleanModePrepTimeout(
+      const prep = await this.withCleanModePrepTimeout(
         applySettings.call(
           this.api,
           this.getDuid(),
@@ -2081,6 +2112,26 @@ export default class RoborockMatterVacuumAccessory {
           this.getMatterCleanModePrepCommandOptions()
         )
       );
+      // Resolving is not the same as landing. The prep sends up to three
+      // commands and resolves either way, reporting at warn what the robot
+      // never confirmed — so an apply can succeed as a call while the command
+      // carrying the clean TYPE went unanswered, and then the robot keeps the
+      // settings it already had. Measured in #8 (skmzwanke, Saros 10, 18 Aug
+      // 2026): the water mode was unconfirmed, his Saros ran vacuum+mop over
+      // rooms he had asked to be vacuumed, and the pin below made Apple Home
+      // show Vacuum for the whole run. The plugin held the tile on a promise it
+      // had already logged that it could not keep.
+      //
+      // Pinning is only defensible as KNOWN ground truth. When the prep says
+      // the type went unconfirmed, nothing is known, and the rule from the
+      // thrown-error path below applies unchanged: the robot's own report is
+      // the only signal there is, so it keeps its authority. Silence here is
+      // deliberate — the prep already warned, naming the settings it lost.
+      if (prep && prep.cleanTypeConfirmed === false) {
+        this.appliedCleanTypePin = null;
+        return;
+      }
+
       // Sent AND acknowledged, so this is known ground truth about the run
       // that is starting. It outranks a robot report that has not caught up.
       this.appliedCleanTypePin = {

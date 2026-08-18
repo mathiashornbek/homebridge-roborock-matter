@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.10.2
+
+**You asked for vacuum-only, the robot mopped, and Apple Home showed vacuum anyway — because the plugin believed a command it had already logged that it lost.**
+
+The reporter of [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) selected two rooms, vacuum only, and his Saros 10 ran a vacuum-and-mop over them. His log contains both halves of the mistake, 83 seconds apart:
+
+```
+13:50:57  Applying Vacuum mode to Weebo before starting.
+13:50:59  Roborock did not confirm the water mode and suction level ...
+          the robot may keep its previous settings for this run
+13:52:22  Roborock still reports Vacuum + Mop ... after Vacuum was applied
+          and acknowledged
+```
+
+The second line is untrue, and the first line is the plugin saying so in advance.
+
+Before a Matter start, the plugin makes the robot match the mode being displayed. On a v1 robot the difference between Vacuum and Vacuum-and-mop _is_ the water-box mode, so that one command carries the whole choice. When it lands, the plugin pins the clean type for the run so a robot whose own report lags by a minute or two cannot make the tile flicker to a mode nobody asked for — that is 3.10.0's behaviour and it is correct.
+
+The pin was taken on the wrong evidence. It was taken whenever the prep sequence _resolved_, and the prep resolves on a partial apply too: it deliberately never gives up early, because a suction command that times out must not cancel the command carrying the user's actual choice. So it sends what it can, warns about what the robot never confirmed, and returns normally. "Acknowledged" and "sent, unconfirmed, the robot may keep its previous settings" reached the caller as the same answer — nothing.
+
+So on his run the water command went unanswered, the robot kept mopping as the warning predicted, and the pin then suppressed the robot's honest vacuum-and-mop report in favour of a promise the plugin had already recorded it could not keep. The only place the failure remained visible was the floor.
+
+A pin is either known ground truth or it is not taken. The prep now hands back what the robot confirmed, and the clean type is pinned only when the command carrying it was acknowledged. An unconfirmed suction level does not disturb it, because a level inside a type says nothing about which type is running — and the warning about it is unchanged either way. This is the rule the failed-apply path has always followed, finally extended to the apply that fails while resolving.
+
+The cloud timeouts underneath this are not the plugin's to fix and are not new; what is fixed is that they can no longer be hidden from you.
+
+**Also: the plugin's own heartbeat left no trace of itself, and that cost [#7](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/7) a wasted round of testing.**
+
+Every robot gets a forced full Matter write every 60 seconds. Its evidence line is written only when the rendered line would read differently from the last one — deliberately, since 3.10.0, so an idle robot does not fill the log with identical minutes.
+
+The reporter of #7 was asked to check whether those lines were still appearing while his Apple Home tile was dead. It is the cheapest way to separate "the plugin stopped" from "the Matter session died underneath a healthy plugin". His robot was docked at 100 %, so every line rendered identically, so the last one was written at startup and none followed. He looked, correctly reported eleven minutes of nothing, and the answer was worth nothing — absence was the deduplication working, not evidence about whether anything ran. The question was unanswerable from the log at any level, which for a liveness signal is the wrong outcome.
+
+A suppressed publish is now recorded at debug, naming the robot, the values and what triggered it. The info log stays exactly as quiet as before, and with plugin debug on, eleven minutes of a docked robot leaves eleven traces — so a gap in them means something.
+
 ## 3.10.0
 
 **An empty clean-water tank can now notify you, which Matter has never had a way to say.**

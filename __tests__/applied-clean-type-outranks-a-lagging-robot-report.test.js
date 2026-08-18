@@ -98,6 +98,7 @@ function createHarness({
   fanPowerCleanModes = false,
   initialStatus = {},
   applyRejectsWith = null,
+  applyResolvesWith = undefined,
 } = {}) {
   const status = {
     state: ROBOROCK_STATE_CHARGING,
@@ -146,6 +147,10 @@ function createHarness({
         if (applyRejectsWith) {
           throw applyRejectsWith;
         }
+        // The real prep resolves with what the robot confirmed. Undefined is
+        // what every other stand-in in this suite returns, and stands for the
+        // fully-acknowledged apply this rule was originally written around.
+        return applyResolvesWith;
       }),
       app_start: jest.fn(async () => {
         started.push("app_start");
@@ -475,5 +480,115 @@ describe("the pin is bounded: it belongs to one run and one command", () => {
 
     harness.set({ fan_power: FAN_POWER_TURBO });
     expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM_TURBO);
+  });
+});
+
+// The clause this rule was missing for three releases: "acknowledged" was read
+// off the apply RESOLVING, and the prep resolves on a partial apply too. It
+// sends up to three commands, reports at warn what the robot never confirmed,
+// and returns normally — because the start command goes out regardless.
+//
+// So an apply could resolve having lost the one command that carries the user's
+// clean TYPE, and the pin treated that as ground truth. Measured in #8
+// (skmzwanke, Saros 10, 18 Aug 2026), vacuum-only on two rooms:
+//
+//   13:50:57  Applying Vacuum mode to Weebo before starting.
+//   13:50:59  Roborock did not confirm the water mode and suction level ...
+//             the robot may keep its previous settings for this run
+//   13:52:22  Roborock still reports Vacuum + Mop ... after Vacuum was applied
+//             and acknowledged
+//
+// The robot really did mop. The plugin had said so itself at 13:50:59, then
+// contradicted itself at 13:52:22 and held Apple Home on Vacuum for the run —
+// so the only place the failure was visible was the floor.
+//
+// The rule is the same one the thrown-apply case already obeys, extended to the
+// case that resolves: a pin is KNOWN ground truth or it is not taken.
+describe("an apply that resolved without confirming the type is not knowledge", () => {
+  const UNCONFIRMED_TYPE = {
+    unconfirmedSettings: ["water mode", "suction level"],
+    cleanTypeConfirmed: false,
+  };
+
+  test("#8 replayed: the robot's vacuum+mop report is not overridden", async () => {
+    const harness = createHarness({ applyResolvesWith: UNCONFIRMED_TYPE });
+
+    await startFromHome(harness);
+    expect(harness.applied).toHaveLength(1);
+    expect(harness.started).toEqual(["app_start"]);
+
+    // The robot is out cleaning and reporting water on — which, on his log, was
+    // the truth: it kept the settings it already had.
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM_AND_MOP);
+  });
+
+  test("and it does not claim an acknowledgement it never had", async () => {
+    // The line said "was applied and acknowledged" 83 seconds after the plugin
+    // logged that Roborock had confirmed neither setting. With no pin the line
+    // cannot be reached, so the claim becomes true by construction.
+    const harness = createHarness({ applyResolvesWith: UNCONFIRMED_TYPE });
+    await startFromHome(harness);
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    harness.cleanMode();
+
+    expect(
+      harness.warnings().filter((line) => /still reports/.test(line))
+    ).toHaveLength(0);
+  });
+
+  test("an unconfirmed SUCTION LEVEL alone still leaves the pin standing", async () => {
+    // A level inside the type says nothing about which type is running, and
+    // dropping the pin for it would reintroduce the lagging-report lie for a
+    // cosmetic command's sake.
+    const harness = createHarness({
+      applyResolvesWith: {
+        unconfirmedSettings: ["suction level"],
+        cleanTypeConfirmed: true,
+      },
+    });
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM);
+  });
+
+  test("a prep that confirmed everything is unchanged", async () => {
+    const harness = createHarness({
+      applyResolvesWith: {
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      },
+    });
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM);
+  });
+
+  test("a prep that says nothing is still trusted", async () => {
+    // Seventeen suites stand the API in with a resolve of `undefined`, and the
+    // shipped prep before this change said nothing either. Only an explicit
+    // `cleanTypeConfirmed: false` withdraws the pin — absence of an answer must
+    // not silently change behaviour for every other caller in the codebase.
+    const harness = createHarness({ applyResolvesWith: undefined });
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM);
+  });
+
+  test("the withdrawal is stated in the prep, beside the pin it withdraws", () => {
+    // Both halves of the decision must be in the one method, so a future
+    // reader cannot find the pin without finding the condition on it.
+    const body = readMethodBody(
+      fs.readFileSync(SOURCE_PATH, "utf8"),
+      "private async applyCleanModeBeforeStarting("
+    );
+    expect(body).toContain("cleanTypeConfirmed === false");
+    const withdrawal = body.indexOf("cleanTypeConfirmed === false");
+    const pin = body.indexOf("this.appliedCleanTypePin = {");
+    // The check comes BEFORE the pin is taken, not as a later correction.
+    expect(withdrawal).toBeLessThan(pin);
   });
 });

@@ -603,13 +603,22 @@ describe("Roborock API model and diagnostics helpers", () => {
       }),
     };
 
+    // The point of this test is that an unsupported water command does not
+    // BLOCK the prep — the start command must still go out. It used to assert
+    // `toBeUndefined`, which was a fact about the old signature rather than
+    // about not blocking. Resolving with the report says the same thing and
+    // says more: the water mode is named as unconfirmed, so the caller knows
+    // not to pin the user's clean type on it (#8).
     await expect(
       api.applyMatterCleanModeSettings(
         "device-1",
         { fanPower: 104, waterBoxMode: 200 },
         { waitForResult: true }
       )
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      unconfirmedSettings: ["water mode"],
+      cleanTypeConfirmed: false,
+    });
 
     expect(api.vacuums["device-1"].command).toHaveBeenCalledWith(
       "device-1",

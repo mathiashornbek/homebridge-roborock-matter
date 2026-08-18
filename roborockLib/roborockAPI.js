@@ -266,6 +266,17 @@ const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
 // reports what it could not confirm, rather than being cut off mid-command with
 // nothing said. See createMatterCleanModePrepBudget.
 const MATTER_CLEAN_MODE_PREP_MARGIN_MS = 250;
+// The prep labels that carry the user's clean TYPE, as opposed to a level
+// inside it. On a v1 robot the difference between "Vacuum" and "Vacuum and mop"
+// IS the water-box mode; on the Q7/B01 dialect it is the native clean type.
+// The suction level is deliberately absent: a cosmetic command that did not
+// answer says nothing about which type the robot is running.
+//
+// Named here, once, because both ends need the same answer — the prep decides
+// what to report as unconfirmed and the caller decides whether it may still
+// outrank the robot's own report. Two hand-written copies drifting apart is the
+// most repeated defect in this codebase.
+const MATTER_CLEAN_TYPE_PREP_LABELS = new Set(["water mode", "clean type"]);
 // How long to wait before retrying to cache rooms for a saved map that did not
 // return room segments. Retrying lets newly named/segmented maps appear without
 // switching maps on every poll cycle.
@@ -2417,19 +2428,55 @@ class Roborock {
    * from being silent by omission — the "no water command detected" branch was
    * debug-only, and that is precisely the case where the mop ran anyway.
    *
+   * It also returns what it reported, because the caller has to act on it and
+   * previously could not: this method resolves normally on a partial apply, so
+   * "sent and acknowledged" and "sent, unconfirmed, robot may keep its previous
+   * settings" arrived at the caller as the same `undefined`. Measured in #8
+   * (skmzwanke, Saros 10, 18 Aug 2026): the water mode went unconfirmed, the
+   * robot kept mopping, and Apple Home was pinned to the Vacuum he had asked
+   * for — so the plugin hid the very failure this warning announces.
+   *
+   * `cleanTypeConfirmed` answers only the question the caller needs to ask, and
+   * an unconfirmed suction level does not disturb it: it is a level inside the
+   * type, not the type.
+   *
    * @param {string} duid
    * @param {string[]} unconfirmedSettings
+   * @returns {{ unconfirmedSettings: string[], cleanTypeConfirmed: boolean }}
    */
   reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings) {
-    if (unconfirmedSettings.length === 0) {
-      return;
+    const reported = [...new Set(unconfirmedSettings)];
+    const result = {
+      unconfirmedSettings: reported,
+      cleanTypeConfirmed: !reported.some((label) =>
+        MATTER_CLEAN_TYPE_PREP_LABELS.has(label)
+      ),
+    };
+
+    if (reported.length === 0) {
+      return result;
     }
 
     this.log.warn(
-      `Roborock did not confirm the ${[...new Set(unconfirmedSettings)].join(" and ")} for ${this.describeDevice(duid)} before starting; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
+      `Roborock did not confirm the ${reported.join(" and ")} for ${this.describeDevice(duid)} before starting; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
     );
+
+    return result;
   }
 
+  /**
+   * Make the robot match the clean mode the controller is displaying, before a
+   * Matter-initiated start.
+   *
+   * Resolves rather than rejecting on a partial apply — the start command is
+   * sent either way — so the resolved value is the only place the caller can
+   * learn whether the user's clean TYPE actually landed.
+   *
+   * @param {string} duid
+   * @param {{ cleanMode?: number, fanPower?: number, waterBoxMode?: number }} settings
+   * @param {Record<string, unknown>} [options]
+   * @returns {Promise<{ unconfirmedSettings: string[], cleanTypeConfirmed: boolean }>}
+   */
   async applyMatterCleanModeSettings(duid, settings, options = {}) {
     const { prepWindowMs, ...commandInput } = options ?? {};
     const budget = this.createMatterCleanModePrepBudget(prepWindowMs);
@@ -2525,8 +2572,10 @@ class Roborock {
         }
       }
 
-      this.reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings);
-      return;
+      return this.reportUnconfirmedMatterCleanModeSettings(
+        duid,
+        unconfirmedSettings
+      );
     }
 
     // The water command goes first, and no failure below cancels a later
@@ -2614,7 +2663,10 @@ class Roborock {
       }
     }
 
-    this.reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings);
+    return this.reportUnconfirmedMatterCleanModeSettings(
+      duid,
+      unconfirmedSettings
+    );
   }
 
   getMatterWaterModeCommandCandidates(duid) {

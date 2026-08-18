@@ -57,7 +57,7 @@ function createHarness() {
     false
   );
   instance.markRegistered();
-  return { instance, info, updateAccessoryState };
+  return { instance, info, debug: platform.log.debug, updateAccessoryState };
 }
 
 // Publish an explicit cluster snapshot, bypassing the Roborock status
@@ -185,5 +185,106 @@ describe("the Matter publish line is emitted whenever what it says changes", () 
     instance.markRegistered();
     await publish(instance, snapshot());
     expect(publishLines(info)).toHaveLength(2);
+  });
+});
+
+// Silence at INFO is the point of the deduplication above. Silence at EVERY
+// level is a different thing, and it cost issue #7 a round trip.
+//
+// jawnlydon was asked to check whether these lines were still being written
+// while his Apple Home tile was dead — the cheap way to tell "the plugin
+// stopped" from "the Matter session died underneath a healthy plugin". His
+// sc05 was docked at 100 %, so the rendered line was identical every minute:
+//
+//   06:12:14  Matter publish for Robo: battery=100%, operationalState=0, ...
+//   06:23     tile dead. Nothing logged in between.
+//
+// He looked, correctly found nothing in eleven minutes, and the answer was
+// worthless — absence is what the method does when nothing changes, not
+// evidence about whether it ran. The question was unanswerable from the log at
+// any log level, which is the defect: the 60-second forced write is the
+// plugin's own liveness signal and it left no trace of itself.
+//
+// The rule: a publish that is suppressed at info is still recorded at debug. It
+// costs nothing when debug is off, and it keeps the info log exactly as quiet as
+// the deduplication intends.
+describe("a suppressed publish is still recorded at debug", () => {
+  const debugLines = (debug) =>
+    debug.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("Matter publish for"));
+
+  test("the idle heartbeat leaves a trace of itself", async () => {
+    const { instance, info, debug } = createHarness();
+    await publish(instance, snapshot());
+    expect(publishLines(info)).toHaveLength(1);
+
+    await instance.publishRoborockSnapshot(
+      snapshot(),
+      "Matter state heartbeat",
+      { force: true }
+    );
+
+    // Still one info line — the deduplication is intact.
+    expect(publishLines(info)).toHaveLength(1);
+    // And exactly one debug line saying the write happened anyway.
+    expect(debugLines(debug)).toHaveLength(1);
+    expect(debugLines(debug)[0]).toContain("Matter state heartbeat");
+  });
+
+  test("the debug line names the robot and carries the full values", async () => {
+    // Same requirement as every other line in this plugin: a multi-robot log
+    // is unreadable without the name, and the values are the whole evidence.
+    const { instance, debug } = createHarness();
+    await publish(instance, snapshot({ battery: 150, operationalState: 1 }));
+    await instance.publishRoborockSnapshot(
+      snapshot({ battery: 150, operationalState: 1 }),
+      "Matter state heartbeat",
+      { force: true }
+    );
+
+    expect(debugLines(debug)[0]).toContain("Weebo");
+    expect(debugLines(debug)[0]).toContain(
+      "battery=75%, operationalState=1, runMode=0, cleanMode=0."
+    );
+  });
+
+  test("one trace per suppressed publish, so a stopped heartbeat is visible", async () => {
+    // The value is in the CADENCE: eleven minutes of a docked robot must leave
+    // eleven traces, so a gap in them is the finding.
+    const { instance, debug } = createHarness();
+    await publish(instance, snapshot());
+
+    for (let i = 0; i < 11; i += 1) {
+      await instance.publishRoborockSnapshot(
+        snapshot(),
+        "Matter state heartbeat",
+        { force: true }
+      );
+    }
+
+    expect(debugLines(debug)).toHaveLength(11);
+  });
+
+  test("the reason is named, so the two liveness questions stay separable", async () => {
+    // A heartbeat proves the Matter write path runs; a poll proves the Roborock
+    // side still answers. A trace that does not say which answers neither.
+    const { instance, debug } = createHarness();
+    await publish(instance, snapshot());
+    await publish(instance, snapshot());
+
+    expect(debugLines(debug)).toHaveLength(1);
+    expect(debugLines(debug)[0]).toContain("test");
+  });
+
+  test("a publish that WAS logged at info is not also logged at debug", async () => {
+    // Otherwise every change is stated twice and the debug trace stops being a
+    // record of what the info log omitted.
+    const { instance, info, debug } = createHarness();
+    await publish(instance, snapshot());
+    await publish(instance, snapshot({ operationalState: RUNNING }));
+
+    expect(publishLines(info)).toHaveLength(2);
+    expect(debugLines(debug)).toHaveLength(0);
   });
 });
