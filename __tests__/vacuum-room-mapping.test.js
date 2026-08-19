@@ -203,15 +203,26 @@ describe("vacuum room mapping", () => {
     expect(adapter.log.warn).toHaveBeenCalledWith(
       expect.stringContaining("unexpected_status")
     );
-    expect(adapter.log.debug).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "Skipping known get_status attribute without a Homebridge state object: state"
-      )
-    );
-    expect(adapter.log.debug).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "Skipping known get_status attribute without a Homebridge state object: battery"
-      )
-    );
+
+    // The rule, not the sentence. This used to assert the exact text of a
+    // debug line printed for every KNOWN attribute — a line inherited from
+    // this library's ioBroker origins that could never mean anything under
+    // Homebridge, and that cost fifty log lines a minute per robot. Pinning
+    // its wording is what made it look load-bearing.
+    //
+    // What has to hold is the distinction: an attribute the plugin knows
+    // produces nothing at all, and an attribute it has never seen is named
+    // once with its value.
+    const said = adapter.log.debug.mock.calls
+      .concat(adapter.log.warn.mock.calls)
+      .map((call) => String(call[0]))
+      .join("\n");
+
+    for (const known of ["state", "battery"]) {
+      expect(said).not.toMatch(
+        new RegExp(`\\b${known}\\b[^\\n]*Homebridge state object`)
+      );
+    }
+    expect(said).toContain("unexpected_status");
   });
 });

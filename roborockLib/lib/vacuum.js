@@ -567,17 +567,26 @@ class vacuum {
                   attribute
                 );
 
-              if (isKnownStatusAttribute) {
-                this.adapter.log.debug(
-                  `Skipping known get_status attribute without a Homebridge state object: ${attribute}. Model: ${this.robotModel}`
-                );
-              } else if (
+              // A known attribute is skipped in silence. The line that used
+              // to be written here dated from this library's ioBroker origins,
+              // where `getObjectAsync` returns a state object that exists;
+              // under Homebridge it never exists, so the branch fired for
+              // EVERY known attribute on EVERY poll and said only that the
+              // plugin is not ioBroker. Measured on three robots with debug
+              // on: fifty lines a minute, and the log ring — the thing you
+              // need when something real goes wrong — held ninety minutes.
+              //
+              // The distinction below is the part that carries information
+              // and it is untouched: an attribute nobody has mapped yet is
+              // still reported once, by name and value.
+              if (
+                !isKnownStatusAttribute &&
                 this.rememberUnmappedStatusAttribute(duid, attribute)
               ) {
                 newlyUnmappedAttributes.push(
                   `${attribute}=${describeStatusValue(deviceStatus[0][attribute])}`
                 );
-              } else {
+              } else if (!isKnownStatusAttribute) {
                 this.adapter.log.debug(
                   `Unmapped get_status attribute ${attribute}=${describeStatusValue(deviceStatus[0][attribute])} for ${describeDevice(this.adapter, duid)}; already reported, not repeating.`
                 );

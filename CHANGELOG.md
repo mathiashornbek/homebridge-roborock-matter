@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.11.0
+
+**A Q7 said it was between rooms two hundred and twenty-six times during one clean. It was in the bedroom the whole time.**
+
+I caught a run on my own robots and pulled the numbers rather than the impressions. One Q7, 47 minutes, 227 live-room fetches. 226 of them placed it at cell 22280,22100 — the same cell every time — while the room outlines on that map span 38 to 293. The pose behind it was exactly (1100, 1100), which is the same constant two other people's Q7s reported back in August. The remaining fetches resolved Stue, then Gang, then Soveværelse, in the order the robot actually moved.
+
+So the robot does send a real position. It just serves a placeholder in between, and every one of those was being written up as "the robot's position did not fall inside any known room outline (it may be between rooms, or the map may still be building)". That sentence was wrong twice over: the robot was not between rooms, and there was nothing anyone could do about it. It also fed the miss counter, which is how a robot cleaning one bedroom produced "after 46 unresolved position(s)".
+
+A position further outside the map than the map is wide is now recognised for what it is and named as a placeholder, once per run at a level you see and quietly thereafter. The test is geometry rather than the number 1100: the robot cannot be somewhere it has never mapped, which stays true if Roborock picks a different constant. A robot genuinely outside every outline — a doorway, a hallway nobody named, a strip the outlines do not cover — is still a real miss and still counts as one, because that is the case the miss line exists for. Classic S- and Q-series robots resolve every fetch and are untouched.
+
+Two things fall out of it. The room still updates on a Q7, on the fetches that carry a true position; nothing about the tile changes. And a resolved room now prints the cell it resolved at, so a working position and a failing one can be compared in one log instead of across two field sessions — which is what this one cost.
+
+**Also: fifty log lines a minute, per robot, that could never mean anything.** With debug on, every known status attribute produced `Skipping known get_status attribute without a Homebridge state object` on every poll. That check dates from this library's ioBroker origins, where the object it looks for exists; under Homebridge it never does, so the branch fired for every attribute forever and reported only that the plugin is not ioBroker. On my own server the log ring had shrunk to ninety minutes — the window you need when something real goes wrong. It is gone. An attribute nobody has mapped yet is still named once with its value, which is the half that carries information.
+
 ## 3.10.2
 
 **You asked for vacuum-only, the robot mopped, and Apple Home showed vacuum anyway — because the plugin believed a command it had already logged that it lost.**

@@ -92,6 +92,12 @@ const B01_LIVE_ROOM_MISS_REASONS = {
     "the map payload carried no room outlines, so there was nothing to match the position against",
   "pose-outside-outlines":
     "the robot's position did not fall inside any known room outline (it may be between rooms, or the map may still be building)",
+  // Not a miss the user can do anything about, and not the robot being
+  // between rooms: the map payload carried a placeholder where the position
+  // should be. Measured at 226 of 227 fetches on a Q7 during a 47-minute
+  // clean, always the same cell. See describeLiveRoomResolution.
+  "pose-placeholder":
+    "the map payload carried a placeholder instead of the robot's position, so this fetch could not place it (the robot sends a real position only on some fetches)",
 };
 
 /**
@@ -4571,6 +4577,26 @@ class Roborock {
           // actually sees, so "no room yet" is distinguishable from "the
           // feature is broken" — and say WHICH of the four causes it was,
           // because they call for different fixes.
+          // A placeholder pose is not the robot failing to be in a room, so
+          // it does not join the count that says how long the robot has gone
+          // unplaced. Counting it produced "after 46 unresolved position(s)"
+          // for a robot that had been cleaning one room the whole time, which
+          // reads as a fault and is not one.
+          //
+          // It is said once per run at a level the user sees, with the numbers
+          // that make it diagnosable, and then held at debug. In the field
+          // that turns 226 info-and-debug lines per clean into one.
+          if (resolution2.reason === "pose-placeholder") {
+            const placeholderMessage = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}).`;
+            if (!liveState.placeholderReported) {
+              liveState.placeholderReported = true;
+              this.log.info(placeholderMessage);
+            } else {
+              this.log.debug(placeholderMessage);
+            }
+            return liveState.current;
+          }
+
           liveState.unresolvedPoseCount =
             (liveState.unresolvedPoseCount || 0) + 1;
           const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}${describeRawMapFields(parsed)}).`;
@@ -4601,7 +4627,7 @@ class Roborock {
 
         if (!previous || previous.segmentId !== roomId) {
           this.log.info(
-            `Live room for ${this.describeDevice(duid)}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}${missedBeforeThis > 0 ? ` (after ${missedBeforeThis} unresolved position(s))` : ""}.`
+            `Live room for ${this.describeDevice(duid)}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}${missedBeforeThis > 0 ? ` (after ${missedBeforeThis} unresolved position(s))` : ""}${resolution2.cell ? ` [position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}]` : ""}.`
           );
           const lastV1Status = this._b01StatusState?.get(duid)?.lastV1Status;
           if (this.deviceNotify && lastV1Status) {

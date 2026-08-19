@@ -641,11 +641,13 @@ function parseScMapLiveState(buffer) {
  * whether the point-in-polygon test genuinely rejected the position. Those
  * three call for three different fixes.
  *
- * @param {{head?: {minX: number, minY: number, resolution: number} | null,
+ * @param {{head?: {minX: number, minY: number, resolution: number,
+ *                 sizeX?: number, sizeY?: number} | null,
  *          pose?: {x: number, y: number} | null,
  *          roomChains?: Array<{roomId: number, points: Array<{x: number, y: number}>}>} | null} liveState
  * @returns {{roomId: number | null,
- *            reason: "resolved" | "no-map-header" | "no-pose" | "no-room-outlines" | "pose-outside-outlines",
+ *            reason: "resolved" | "no-map-header" | "no-pose" | "no-room-outlines"
+ *              | "pose-outside-outlines" | "pose-placeholder",
  *            outlineCount: number,
  *            cell: {x: number, y: number} | null,
  *            outlineBounds?: {minX: number, minY: number, maxX: number, maxY: number} | null,
@@ -677,8 +679,42 @@ function describeLiveRoomResolution(liveState) {
 
   for (const chain of chains) {
     if (pointInPolygon(cellX, cellY, chain.points)) {
+      // The cell rides along on a hit too. Without it the log could say which
+      // attempts failed and with what position, but never what a SUCCEEDING
+      // position looked like — so the two could not be compared, and the
+      // measurement below took a second field session to make.
       return { roomId: chain.roomId, reason: "resolved", outlineCount, cell };
     }
+  }
+
+  const outlineBounds = outlineBoundingBox(chains);
+
+  // A pose that is not merely outside the rooms but nowhere near the map is a
+  // different thing, and calling both "outside the outlines" sent every
+  // investigation down the same wrong path for three weeks.
+  //
+  // Measured on a Q7 over a 47-minute clean, 227 fetches: 226 of them placed
+  // the robot at cell 22280,22100 — the same cell every time — while the room
+  // outlines spanned 38-293 x 90-227. The underlying pose was exactly
+  // (1100, 1100) in every one, the same constant two other Q7s reported in
+  // August. The remaining fetches resolved a real room in the right order, so
+  // the robot DOES send a true pose sometimes; it just serves a placeholder in
+  // between, and those are the fetches that must not be counted as the robot
+  // being between rooms.
+  //
+  // The test is deliberately about distance rather than about the value 1100:
+  // a placeholder is a position further outside the map than the map is wide,
+  // which no real robot can be, and which stays true if Roborock picks a
+  // different constant tomorrow.
+  if (isOffTheMap(cell, head, outlineBounds)) {
+    return {
+      roomId: null,
+      reason: "pose-placeholder",
+      outlineCount,
+      cell,
+      outlineBounds,
+      head: { minX: head.minX, minY: head.minY, resolution },
+    };
   }
 
   return {
@@ -686,9 +722,62 @@ function describeLiveRoomResolution(liveState) {
     reason: "pose-outside-outlines",
     outlineCount,
     cell,
-    outlineBounds: outlineBoundingBox(chains),
+    outlineBounds,
     head: { minX: head.minX, minY: head.minY, resolution },
   };
+}
+
+/**
+ * Whether a cell is outside the map raster itself.
+ *
+ * The map's own `sizeX`/`sizeY` is the right yardstick and the outline
+ * bounding box is not: outlines cover rooms, while the raster covers
+ * everywhere the robot has ever been. A robot standing in a doorway, in a
+ * hallway nobody named, or against a wall the outlines do not reach is
+ * legitimately outside every outline and inside the map — that is a real miss
+ * and must keep counting as one. Being outside the raster is not a position
+ * at all; the robot cannot be somewhere it has never mapped.
+ *
+ * One raster width of slack on each side, because the transform can put a
+ * genuine edge case a little past the boundary and this must not swallow a
+ * real coordinate bug. The measured placeholder sat at cell 22280 on a map
+ * 500 cells wide — 44 times out — so the margin costs nothing.
+ *
+ * Falls back to the outline bounds when a header carries no size, which is
+ * the only case where there is nothing better to compare against.
+ *
+ * @param {{x: number, y: number}} cell
+ * @param {{minX: number, minY: number, resolution: number,
+ *          sizeX?: number, sizeY?: number}} head
+ * @param {{minX: number, minY: number, maxX: number, maxY: number} | null} outlineBounds
+ * @returns {boolean}
+ */
+function isOffTheMap(cell, head, outlineBounds) {
+  const sizeX = Number(head?.sizeX) || 0;
+  const sizeY = Number(head?.sizeY) || 0;
+
+  if (sizeX > 0 && sizeY > 0) {
+    return (
+      cell.x < -sizeX ||
+      cell.x > sizeX * 2 ||
+      cell.y < -sizeY ||
+      cell.y > sizeY * 2
+    );
+  }
+
+  if (!outlineBounds) {
+    return false;
+  }
+
+  const spanX = Math.max(outlineBounds.maxX - outlineBounds.minX, 1);
+  const spanY = Math.max(outlineBounds.maxY - outlineBounds.minY, 1);
+
+  return (
+    cell.x < outlineBounds.minX - spanX * 4 ||
+    cell.x > outlineBounds.maxX + spanX * 4 ||
+    cell.y < outlineBounds.minY - spanY * 4 ||
+    cell.y > outlineBounds.maxY + spanY * 4
+  );
 }
 
 /**

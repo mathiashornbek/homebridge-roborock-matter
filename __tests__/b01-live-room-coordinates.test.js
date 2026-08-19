@@ -45,7 +45,13 @@ describe("a miss reports where the outlines actually are", () => {
       roomChains: [squareRoom(10, 12, 8, 40)],
     });
 
-    expect(result.reason).toBe("pose-outside-outlines");
+    // Reclassified in 3.11.0, and the change is the whole point of this file
+    // having existed: when it was written, 22160 could not be told apart from
+    // a robot standing between two rooms, so it was filed as one. A 47-minute
+    // measurement later settled it — 226 of 227 fetches returned exactly this
+    // shape while the same robot resolved real rooms on the other fetches —
+    // and a position 44 map-widths outside the raster now says so.
+    expect(result.reason).toBe("pose-placeholder");
     expect(result.cell).toEqual({ x: 22160, y: 22160 });
     // Without this, the log says "not inside any room" and leaves the reader
     // unable to tell a doorway from a broken transform.
