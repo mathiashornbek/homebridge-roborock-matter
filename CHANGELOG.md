@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.11.1
+
+**The LAN port was open, the robot never answered on it, and the plugin kept asking for the life of the process — 10 seconds thrown away on every poll and every command.**
+
+The reporter of [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) runs Homebridge on a NAS in one VLAN and his Saros 10 in another. Port 58867 is reachable across that boundary, so the local client completes its TCP handshake and records `Local connect state: true` — and then every single request dies of silence 10 seconds later. `get_prop` on both startups, `app_segment_clean`, `app_pause`, `app_start`: all of them, every time.
+
+The plugin only ever gave up on the LAN when the _connect_ failed. A socket that connected and then answered nothing was retried forever, which is why he saw a `get_prop` timeout at every restart and why his commands were slow before they worked at all. A successful handshake proves the port is reachable. It does not prove the robot is listening.
+
+3 local timeouts in a row on a socket that still reports itself connected now write the LAN off for that robot and use the cloud instead, with 1 log line that says the port is open and the robot is not replying — the distinction that decides whether there is any point rewriting a firewall rule. Any local reply resets the count, so a single lost frame on a healthy network changes nothing; permanently exiling a robot to the cloud over one dropped packet would be worse than the bug being fixed.
+
+The diagnostics report names this case separately from a failed connect, because those two look identical in a log and lead to opposite conclusions.
+
 ## 3.11.0
 
 **A Q7 said it was between rooms 226 times during one clean. It was in the bedroom the whole time.**

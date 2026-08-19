@@ -552,6 +552,11 @@ class localConnector {
       const { resolve, timeout } = this.adapter.pendingRequests.get(id);
       this.adapter.clearTimeout(timeout);
       this.adapter.pendingRequests.delete(id);
+      // Proof that this socket is not mute, so any run of timeouts counted
+      // against it starts over.
+      if (this.adapter.noteLocalRequestSucceeded) {
+        this.adapter.noteLocalRequestSucceeded(duid);
+      }
       resolve(result);
 
       if (this.adapter.deviceNotify !== undefined) {

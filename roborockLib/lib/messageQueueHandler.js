@@ -116,6 +116,7 @@ function getRequestTimeout(method, requestTimeoutMs) {
  * @property {LoggerLike} log
  * @property {(duid: string, update: TransportDiagnosticsUpdate) => Promise<void>} updateTransportDiagnostics
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
+ * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(message: string, location: string, duid?: string) => void} catchError
  * @property {(duid: string) => string} [describeDevice]
  */
@@ -347,6 +348,15 @@ class messageQueueHandler {
                 )
               );
             } else {
+              // A socket that keeps reporting itself connected while every
+              // request dies of silence is not a transport worth retrying
+              // forever. Fire-and-forget: the caller is owed its rejection now,
+              // not after the bookkeeping resolves.
+              if (this.adapter.noteLocalRequestTimedOut) {
+                Promise.resolve(
+                  this.adapter.noteLocalRequestTimedOut(duid, method)
+                ).catch(() => {});
+              }
               reject(
                 new Error(
                   `Local request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds Local connect state: ${localConnectionState}`

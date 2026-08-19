@@ -66,6 +66,19 @@ const CLOUD_ONLY_TRANSPORT_MARKERS = Object.freeze({
 // for robots the plugin never attempts a LAN connection to.
 const UNEXPLAINED_REMOTE_REASON = "remote-device";
 
+// A local socket that completed its TCP handshake and then answered nothing.
+// This is a different failure from a connect that failed, and conflating the
+// two is what made it invisible: the port is reachable, so nothing looks
+// broken, while every request still dies of silence at its timeout.
+const LOCAL_MUTE_REMOTE_REASON = "local-socket-connected-but-mute";
+
+// Consecutive local timeouts tolerated before the LAN is written off for a
+// robot. One is noise — a single lost frame on a healthy network is ordinary,
+// and exiling that robot to the cloud for it would be worse than the bug this
+// bound fixes. Three in a row on a socket that keeps reporting itself
+// connected is not noise.
+const LOCAL_MUTE_TIMEOUT_LIMIT = 3;
+
 // Minimum gap between live-room map fetch attempts while cleaning. The map
 // payload is an order of magnitude heavier than get_status, so it rides a
 // slower cadence than the active status polls — but 20s meant a robot could
@@ -330,6 +343,12 @@ class Roborock {
     // see markDeviceRemote.
     /** @type {Map<string, string>} */
     this.remoteDeviceReasons = new Map();
+    // Consecutive local request timeouts per robot, counted only while the
+    // local client still reports itself connected. Reset by any local reply:
+    // the count has to mean "this socket answers nothing", not "this socket has
+    // ever timed out".
+    /** @type {Map<string, number>} */
+    this.localMuteTimeouts = new Map();
 
     this.name = "roborock";
     this.deviceNotify = null;
@@ -1421,6 +1440,8 @@ class Roborock {
       "udp-broadcast-discovery": "UDP broadcast discovery found the vacuum",
       "marked-remote-after-connect-failure":
         "local TCP connection failed and the vacuum was marked remote",
+      [LOCAL_MUTE_REMOTE_REASON]:
+        "the local TCP socket connected but the vacuum answered nothing on it, so the cloud is used instead",
       [b01Q7Adapter.B01_CLOUD_ONLY_REMOTE_REASON]:
         "this model speaks only Roborock's cloud protocol, which has no LAN control surface",
     };
@@ -2957,6 +2978,63 @@ class Roborock {
       isRemote: true,
       remoteReason,
     });
+  }
+
+  /**
+   * A local reply arrived, so the socket is not mute. Called from the one place
+   * a local response lands, so the count measures the socket's current silence
+   * rather than its history.
+   *
+   * @param {string} duid
+   * @returns {void}
+   */
+  noteLocalRequestSucceeded(duid) {
+    if (!duid) {
+      return;
+    }
+
+    this.localMuteTimeouts.delete(duid);
+  }
+
+  /**
+   * A local request timed out on a socket that reported itself connected. After
+   * LOCAL_MUTE_TIMEOUT_LIMIT of those in a row the LAN is written off for this
+   * robot and the cloud is used instead, because the alternative is paying the
+   * full timeout on every poll and every command for the life of the process.
+   *
+   * @param {string} duid
+   * @param {string} [method] the request that died, for the log line
+   * @returns {Promise<void>}
+   */
+  async noteLocalRequestTimedOut(duid, method) {
+    if (!duid) {
+      return;
+    }
+
+    const failures = (this.localMuteTimeouts.get(duid) || 0) + 1;
+    this.localMuteTimeouts.set(duid, failures);
+
+    if (failures < LOCAL_MUTE_TIMEOUT_LIMIT) {
+      return;
+    }
+
+    // Already written off: say it once, then stay quiet. The timeouts keep
+    // coming until something upstream changes, and a warning per poll would
+    // bury the one line that explains the switch.
+    if (this.remoteDevices.has(duid)) {
+      return;
+    }
+
+    this.log.warn(
+      `The local connection to ${this.describeDevice(duid)} connected but answered nothing: ` +
+        `${failures} requests in a row timed out${method ? ` (last: ${method})` : ""}. ` +
+        `Using the Roborock cloud for this robot instead. The LAN port is reachable, ` +
+        `so this is not a blocked port — the robot is not replying on it. On a segmented ` +
+        `network, check that the reply path back to Homebridge is open, not just the ` +
+        `outbound one.`
+    );
+
+    await this.markDeviceRemote(duid, LOCAL_MUTE_REMOTE_REASON);
   }
 
   /**
@@ -4960,6 +5038,8 @@ module.exports = {
   Roborock,
   CLOUD_ONLY_TRANSPORT_MARKERS,
   UNEXPLAINED_REMOTE_REASON,
+  LOCAL_MUTE_REMOTE_REASON,
+  LOCAL_MUTE_TIMEOUT_LIMIT,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
