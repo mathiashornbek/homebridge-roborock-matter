@@ -1835,8 +1835,13 @@ export default class RoborockMatterVacuumAccessory {
           modeTags: [{ value: RVC_CLEAN_MODE_TAG_MOP }],
         },
         {
-          // Matter has no dedicated "vacuum then mop" tag, so combine the two
-          // standard RVC Clean Mode tags instead of an undefined tag value.
+          // Matter does have a dedicated tag for this -- VacuumThenMop, 0x4003 --
+          // and this mode does not use it. Two reasons, both about other people's
+          // homes rather than correctness: SupportedModes is fixed at commissioning,
+          // so swapping the tag would make every existing robot need re-pairing
+          // before its mode picker worked again; and Apple renders the tag rather
+          // than the label, so the change is visible and would have to be worth it.
+          // Combining the 2 standard tags is legal and is what ships today.
           label: "Vacuum + Mop",
           mode: CLEAN_MODE_VACUUM_AND_MOP,
           modeTags: [
@@ -2341,7 +2346,13 @@ export default class RoborockMatterVacuumAccessory {
     const operationalState = this.getOperationalState();
 
     const cluster: Record<string, unknown> = {
-      // RVC Operational State requires PhaseList and CurrentPhase to be null.
+      // Null by choice, not by rule. Both attributes are mandatory on the RVC
+      // Operational State cluster but nullable, and null is the spec's own way
+      // of saying "this mode has no phases". 1.4.58 removed a version that used
+      // phase changes as a refresh hack and flapped them at every Apple Home hub;
+      // the nulls are what replaced it. Naming real phases -- washing the mop,
+      // drying, emptying the bin -- is open, and is the one place those dock
+      // states could be expressed at all. It has not been measured on Apple Home.
       phaseList: null,
       currentPhase: null,
       // Advertise operational state IDs without labels. Apple Home stops

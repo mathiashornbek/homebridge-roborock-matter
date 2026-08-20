@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.12.5
+
+**3 things this project told you about the Matter specification were not in the Matter specification.**
+
+An audit of the plugin's own claims against the specification text found 3 statements that were invented rather than read. None of them changes what the plugin does; all 3 were being used as reasons not to build something, which makes them expensive to leave standing.
+
+`buildOperationalStateCluster` said "RVC Operational State requires PhaseList and CurrentPhase to be null". It does not. Both attributes are mandatory on that cluster and both are nullable, and null is the specification's own way of saying the current mode has no phases. The real reason they are null is history: 1.4.58 removed a version that changed phases as a refresh trick and flapped them at every Apple Home hub. That is an argument against flapping phases, not against having them, and it matters because `PhaseList` is free-form text up to 32 entries and is the one place the dock's own jobs could be named.
+
+Which is also why the settings page no longer says mop drying "cannot be reported by any plugin". It has no operational state of its own, which is what the sentence should have said. Whether Apple Home would draw a phase is unmeasured, and the description no longer implies the question is closed.
+
+The Vacuum + Mop clean mode carried a comment saying Matter has no dedicated tag for it. Matter has had `VacuumThenMop`, 0x4003, since the cluster was defined. This release does not switch to it, and the comment now says why: `SupportedModes` is fixed at commissioning, so changing a tag would leave every already-paired robot needing a re-pair before its mode picker worked again. Combining the 2 standard tags is legal, it is what has always shipped, and it stays.
+
+No behaviour changes in this release.
+
 ## 3.12.4
 
 **A correction. For one release this README said the opposite of the truth about how your robots reach Apple Home.**

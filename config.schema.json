@@ -100,7 +100,7 @@
       },
       "enableMatterExtendedOperationalStates": {
         "title": "Enable Matter Dock & Returning Status",
-        "description": "The extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. On by default. Matter fixes an accessory's capabilities at commissioning, so a robot paired before 3.12.0 needs one remove-and-re-pair in Apple Home before these appear. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no equivalent in the Matter robot vacuum specification, so it cannot be reported by any plugin.",
+        "description": "The extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. On by default. Matter fixes an accessory's capabilities at commissioning, so a robot paired before 3.12.0 needs one remove-and-re-pair in Apple Home before these appear. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no operational state of its own in the Matter robot vacuum specification, so it is not reported here.",
         "type": "boolean",
         "default": true
       },
