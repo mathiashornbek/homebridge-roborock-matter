@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.14.2
+
+**3.14.0 froze the operational state on the tile, and it did it to every robot that was not actively doing a dock job. Fix immediately.**
+
+Measured on a real mop run, 20 minutes after the release went out. The robot was asked to mop the hall from Apple Home. It went to the dock, wetted its mop, drove out and mopped — and the tile went on saying "Cleaning Mop" for 5 minutes while it worked, and would have gone on saying it until the next time the dock did something.
+
+The cause is a rule in Matter's own server implementation, and this project should have read it before shipping. From matter.js's `OperationalStateServer`:
+
+```
+if (currentPhase === null || currentPhase < 0 || currentPhase >= this.state.phaseList.length) {
+  throw new ImplementationError(`Current phase ${currentPhase} is out of bounds ...`);
+}
+```
+
+A null `CurrentPhase` beside a non-empty `PhaseList` throws. Homebridge swallows the throw, so the **entire cluster write** is discarded without a word in the log — not just the phase, but the operational state, the battery and the fault attribute with it. The controller keeps whatever it last accepted.
+
+3.14.0 published a constant 4-entry list with a null phase whenever the dock was idle, which is nearly all the time. So the last write any controller accepted was the last one where the dock genuinely was emptying, washing or updating, and everything after it was thrown on the floor.
+
+The list is now present only while there is a phase to point into, and absent otherwise. That is the specification's own encoding for "the current mode has no phases", so it is also the more faithful reading; the anti-flap argument that made the list a constant is untouched, because the list is still either that exact constant or nothing at all.
+
+**The tests did not catch it because they publish into a mock that accepts anything.** That is the same shape of gap as 3.12.1, one layer further out: the logic was right and the contract was not. There is now a test that encodes matter.js's rule directly, quoting it, and walks every state a robot can be in plus a whole run frame by frame, asserting the pair is one the real server would take. It fails 16 times against 3.14.0.
+
 ## 3.14.1
 
 **The publish line now names the phase, so 3.14.0 can actually be measured.**

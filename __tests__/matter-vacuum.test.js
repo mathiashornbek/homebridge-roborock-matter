@@ -863,12 +863,11 @@ describe("Matter operational state", () => {
     const platform = createPlatform();
     const { accessory } = createAccessory(platform);
 
-    expect(accessory.clusters.rvcOperationalState.phaseList).toEqual([
-      "Emptying dust bin",
-      "Washing mop",
-      "Drying mop",
-      "Updating maps",
-    ]);
+    // An idle dock publishes no list at all. That is not just tidiness:
+    // matter.js throws on a null CurrentPhase beside a non-empty PhaseList,
+    // Homebridge swallows the throw, and the whole cluster write is lost. See
+    // __tests__/the-dock-says-what-it-is-doing.test.js, which quotes the rule.
+    expect(accessory.clusters.rvcOperationalState.phaseList).toBeNull();
     expect(accessory.clusters.rvcOperationalState.currentPhase).toBeNull();
   });
 

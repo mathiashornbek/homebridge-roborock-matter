@@ -113,11 +113,145 @@ async function publishWith(status, config) {
   return { cluster: lastCluster(matterUpdates), platform };
 }
 
+describe("matter.js will reject the write, so the write must obey matter.js", () => {
+  // THE TEST THAT SHOULD HAVE EXISTED IN 3.14.0.
+  //
+  // Every other test in this file publishes into a mock, which cheerfully
+  // accepts anything. The real server does not. From matter.js's own
+  // `OperationalStateServer`, read off the Homebridge host:
+  //
+  //   #assertCurrentPhase(currentPhase) {
+  //     if (this.state.phaseList === null || this.state.phaseList.length === 0) {
+  //       if (currentPhase === null) return;
+  //       throw new ImplementationError("Cannot set current phase to an other
+  //         value than null when phase list is empty");
+  //     }
+  //     if (currentPhase === null || currentPhase < 0 ||
+  //         currentPhase >= this.state.phaseList.length) {
+  //       throw new ImplementationError(`Current phase ${currentPhase} is out
+  //         of bounds for phase list of length ${this.state.phaseList.length}`);
+  //     }
+  //   }
+  //
+  // A null CurrentPhase beside a non-empty PhaseList throws. Homebridge
+  // swallows the throw, so the ENTIRE cluster write is silently discarded and
+  // the controller keeps whatever it last accepted.
+  //
+  // 3.14.0 published a constant list with a null phase whenever the dock was
+  // idle — which is nearly always. Measured on a real mop run: the tile read
+  // "Cleaning Mop" for 5 minutes while the robot mopped the hall, because the
+  // last write matter.js had accepted was the one where the dock really was
+  // washing the mop. Every operational state after that was thrown away. Not
+  // the phase — the state, the battery, the fault, all of it.
+  //
+  // So this test does not check the feature. It checks that what the plugin
+  // hands the Matter layer is something the Matter layer will take.
+  const EVERY_SITUATION = [
+    { state: ROBOROCK_STATE_IDLE },
+    { state: ROBOROCK_STATE_CLEANING },
+    { state: ROBOROCK_STATE_CLEANING, dry_status: 0 },
+    { state: ROBOROCK_STATE_CHARGING, battery: 100 },
+    { state: ROBOROCK_STATE_CHARGING, battery: 40 },
+    { state: ROBOROCK_STATE_EMPTYING },
+    { state: ROBOROCK_STATE_WASHING_MOP },
+    { state: ROBOROCK_STATE_MAPPING },
+    { state: ROBOROCK_STATE_CHARGING, dry_status: 1 },
+    { state: ROBOROCK_STATE_CHARGING, dry_status: 0 },
+    { state: ROBOROCK_STATE_WASHING_MOP, dry_status: 1 },
+    { state: 6 },
+    { state: 10 },
+    { state: 12, error_code: 8 },
+    { state: 15 },
+    { state: 26 },
+    { state: ROBOROCK_STATE_CHARGING, dock_error_status: 38 },
+    {},
+  ];
+
+  test.each(EVERY_SITUATION)(
+    "the pair is one matter.js accepts: %o",
+    async (status) => {
+      const { cluster } = await publishWith({ battery: 80, ...status });
+      const { phaseList, currentPhase } = cluster;
+
+      // An empty array is rejected outright by the first branch above unless
+      // the phase is null, and it says nothing anyone wants to hear. Never
+      // publish one.
+      expect(phaseList).not.toEqual([]);
+
+      if (phaseList === null) {
+        expect(currentPhase).toBeNull();
+        return;
+      }
+
+      expect(Array.isArray(phaseList)).toBe(true);
+      expect(phaseList.length).toBeGreaterThan(0);
+      expect(currentPhase).not.toBeNull();
+      expect(Number.isInteger(currentPhase)).toBe(true);
+      expect(currentPhase).toBeGreaterThanOrEqual(0);
+      expect(currentPhase).toBeLessThan(phaseList.length);
+    }
+  );
+
+  test("and it holds across a whole run, frame by frame, on the live path", async () => {
+    // The static check above builds each state from a fresh accessory. This
+    // one carries state forward the way a real robot does, because the
+    // 3.14.0 failure only appeared on the TRANSITION out of a dock job.
+    const { vacuum, matterUpdates } = buildVacuum({
+      status: { state: ROBOROCK_STATE_CHARGING, battery: 100 },
+    });
+
+    const run = [
+      { state: ROBOROCK_STATE_WASHING_MOP },
+      { state: ROBOROCK_STATE_CLEANING, battery: 99 },
+      { state: ROBOROCK_STATE_CHARGING, charge_status: 1, dry_status: 1 },
+      { battery: 100 },
+      { dry_status: 0 },
+      { state: ROBOROCK_STATE_EMPTYING },
+      { state: ROBOROCK_STATE_IDLE },
+    ];
+
+    let checked = 0;
+    for (const frame of run) {
+      await vacuum.notifyDeviceUpdater("CloudMessage", [frame]);
+      const cluster = lastCluster(matterUpdates);
+      if (!cluster) {
+        continue;
+      }
+      const { phaseList, currentPhase } = cluster;
+      if (phaseList === null) {
+        expect(currentPhase).toBeNull();
+      } else {
+        expect(currentPhase).not.toBeNull();
+        expect(currentPhase).toBeLessThan(phaseList.length);
+      }
+      checked += 1;
+    }
+
+    expect(checked).toBe(run.length);
+  });
+
+  test("the list is assigned before the index, because matter.js validates in that order", () => {
+    // matter.js reads `this.state.phaseList` while validating currentPhase, so
+    // an object that names the index first would be validated against the
+    // PREVIOUS list. Leaving a 4-entry list for none would then throw on the
+    // way out. Key order in the published object is therefore load-bearing.
+    const source = require("fs").readFileSync(
+      require.resolve("../src/matter_vacuum_accessory.ts"),
+      "utf8"
+    );
+    const listAt = source.indexOf("phaseList: dockPhase === null");
+    const phaseAt = source.indexOf("currentPhase: dockPhase,");
+
+    expect(listAt).toBeGreaterThan(-1);
+    expect(phaseAt).toBeGreaterThan(listAt);
+  });
+});
+
 describe("the phase list is announced and never moves", () => {
-  test("it is exactly the dock's 4 jobs, in order", async () => {
+  test("it is exactly the dock's 4 jobs, in order, whenever it is present", async () => {
     const { cluster } = await publishWith({
-      state: ROBOROCK_STATE_CHARGING,
-      battery: 100,
+      state: ROBOROCK_STATE_WASHING_MOP,
+      battery: 90,
     });
 
     expect(cluster.phaseList).toEqual(PHASES);
@@ -142,14 +276,16 @@ describe("the phase list is announced and never moves", () => {
       {},
     ];
 
-    const seen = [];
+    const seen = new Set();
     for (const status of everyState) {
       const { cluster } = await publishWith({ battery: 80, ...status });
-      seen.push(JSON.stringify(cluster.phaseList));
+      if (cluster.phaseList !== null) {
+        seen.add(JSON.stringify(cluster.phaseList));
+      }
     }
 
-    expect(new Set(seen).size).toBe(1);
-    expect(JSON.parse(seen[0])).toEqual(PHASES);
+    expect(seen.size).toBe(1);
+    expect(JSON.parse([...seen][0])).toEqual(PHASES);
   });
 
   test("the published list is a copy, so one publish cannot corrupt the next", async () => {
@@ -158,7 +294,7 @@ describe("the phase list is announced and never moves", () => {
     // which is the failure the constant exists to prevent. Each publish gets
     // its own array.
     const { vacuum, matterUpdates } = buildVacuum({
-      status: { state: ROBOROCK_STATE_CHARGING, battery: 100 },
+      status: { state: ROBOROCK_STATE_WASHING_MOP, battery: 100 },
     });
 
     await vacuum.updateMatterStateFromRoborock("test");
@@ -169,7 +305,7 @@ describe("the phase list is announced and never moves", () => {
 
     // A publish only happens when something changed, so give it something.
     await vacuum.notifyDeviceUpdater("CloudMessage", [
-      { state: ROBOROCK_STATE_WASHING_MOP },
+      { state: ROBOROCK_STATE_EMPTYING },
     ]);
     expect(matterUpdates.length).toBeGreaterThan(publishedSoFar);
 
@@ -354,6 +490,16 @@ describe("the escape hatch", () => {
     expect(cluster.currentPhase).toBe(PHASE_DRYING);
   });
 
+  test("an idle dock publishes no list at all, not an unused one", async () => {
+    const { cluster } = await publishWith({
+      state: ROBOROCK_STATE_CHARGING,
+      battery: 100,
+    });
+
+    expect(cluster.phaseList).toBeNull();
+    expect(cluster.currentPhase).toBeNull();
+  });
+
   test("`true` written out explicitly behaves the same as unset", async () => {
     const { cluster } = await publishWith(
       { state: ROBOROCK_STATE_CHARGING, battery: 100, dry_status: 1 },
@@ -476,15 +622,17 @@ describe("drying survives the journey from a live message", () => {
       [{ battery: 100 }, null],
     ];
 
-    const lists = [];
+    const lists = new Set();
     for (const [frame, expected] of sequence) {
       await vacuum.notifyDeviceUpdater("CloudMessage", [frame]);
       const cluster = lastCluster(matterUpdates);
       expect(cluster.currentPhase).toBe(expected);
-      lists.push(JSON.stringify(cluster.phaseList));
+      if (cluster.phaseList !== null) {
+        lists.add(JSON.stringify(cluster.phaseList));
+      }
     }
 
-    expect(new Set(lists).size).toBe(1);
+    expect(lists.size).toBe(1);
   });
 });
 

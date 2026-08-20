@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 1265 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 1286 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -162,7 +162,7 @@ A Roborock dock works harder than the robot does. It empties the dust bin, washe
 
 Matter has an operational state for 3 of those 4, and this plugin has published all 3 since 3.12.0. **There is no operational state for drying, in any revision of the specification.** The only place the fact can be expressed is the same cluster's `PhaseList` and `CurrentPhase` attributes, and since 3.14.0 that is where it goes: the dock's 4 jobs are announced as a fixed list of phases, and the current one moves between them.
 
-The list never changes. That is deliberate and it is the whole safety argument: an early version of this plugin used phase changes as a refresh trick, flapped them against every Apple Home hub in the house, and 1.4.58 removed it by setting both attributes to null. A list that never moves cannot flap. Only `CurrentPhase` does, and it steps through a mop run once — washing, then drying for as long as the dock takes, then nothing.
+The list is either that fixed set of 4 or absent entirely, and never anything else. It is absent whenever the dock is idle, which is both the specification's own encoding for "this mode has no phases" and the only shape Matter's server implementation will accept: a null phase beside a non-empty list is refused, and 3.14.2 exists because 3.14.0 got that wrong and silently froze the operational state on the tile. What the list never does is change its contents. That is deliberate and it is the whole safety argument: an early version of this plugin used phase changes as a refresh trick, flapped them against every Apple Home hub in the house, and 1.4.58 removed it by setting both attributes to null. Only `CurrentPhase` moves within a run — washing, then drying for as long as the dock takes, then nothing.
 
 Drying is detected on both protocols. A classic S- or Q-series robot with a drying dock reports it itself; a B01/Q7 reports its own air-drying status, which the plugin previously discarded when it mapped that state to "docked" so the tile would not claim the robot was busy. It still maps it that way — a drying dock must not look like a working robot, or Apple Home may refuse it a Start command — but the fact now survives the mapping as a phase.
 
@@ -240,7 +240,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 1265 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 1286 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 

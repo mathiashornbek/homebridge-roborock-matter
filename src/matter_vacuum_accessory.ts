@@ -2820,6 +2820,9 @@ export default class RoborockMatterVacuumAccessory {
 
   private buildOperationalStateCluster(): Record<string, unknown> {
     const operationalState = this.getOperationalState();
+    const dockPhase = this.areDockPhasesEnabled()
+      ? this.getCurrentPhase()
+      : null;
 
     const cluster: Record<string, unknown> = {
       // The dock's own jobs, named. Both attributes are mandatory on this
@@ -2833,8 +2836,32 @@ export default class RoborockMatterVacuumAccessory {
       // reason to try: it runs for hours after every mop clean and the
       // specification gives it no operational state, so a phase is the only
       // place it can be expressed at all.
-      phaseList: this.areDockPhasesEnabled() ? [...RVC_PHASE_LIST] : null,
-      currentPhase: this.areDockPhasesEnabled() ? this.getCurrentPhase() : null,
+      // THE LIST IS PRESENT ONLY WHILE THERE IS A PHASE, AND THAT IS NOT A
+      // STYLE CHOICE — matter.js refuses the write otherwise.
+      //
+      // `OperationalStateServer.#assertCurrentPhase` throws
+      // ImplementationError on a null CurrentPhase whenever PhaseList is
+      // non-empty: "Current phase null is out of bounds for phase list of
+      // length 4". Homebridge swallows that throw, so the whole cluster write
+      // is silently rejected and the controller keeps whatever it last
+      // accepted. 3.14.0 shipped a constant list with a null phase whenever
+      // the dock was idle, which is nearly always — so from the moment a robot
+      // finished washing its mop, its operational state froze in Apple Home.
+      // Measured on a real run: the tile read "Cleaning Mop" for 5 minutes
+      // while the robot mopped the hall, and would have read it until the next
+      // dock job.
+      //
+      // Null list plus null phase is the specification's own encoding for "the
+      // current mode has no phases", so this is also the more faithful
+      // reading. The anti-flap argument that made the list a constant still
+      // holds and the constant is still the only source: the list either is
+      // that constant or is absent, and never anything else.
+      //
+      // Order matters and is load-bearing. matter.js reads `this.state
+      // .phaseList` while validating `currentPhase`, so phaseList MUST be
+      // assigned first — leaving the list, then the index, in that order.
+      phaseList: dockPhase === null ? null : [...RVC_PHASE_LIST],
+      currentPhase: dockPhase,
       // Advertise operational state IDs without labels. Apple Home stops
       // commissioning ("Connecting" forever) when the list carries labels or
       // manufacturer-range IDs, so only bare IDs are exposed here.
