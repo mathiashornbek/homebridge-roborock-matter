@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.12.3
+
+**A robot asked to mop said it was vacuuming — for the 40 seconds it spent driving home.**
+
+Mathias asked his S8 Pro Ultra for a mop run from Apple Home and watched the tile report Mop, then Vacuum + Mop, then Mop again. The log is unambiguous: `cleanMode=1` at 16:55:16, `cleanMode=2` at 16:56:16 the second it was sent back to the dock, `cleanMode=1` at 16:56:54 once docked. He had asked for one thing.
+
+The robot was not misbehaving. A classic S- and Q-series robot does not report its clean type, so the plugin derives it: fan power 105 means the fan is off, which means mop-only, and otherwise an active water level means vacuum + mop. That derivation is a single sample, and sending a robot home resets its fan power while leaving the water box configured — which is exactly the signature it reads as vacuum + mop.
+
+The derivation is now frozen while the robot is driving home, and only then. It stays authoritative for the rest of a run, because a mode genuinely changed in the Roborock app mid-clean must still reach Apple Home; that is a real case and it has its own test. A first attempt held the type for the whole run and broke it, which is how the scope got settled. Robots that report their clean type directly — the B01 and Q7 generation — were never affected either way, because their answer is not a guess.
+
+## 3.12.2
+
+**Flipping debug mode could switch off 9 HomeKit sensors nobody had touched.**
+
+`autoSave()` and the device-row toggle both went through `saveCredentials()`, which spread the entire settings form into the patch. The Apple Home checkboxes sat in their own panel with their own Save button and deliberately had no autoSave binding, so the intended flow was tick-then-Save. But any change to debug mode, region, email or a device row committed whatever those 4 keys happened to be in the DOM at that moment.
+
+The signature is in the config diffs: `debugMode` false to true and `enableHomeKitStateSensors` true to false in the same write. One debug-mode toggle, and an untouched checkbox rode along and unpublished 9 HAP accessories without anyone pressing Save. It happened 3 times in one day.
+
+`updatePluginConfig` is a merge, so a key left out of the patch keeps its saved value. An implicit save now writes only the fields whose own controls triggered it. The account password is off that list too, for the same reason `login()` deletes it: blurring the email field should not write a cleartext password back into `config.json`.
+
+What this does not claim: nothing unticks that box on its own. `syncFeatureDependencies` is empty and no path outside `loadConfig` assigns to `.checked`. The bug was never a checkbox with a mind of its own — it was an unrelated control persisting it.
+
+The new test enumerates the rule rather than the case: every control wired to `autoSave()` must have its key on the list, or that control silently stops saving.
+
 ## 3.12.1
 
 **The empty-tank warning could never fire on a real robot, and it took the Roborock app saying "Out of water" next to a silent tile to prove it.**

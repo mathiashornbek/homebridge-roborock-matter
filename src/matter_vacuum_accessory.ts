@@ -1905,7 +1905,25 @@ export default class RoborockMatterVacuumAccessory {
     const inCleaningRun = this.isInCleaningRunMode(this.getOperationalState());
     this.trackAppliedCleanTypeRun(inCleaningRun);
 
-    if (!this.selectedCleanModeNeedsApply && inCleaningRun) {
+    // The wind-down is not a mode change, and on a classic robot it looks
+    // exactly like one.
+    //
+    // Measured 20 Aug on an a70 asked to mop: it reported Mop while cleaning,
+    // vacuum+mop the second it was sent home, then Mop again once docked —
+    // 1, 2, 1 on a single run, with the user having asked for one thing. The
+    // robot was fine. Sending it home resets its fan power while the water
+    // box stays configured, and "fan not off plus water on" is precisely the
+    // signature getLiveCleanType() reads as vacuum+mop.
+    //
+    // So the derivation is frozen while the robot is driving home. It stays
+    // authoritative for the rest of a run, because a mode genuinely changed
+    // in the Roborock app mid-clean must still reach Apple Home — that is a
+    // real case with a test of its own. A robot that reports its clean type
+    // directly is unaffected either way: its answer is not a guess.
+    const windingDown =
+      this.getOperationalState() === RVC_OPERATIONAL_STATE.SEEKING_CHARGER;
+
+    if (!this.selectedCleanModeNeedsApply && inCleaningRun && !windingDown) {
       const liveCleanType = this.getLiveCleanType();
       if (
         liveCleanType !== null &&
@@ -1930,6 +1948,9 @@ export default class RoborockMatterVacuumAccessory {
     if (
       this.isFanPowerCleanModesEnabled() &&
       !this.selectedCleanModeNeedsApply &&
+      // Same reason as above: the fan power the robot reports on its way home
+      // is the one it reset to, not the one it cleaned with.
+      !windingDown &&
       selected !== CLEAN_MODE_MOP &&
       selected !== CLEAN_MODE_VACUUM_AND_MOP
     ) {

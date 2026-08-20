@@ -64,6 +64,7 @@ const CLEAN_MODE_VACUUM_MAX = 6;
 
 const FAN_POWER_TURBO = 103;
 const FAN_POWER_MAX = 104;
+const FAN_POWER_OFF = 105;
 
 const WATER_BOX_OFF = 200;
 /** Any level other than "off" is what the derivation reads as vacuum+mop. */
@@ -590,5 +591,84 @@ describe("an apply that resolved without confirming the type is not knowledge", 
     const pin = body.indexOf("this.appliedCleanTypePin = {");
     // The check comes BEFORE the pin is taken, not as a later correction.
     expect(withdrawal).toBeLessThan(pin);
+  });
+});
+
+describe("the drive home is not a mode change", () => {
+  // Replayed from Mathias' own log, 20 Aug, Stueetage (a70), asked to mop:
+  //
+  //   16:55:15  clean mode request 1 (Mop), run mode request 1, Mop applied
+  //   16:55:16  publish … cleanMode=1
+  //   16:55:31  publish … cleanMode=1, fault=68
+  //   16:56:15  sent back to dock
+  //   16:56:16  publish … operationalState=64, cleanMode=2   <-- wrong
+  //   16:56:54  publish … operationalState=66, cleanMode=1
+  //
+  // 1, 2, 1 on one run, and he had asked for exactly one thing. The robot was
+  // not misbehaving: sending it home resets its fan power while the water box
+  // stays configured, and "fan not off plus water on" is the signature
+  // getLiveCleanType() reads as vacuum+mop on a classic robot.
+  //
+  // Roborock state 6 is "returning to dock", which the plugin maps to Matter
+  // SEEKING_CHARGER (64). While that is the state, the derivation is frozen.
+
+  const ROBOROCK_STATE_RETURNING = 6;
+
+  test("a mop run stays Mop while the robot drives home", async () => {
+    const harness = createHarness({
+      initialStatus: { fan_power: FAN_POWER_OFF, water_box_mode: WATER_BOX_ON },
+    });
+    await harness.handlers.rvcCleanMode.changeToMode({
+      newMode: CLEAN_MODE_MOP,
+    });
+    await settle();
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+
+    // Sent home. Fan power is reset by the robot; the water box is untouched.
+    harness.set({
+      state: ROBOROCK_STATE_RETURNING,
+      fan_power: FAN_POWER_MAX,
+    });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+  });
+
+  test("and it is still Mop once docked", async () => {
+    const harness = createHarness({
+      initialStatus: { fan_power: FAN_POWER_OFF, water_box_mode: WATER_BOX_ON },
+    });
+    await harness.handlers.rvcCleanMode.changeToMode({
+      newMode: CLEAN_MODE_MOP,
+    });
+    await settle();
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    harness.set({ state: ROBOROCK_STATE_RETURNING, fan_power: FAN_POWER_MAX });
+    harness.set({ state: ROBOROCK_STATE_CHARGING });
+
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+  });
+
+  test("a mode genuinely changed mid-clean still reaches Apple Home", async () => {
+    // The case the freeze must not eat. This is why the fix is scoped to the
+    // drive home and not to the whole run: a first attempt held the type for
+    // the entire run and broke exactly this.
+    const harness = createHarness({
+      initialStatus: {
+        fan_power: FAN_POWER_MAX,
+        water_box_mode: WATER_BOX_OFF,
+      },
+    });
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM);
+
+    // Water turned on in the Roborock app while the robot is still cleaning.
+    harness.set({ water_box_mode: WATER_BOX_ON });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM_AND_MOP);
   });
 });
