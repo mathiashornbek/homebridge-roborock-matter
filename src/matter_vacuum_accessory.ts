@@ -191,6 +191,7 @@ const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "matter_clean_type",
   "dock_error_status",
   "water_shortage_status",
+  "error_code",
 ] as const;
 
 const CLEAN_MODE_VACUUM = 0;
@@ -310,18 +311,251 @@ const RVC_OPERATIONAL_STATE = {
 const DOCK_ERROR_CLEAN_WATER_TANK_EMPTY = 38;
 
 /**
- * Matter's own RVC OperationalError codes. Only the two used here are named.
+ * Matter's own RVC OperationalError codes.
  *
- * 68 is `WaterTankEmpty` in the robot vacuum device type, and it is the
- * attribute Apple Home draws as a tap icon on the play button with a
- * localised "refill the water tank" — which is the whole reason this exists.
+ * 68 is `WaterTankEmpty`, and it is the attribute Apple Home draws as a tap
+ * icon on the play button with a localised "refill the water tank" — the one
+ * value in this list measured rendering on real hardware (a70, iOS 26.0).
  * 0 is `NoError` and has to be published too: an error attribute that is only
  * ever written when something is wrong never clears.
+ *
+ * WHY THIS LIST STOPS AT 71.
+ *
+ * The enum continues: the specification adds LowBattery (72),
+ * CannotReachTargetArea (73), DirtyWaterTankFull (74), DirtyWaterTankMissing
+ * (75), WheelsJammed (76), BrushJammed (77) and NavigationSensorObscured (78).
+ * Several of those name a Roborock fault exactly, and mapping to them would
+ * read better than the generic codes used below.
+ *
+ * They are all Matter 1.5. Everything from 0 to 71 has been in the cluster
+ * since 1.2. Nothing here establishes which revision Apple implements, and
+ * this file already carries one measurement of what Apple does with a value
+ * it does not recognise: a manufacturer-range id in `operationalStateList`
+ * leaves the tile in "Connecting" forever. A fault that renders as nothing
+ * would only cost the message; a fault that wedges the accessory costs the
+ * robot. Until somebody looks at a tile with 76 on it, the 1.2 set is what
+ * gets published, and the accurate 1.5 name goes in the log line instead.
  */
 const RVC_OPERATIONAL_ERROR = {
   NO_ERROR: 0,
+  UNABLE_TO_START_OR_RESUME: 1,
+  UNABLE_TO_COMPLETE_OPERATION: 2,
+  FAILED_TO_FIND_CHARGING_DOCK: 64,
+  STUCK: 65,
+  DUST_BIN_MISSING: 66,
+  DUST_BIN_FULL: 67,
   WATER_TANK_EMPTY: 68,
+  WATER_TANK_MISSING: 69,
+  WATER_TANK_LID_OPEN: 70,
+  MOP_CLEANING_PAD_MISSING: 71,
 } as const;
+
+/** Reverse lookup for the published id, so the log line says what was sent. */
+const RVC_OPERATIONAL_ERROR_NAMES: Readonly<Record<number, string>> = {
+  [RVC_OPERATIONAL_ERROR.UNABLE_TO_START_OR_RESUME]: "Unable to start",
+  [RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION]:
+    "Unable to complete operation",
+  [RVC_OPERATIONAL_ERROR.FAILED_TO_FIND_CHARGING_DOCK]:
+    "Failed to find charging dock",
+  [RVC_OPERATIONAL_ERROR.STUCK]: "Stuck",
+  [RVC_OPERATIONAL_ERROR.DUST_BIN_MISSING]: "Dust bin missing",
+  [RVC_OPERATIONAL_ERROR.DUST_BIN_FULL]: "Dust bin full",
+  [RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY]: "Clean water tank empty",
+  [RVC_OPERATIONAL_ERROR.WATER_TANK_MISSING]: "Water tank missing",
+  [RVC_OPERATIONAL_ERROR.WATER_TANK_LID_OPEN]: "Water tank lid open",
+  [RVC_OPERATIONAL_ERROR.MOP_CLEANING_PAD_MISSING]: "Mop pad missing",
+};
+
+/**
+ * Roborock's `error_code` translated into a Matter fault.
+ *
+ * The source table is `errorCodes` in roborockLib/lib/deviceFeatures.js, which
+ * this plugin has carried and polled since the fork and has never once shown
+ * to a user. A robot wedged under a sofa publishes operational state 3 (Error)
+ * and no reason, so Apple Home draws a robot that has stopped and cannot say
+ * why. That is what this fixes: the state was already there, only the reason
+ * was missing.
+ *
+ * `roborock` is the plugin's own text and is logged, not published — the
+ * `ErrorStateLabel`/`ErrorStateDetails` fields that could carry it are
+ * unmeasured on Apple Home and this attribute has a history of being brittle.
+ * `spec` names the Matter 1.5 code that would be more accurate than the id
+ * actually sent, and is logged for the same reason: so the next person can see
+ * what the mapping gave up and why.
+ */
+const ROBOROCK_ERROR_TO_MATTER: ReadonlyMap<
+  number,
+  { id: number; roborock: string; spec?: string }
+> = new Map([
+  [
+    1,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Laser sensor fault",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [2, { id: RVC_OPERATIONAL_ERROR.STUCK, roborock: "Collision sensor fault" }],
+  [
+    3,
+    {
+      id: RVC_OPERATIONAL_ERROR.STUCK,
+      roborock: "Wheel floating",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [
+    4,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Cliff sensor fault",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [
+    5,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Main brush blocked",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    6,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Side brush blocked",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    7,
+    {
+      id: RVC_OPERATIONAL_ERROR.STUCK,
+      roborock: "Wheel blocked",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [8, { id: RVC_OPERATIONAL_ERROR.STUCK, roborock: "Device stuck" }],
+  [
+    9,
+    {
+      id: RVC_OPERATIONAL_ERROR.DUST_BIN_MISSING,
+      roborock: "Dust bin missing",
+    },
+  ],
+  [
+    10,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Filter blocked",
+    },
+  ],
+  [
+    11,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Magnetic field detected",
+    },
+  ],
+  [
+    12,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_START_OR_RESUME,
+      roborock: "Low battery",
+      spec: "LowBattery (72)",
+    },
+  ],
+  [
+    13,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_START_OR_RESUME,
+      roborock: "Charging problem",
+    },
+  ],
+  [
+    14,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Battery failure",
+    },
+  ],
+  [
+    15,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Wall sensor fault",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [16, { id: RVC_OPERATIONAL_ERROR.STUCK, roborock: "Uneven surface" }],
+  [
+    17,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Side brush failure",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    18,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Suction fan failure",
+    },
+  ],
+  [
+    19,
+    {
+      id: RVC_OPERATIONAL_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "Unpowered charging station",
+    },
+  ],
+  [
+    20,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Unknown error",
+    },
+  ],
+  [
+    21,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Laser pressure sensor problem",
+    },
+  ],
+  [
+    22,
+    {
+      id: RVC_OPERATIONAL_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "Charge sensor problem",
+    },
+  ],
+  [
+    23,
+    {
+      id: RVC_OPERATIONAL_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "Dock problem",
+    },
+  ],
+  [
+    24,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_START_OR_RESUME,
+      roborock: "No-go zone or invisible wall detected",
+      spec: "CannotReachTargetArea (73)",
+    },
+  ],
+  [254, { id: RVC_OPERATIONAL_ERROR.DUST_BIN_FULL, roborock: "Bin full" }],
+  [
+    255,
+    {
+      id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "Internal error",
+    },
+  ],
+]);
 
 const RVC_OPERATIONAL_STATE_LIST = [
   RVC_OPERATIONAL_STATE.STOPPED,
@@ -707,6 +941,65 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
+   * The single fault to publish, or null when the robot has not said anything
+   * either way.
+   *
+   * Order matters and it is not arbitrary. An empty clean-water tank wins,
+   * because 68 is the one code measured rendering on a real tile and because
+   * `dock_error_status` describes the dock while `error_code` describes the
+   * robot — a docked robot can carry both at once and the tank is the one the
+   * user can act on. Below that comes the robot's own fault. Only when both
+   * are known and neither is a fault does this return NoError.
+   *
+   * Returning null rather than NoError for an unknown robot is the 3.12.1
+   * lesson applied to a second field: publishing NoError on the robot's behalf
+   * would clear a warning nobody has contradicted.
+   */
+  private getMatterFault(): { id: number; text: string } | null {
+    const tankEmpty = this.isWaterTankEmpty();
+    if (tankEmpty === true) {
+      return {
+        id: RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY,
+        text: "Clean water tank empty",
+      };
+    }
+
+    const errorCode = this.getNumberStatus("error_code");
+    if (errorCode !== null && errorCode !== 0) {
+      const mapped = ROBOROCK_ERROR_TO_MATTER.get(errorCode);
+      if (mapped) {
+        return {
+          id: mapped.id,
+          text: mapped.spec
+            ? `${mapped.roborock}, Roborock ${errorCode}; spec has ${mapped.spec}`
+            : `${mapped.roborock}, Roborock ${errorCode}`,
+        };
+      }
+
+      // An error_code this plugin has never seen. It is still a fault — the
+      // robot has stopped and Apple Home is already showing the Error state —
+      // so it gets the generic code rather than silence, and the raw number
+      // reaches the log where it can be reported. error_code 2105 on a Q7 is
+      // exactly this case and is why the branch exists.
+      return {
+        id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+        text: `unmapped Roborock error ${errorCode}`,
+      };
+    }
+
+    if (tankEmpty === false || errorCode === 0) {
+      // At least one source affirmatively says it is fine and neither says
+      // otherwise. Requiring both to be known would mean a robot that never
+      // reports `error_code` could never clear a tank warning after a refill,
+      // which is worse than no warning at all.
+      return { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" };
+    }
+
+    // Neither source has said anything.
+    return null;
+  }
+
+  /**
    * Whether the robot has reported enough for a sensor to claim anything.
    *
    * State 0 is not a Roborock state — the enum starts at 1 and the mapping
@@ -899,9 +1192,18 @@ export default class RoborockMatterVacuumAccessory {
     const fault = opState?.operationalError as
       | { errorStateId?: number }
       | undefined;
+    // The generic codes cover many Roborock faults, so the id alone no longer
+    // says what happened. The resolver's own text is re-read here rather than
+    // threaded through the cluster, because the cluster carries only what
+    // Matter defines.
+    const faultDetail = this.getMatterFault()?.text ?? "";
     const faultText =
       typeof fault?.errorStateId === "number" && fault.errorStateId !== 0
-        ? `, fault=${fault.errorStateId}${fault.errorStateId === RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY ? " (Clean water tank empty)" : ""}`
+        ? `, fault=${fault.errorStateId} (${RVC_OPERATIONAL_ERROR_NAMES[fault.errorStateId] ?? "unnamed"}${
+            faultDetail && faultDetail !== "Clean water tank empty"
+              ? `: ${faultDetail}`
+              : ""
+          })`
         : "";
 
     return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultText}.`;
@@ -1570,6 +1872,7 @@ export default class RoborockMatterVacuumAccessory {
     const waterShortageStatus = this.getNumberFromValue(
       status.water_shortage_status
     );
+    const errorCode = this.getNumberFromValue(status.error_code);
 
     // Fan power and clean type count as meaningful updates too. A suction or
     // mop-mode change made in the Roborock app (or chosen by SmartPlan) pushes
@@ -1594,6 +1897,7 @@ export default class RoborockMatterVacuumAccessory {
       matter_clean_type: matterCleanType,
       dock_error_status: dockErrorStatus,
       water_shortage_status: waterShortageStatus,
+      error_code: errorCode,
     };
     if (
       MEANINGFUL_LIVE_STATUS_FIELDS.every(
@@ -1644,6 +1948,12 @@ export default class RoborockMatterVacuumAccessory {
     // plumbing.
     this.rememberLiveStatus("dock_error_status", dockErrorStatus);
     this.rememberLiveStatus("water_shortage_status", waterShortageStatus);
+    // Same reasoning for the robot's own fault: a robot that gets stuck
+    // mid-run announces it in a live frame, and the HomeData snapshot behind
+    // it can be minutes old. Remembering it here is what makes a fault reach
+    // the tile while the robot is still stuck rather than after the next
+    // cloud refresh.
+    this.rememberLiveStatus("error_code", errorCode);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -2367,17 +2677,13 @@ export default class RoborockMatterVacuumAccessory {
     // The Matter fault attribute (`operationalError`), for the one condition
     // that has ever been seen to render. On by default since 3.12.0; see below
     // for what that is worth and what it costs.
-    if (this.isTankFaultReportingEnabled()) {
-      const tankEmpty = this.isWaterTankEmpty();
-      // Null means the robot has not said. Publishing NoError on its behalf
-      // would clear a warning nobody has contradicted, so an unknown tank
-      // leaves the attribute exactly where it was.
-      if (tankEmpty !== null) {
-        cluster.operationalError = {
-          errorStateId: tankEmpty
-            ? RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY
-            : RVC_OPERATIONAL_ERROR.NO_ERROR,
-        };
+    if (this.isFaultAttributeEnabled()) {
+      const fault = this.getMatterFault();
+      // Null means neither the dock nor the robot has said. Publishing NoError
+      // on their behalf would clear a warning nobody has contradicted, so an
+      // unknown robot leaves the attribute exactly where it was.
+      if (fault !== null) {
+        cluster.operationalError = { errorStateId: fault.id };
       }
     }
 
@@ -3272,7 +3578,16 @@ export default class RoborockMatterVacuumAccessory {
    * together would change what a setting already switched on by other people
    * does to their tile, which is how 3.3.0 got into trouble.
    */
-  private isTankFaultReportingEnabled(): boolean {
+  /**
+   * The `operationalError` attribute as a whole, tank and robot alike.
+   *
+   * The config key still says "Tank" because that is what it gated when it was
+   * introduced in 3.12.0 and renaming it would silently re-enable the
+   * attribute for anyone who had turned it off. The switch is no longer on the
+   * settings page either way; it survives for the person who needs to turn the
+   * attribute off from config.json after it misbehaves on some controller.
+   */
+  private isFaultAttributeEnabled(): boolean {
     return (
       this.platform.platformConfig.enableMatterTankFaultReporting !== false
     );
@@ -3594,6 +3909,12 @@ export default class RoborockMatterVacuumAccessory {
     if (dps) {
       const status: Record<string, unknown> = {};
 
+      // 120 is error_code. A B01/Q7 robot that hits a fault mid-run pushes a
+      // frame carrying only this field, and until 3.13.0 it was dropped here —
+      // the one transport on which a fault is most likely to arrive alone.
+      if (Object.prototype.hasOwnProperty.call(dps, "120")) {
+        status.error_code = dps["120"];
+      }
       if (Object.prototype.hasOwnProperty.call(dps, "121")) {
         status.state = dps["121"];
       }

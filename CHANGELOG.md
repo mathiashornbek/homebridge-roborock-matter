@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.13.0
+
+**Apple Home could always tell you a robot had stopped. It could never tell you why. Now it can.**
+
+A robot wedged under the sofa, a jammed wheel, a blocked brush, a dust bin someone took out and forgot to put back — Roborock reports every one of these as a numbered error code, and this plugin has polled that field on every cycle since the fork without ever showing it to anyone. The Matter side had half the answer already: operational state 3, Error, so the tile stops claiming the robot is Ready. The other half, the attribute that names the fault, has only ever carried 1 value out of 19 — an empty clean water tank.
+
+This release maps the rest. Stuck, wheel jammed or floating, main or side brush blocked, dust bin missing, dust bin full, an unpowered or unreachable dock, a flat battery, a no-go zone in the way, a dirty laser or cliff or wall sensor, a failed suction fan. An error code the plugin has never seen still reports a fault rather than silence, and the raw number reaches the Homebridge log so it can be reported and mapped properly — `error_code: 2105` on a Q7 is exactly that case and is why the branch exists.
+
+**The published codes deliberately stop at 71, and that is the interesting decision.** Matter 1.5 added names that fit several of these faults exactly: `WheelsJammed`, `BrushJammed`, `NavigationSensorObscured`. Everything up to 71 has been in the cluster since Matter 1.2. Nothing establishes which revision Apple implements, and this plugin has already measured what Apple Home does with a value it does not recognise in the neighbouring attribute — the tile sticks on "Connecting" forever, which is why `operationalStateList` ships bare ids and no labels. A robot reported as `Stuck` when the accurate word was `WheelsJammed` has lost a little precision. A robot whose tile will not finish connecting has lost the robot. The accurate 1.5 name is written to the log beside the code that was sent, so the day somebody watches a real tile with 76 on it, the mapping moves and the log already says which rows to move. A test fails if any future edit reaches for the accurate name without that measurement.
+
+An empty clean water tank still outranks the robot's own fault when both are true at once. It is the one code measured all the way to a rendered tile, and it is the one the person standing in the kitchen can fix in 30 seconds.
+
+**The plumbing got the same treatment the tank fields got in 3.12.1, for the same reason.** `error_code` was in neither the live cache nor, on the local transport, the list of dps keys the plugin reads — dps 120 was dropped on the floor, which on a B01 or Q7 is the single most likely way a fault arrives. Both are fixed, and the tests take the robot's own route through `notifyDeviceUpdater` rather than stubbing the status reader, because stubbing it is precisely how the tank feature passed its tests for 2 releases while being unable to fire.
+
+Nothing needs re-pairing. An error attribute is a live value, not a capability. `enableMatterTankFaultReporting: false` still switches the whole attribute off; the key name predates the wider mapping and is kept so that anyone who turned it off stays turned off.
+
 ## 3.12.5
 
 **3 things this project told you about the Matter specification were not in the Matter specification.**

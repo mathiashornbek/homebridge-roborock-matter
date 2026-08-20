@@ -117,8 +117,8 @@
         "default": true
       },
       "enableMatterTankFaultReporting": {
-        "title": "Show an Empty Water Tank on the Tile",
-        "description": "Publishes Matter's WaterTankEmpty fault when the robot reports no clean water, which Apple Home draws as a tap icon on the play button with a 'refill the water tank' message. On by default. This attribute was withdrawn twice before after field tests where Apple drew nothing, and a screenshot in issue #9 showing it rendered correctly is what brought it back. It does NOT force the robot into the Matter Error state, so a docked robot stays startable. No re-pairing needed. If your tile misbehaves after enabling it, switch it off again and restart.",
+        "title": "Say Why a Robot Stopped, on the Tile",
+        "description": "Publishes Matter's OperationalError attribute, which names the fault behind a stopped robot: an empty clean water tank (drawn by Apple Home as a tap icon on the play button with a 'refill the water tank' message), a robot stuck, a blocked brush or wheel, a missing or full dust bin, a dock it cannot reach. Without it Apple Home can show that the robot has stopped but never why. On by default. Turn it off only if a controller misbehaves on the attribute; this plugin withdrew it twice before 3.12.1 found that the tank fields it read had never reached the code at all.",
         "type": "boolean",
         "default": true
       },
