@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.12.1
+
+**The empty-tank warning could never fire on a real robot, and it took the Roborock app saying "Out of water" next to a silent tile to prove it.**
+
+3.10.0 added the `Water Tank Empty` sensor and 3.12.0 added the Matter fault on the tile. Both read `dock_error_status` and `water_shortage_status` through `getNumberStatus`, which checks the live cache first and the HomeData snapshot second. Neither field is in the snapshot, and the live handler remembered 7 fields — state, charge status, battery, clean area, clean time, fan power and clean type. The tank was not among them. So both features asked for a value that had nowhere to come from, got null, and correctly said nothing at all. On my own S8 Pro Ultra the raw frames carried `dock_error_status: 38` for days while the sensor stayed Open and the tile stayed clean.
+
+The live cache now remembers both fields. Nothing else changes.
+
+The reason no test caught it is worth writing down, because it is the sort of gap that repeats: every test for this feature stubbed `getVacuumDeviceStatus` and handed the code the value it was asking about. They proved the logic and nothing about the plumbing — a feature can be entirely correct and still be wired to a socket with no power in it. There are now 4 tests that take the robot's own route instead, pushing a live frame in through `notifyDeviceUpdater` with a snapshot that knows nothing about tanks, including the sparse-frame case where one message carries the tank and the next carries only the battery. All 4 fail against 3.12.0.
+
 ## 3.12.0
 
 **An empty water tank now shows on the tile, and the page of switches that used to decide such things is gone.**

@@ -175,6 +175,12 @@ const LIVE_STATUS_STALENESS_MS = 15 * 60 * 1000;
 // before the caller ever saw it. A hand-written field list in two places is
 // the same defect as a hand-written file list: adding a field to one of them
 // silently leaves the other behind.
+// The tank fields are in this list on purpose. A frame carrying only one of
+// them is meaningful: the gate returns early when nothing meaningful arrived,
+// so leaving them out would drop a tank-only frame before it was ever
+// remembered — and Roborock sends sparse frames as a matter of course. That
+// is the same bug 3.12.1 fixed one layer up, and the gate test caught the
+// second attempt at it.
 const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "state",
   "charge_status",
@@ -183,6 +189,8 @@ const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "clean_time",
   "fan_power",
   "matter_clean_type",
+  "dock_error_status",
+  "water_shortage_status",
 ] as const;
 
 const CLEAN_MODE_VACUUM = 0;
@@ -1558,6 +1566,10 @@ export default class RoborockMatterVacuumAccessory {
     const cleanTime = this.getNumberFromValue(status.clean_time);
     const fanPower = this.getNumberFromValue(status.fan_power);
     const matterCleanType = this.getNumberFromValue(status.matter_clean_type);
+    const dockErrorStatus = this.getNumberFromValue(status.dock_error_status);
+    const waterShortageStatus = this.getNumberFromValue(
+      status.water_shortage_status
+    );
 
     // Fan power and clean type count as meaningful updates too. A suction or
     // mop-mode change made in the Roborock app (or chosen by SmartPlan) pushes
@@ -1580,6 +1592,8 @@ export default class RoborockMatterVacuumAccessory {
       clean_time: cleanTime,
       fan_power: fanPower,
       matter_clean_type: matterCleanType,
+      dock_error_status: dockErrorStatus,
+      water_shortage_status: waterShortageStatus,
     };
     if (
       MEANINGFUL_LIVE_STATUS_FIELDS.every(
@@ -1615,6 +1629,21 @@ export default class RoborockMatterVacuumAccessory {
     // cleans (re)configured outside Apple Home surface within one update.
     this.rememberLiveStatus("fan_power", fanPower);
     this.rememberLiveStatus("matter_clean_type", matterCleanType);
+    // The tank fields, and this is why they have to be here.
+    //
+    // getNumberStatus reads the live cache first and the HomeData snapshot
+    // second. These 2 fields are not in the snapshot, so if the live cache
+    // does not remember them there is nowhere left to read them from and
+    // isWaterTankEmpty() answers null forever. That is exactly what happened:
+    // 3.10.0 shipped the Water Tank Empty sensor, 3.12.0 shipped the Matter
+    // fault, both were correct, and neither could ever fire on a real robot
+    // while the Roborock app showed "Out of water" on the same dock.
+    //
+    // The unit tests did not catch it because they stub
+    // getVacuumDeviceStatus, so they proved the logic and nothing about the
+    // plumbing.
+    this.rememberLiveStatus("dock_error_status", dockErrorStatus);
+    this.rememberLiveStatus("water_shortage_status", waterShortageStatus);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&

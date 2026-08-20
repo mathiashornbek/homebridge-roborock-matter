@@ -234,3 +234,118 @@ describe("an empty clean-water tank reaches the Apple Home tile", () => {
     }
   });
 });
+
+describe("the tank fields survive the journey from a live message", () => {
+  // The bug this file did not catch the first time, and the reason it did
+  // not. Every test above stubs `getVacuumDeviceStatus`, so they prove the
+  // logic and nothing about the plumbing. On a real robot the tank fields
+  // arrive only in live messages: `getNumberStatus` reads the live cache
+  // first and the HomeData snapshot second, and these 2 fields are in
+  // neither unless the live handler remembers them.
+  //
+  // It did not. 3.10.0's Water Tank Empty sensor and 3.12.0's Matter fault
+  // were both correct and both unable to fire, while the Roborock app showed
+  // "Out of water" on the same dock. This test takes the robot's own route.
+  function liveHarness() {
+    const matterUpdates = [];
+    // The snapshot knows nothing about tanks, exactly like the real one.
+    const platform = createPlatform({
+      status: { state: ROBOROCK_STATE_CHARGING, battery: 100 },
+      matterUpdates,
+    });
+    const accessory = { UUID: "uuid-1", context: { duid: "device-1" } };
+    const vacuum = new RoborockMatterVacuumAccessory(
+      platform,
+      accessory,
+      { duid: "device-1" },
+      true
+    );
+    return { vacuum, matterUpdates };
+  }
+
+  function lastCluster(matterUpdates) {
+    for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
+      if (matterUpdates[i].cluster === "rvcOperationalState") {
+        return matterUpdates[i].attributes;
+      }
+    }
+    return undefined;
+  }
+
+  test("a live frame carrying only the dock code still reaches the tile", async () => {
+    const { vacuum, matterUpdates } = liveHarness();
+
+    await vacuum.notifyDeviceUpdater("CloudMessage", [
+      {
+        state: ROBOROCK_STATE_CHARGING,
+        battery: 100,
+        charge_status: 1,
+        dock_error_status: 38,
+        water_shortage_status: 0,
+      },
+    ]);
+
+    expect(lastCluster(matterUpdates).operationalError).toEqual({
+      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
+    });
+  });
+
+  test("a later frame that omits the field does not lose the warning", async () => {
+    // Roborock sends sparse frames: one carries the tank, the next carries
+    // only the battery. A warning that vanished on the next heartbeat would
+    // be worse than no warning, and the live cache is what prevents it.
+    const { vacuum, matterUpdates } = liveHarness();
+
+    await vacuum.notifyDeviceUpdater("CloudMessage", [
+      {
+        state: ROBOROCK_STATE_CHARGING,
+        charge_status: 1,
+        dock_error_status: 38,
+      },
+    ]);
+    await vacuum.notifyDeviceUpdater("CloudMessage", [{ battery: 99 }]);
+
+    expect(lastCluster(matterUpdates).operationalError).toEqual({
+      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
+    });
+  });
+
+  test("a refill in a later frame clears it", async () => {
+    const { vacuum, matterUpdates } = liveHarness();
+
+    await vacuum.notifyDeviceUpdater("CloudMessage", [
+      {
+        state: ROBOROCK_STATE_CHARGING,
+        charge_status: 1,
+        dock_error_status: 38,
+      },
+    ]);
+    await vacuum.notifyDeviceUpdater("CloudMessage", [
+      {
+        state: ROBOROCK_STATE_CHARGING,
+        charge_status: 1,
+        dock_error_status: 0,
+      },
+    ]);
+
+    expect(lastCluster(matterUpdates).operationalError).toEqual({
+      errorStateId: RVC_ERROR_NONE,
+    });
+  });
+
+  test("the onboard shortage flag travels the same way", async () => {
+    const { vacuum, matterUpdates } = liveHarness();
+
+    await vacuum.notifyDeviceUpdater("CloudMessage", [
+      {
+        state: ROBOROCK_STATE_CLEANING,
+        battery: 70,
+        water_shortage_status: 1,
+      },
+    ]);
+
+    expect(lastCluster(matterUpdates).operationalError).toEqual({
+      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
+    });
+  });
+});
