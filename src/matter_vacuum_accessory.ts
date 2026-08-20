@@ -189,7 +189,8 @@ const CLEAN_MODE_VACUUM = 0;
 const CLEAN_MODE_MOP = 1;
 const CLEAN_MODE_VACUUM_AND_MOP = 2;
 
-// Opt-in fan-power clean modes (enableFanPowerCleanModes, default off since
+// Fan-power clean modes (enableFanPowerCleanModes, default ON since 3.12.0;
+// was off since
 // Matter locks the announced mode set at commissioning — enabling requires
 // one re-pair). Mode ids are stable and appended after the base modes.
 // Fan power values are Roborock v1 codes (101-104); the B01/Q7 adapter
@@ -299,6 +300,20 @@ const RVC_OPERATIONAL_STATE = {
  * and "non-zero" would report a full waste-water tank as an empty clean one.
  */
 const DOCK_ERROR_CLEAN_WATER_TANK_EMPTY = 38;
+
+/**
+ * Matter's own RVC OperationalError codes. Only the two used here are named.
+ *
+ * 68 is `WaterTankEmpty` in the robot vacuum device type, and it is the
+ * attribute Apple Home draws as a tap icon on the play button with a
+ * localised "refill the water tank" — which is the whole reason this exists.
+ * 0 is `NoError` and has to be published too: an error attribute that is only
+ * ever written when something is wrong never clears.
+ */
+const RVC_OPERATIONAL_ERROR = {
+  NO_ERROR: 0,
+  WATER_TANK_EMPTY: 68,
+} as const;
 
 const RVC_OPERATIONAL_STATE_LIST = [
   RVC_OPERATIONAL_STATE.STOPPED,
@@ -868,14 +883,20 @@ export default class RoborockMatterVacuumAccessory {
     const cleanMode = clusters.rvcCleanMode as
       | Record<string, unknown>
       | undefined;
-    // No fault field here on purpose. 3.4.0 published RVC OperationalError and
-    // 3.4.1 withdrew it after three controlled field tests showed Apple Home
-    // drew no Matter vacuum fault at all. The line
-    // kept rendering `fault=…` from an attribute that is now never published,
-    // so the branch was permanently dead — and worse, it read as evidence that
-    // the feature still existed. If faults ever come back, this line gets the
-    // field back with a test that publishes one for real.
-    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}.`;
+    // The fault field is back, and only because something is published into
+    // it again. 3.4.1 removed the attribute but left this rendering `fault=…`
+    // from a value that was never written — a permanently dead branch that
+    // read as evidence the feature still existed. It returns under the same
+    // condition the comment set at the time: a test publishes one for real.
+    const fault = opState?.operationalError as
+      | { errorStateId?: number }
+      | undefined;
+    const faultText =
+      typeof fault?.errorStateId === "number" && fault.errorStateId !== 0
+        ? `, fault=${fault.errorStateId}${fault.errorStateId === RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY ? " (Clean water tank empty)" : ""}`
+        : "";
+
+    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultText}.`;
   }
 
   /**
@@ -1824,7 +1845,7 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private isFanPowerCleanModesEnabled(): boolean {
-    return this.platform.platformConfig.enableFanPowerCleanModes === true;
+    return this.platform.platformConfig.enableFanPowerCleanModes !== false;
   }
 
   private getFanPowerCleanMode(
@@ -2282,8 +2303,24 @@ export default class RoborockMatterVacuumAccessory {
       operationalState,
     };
 
-    // The Matter fault attribute (`operationalError`) is deliberately never
-    // published, in any configuration.
+    // The Matter fault attribute (`operationalError`), for the one condition
+    // that has ever been seen to render. On by default since 3.12.0; see below
+    // for what that is worth and what it costs.
+    if (this.isTankFaultReportingEnabled()) {
+      const tankEmpty = this.isWaterTankEmpty();
+      // Null means the robot has not said. Publishing NoError on its behalf
+      // would clear a warning nobody has contradicted, so an unknown tank
+      // leaves the attribute exactly where it was.
+      if (tankEmpty !== null) {
+        cluster.operationalError = {
+          errorStateId: tankEmpty
+            ? RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY
+            : RVC_OPERATIONAL_ERROR.NO_ERROR,
+        };
+      }
+    }
+
+    // WHY THIS IS NARROW, when the same attribute was withdrawn twice before.
     //
     // Three controlled tests on an S8 Pro Ultra with an empty clean water
     // tank settled it. Apple Home drew no warning when the fault was sent
@@ -2298,6 +2335,24 @@ export default class RoborockMatterVacuumAccessory {
     // has the same attribute rendering correctly elsewhere; the condition
     // that separates the two cases is still unknown, and guessing at it has
     // cost this plugin two round trips already.
+    //
+    // What changed is the evidence, not the risk. #9 carries a screenshot of
+    // this exact attribute rendered correctly — tap icon on the play button,
+    // localised string — by the same controller that drew nothing for
+    // Wazza151. So "Apple never renders it" is false, and the condition that
+    // separates the two cases is still unknown.
+    //
+    // It has its own config key rather than riding on fault reporting, so it
+    // can be switched off again without losing the Error state feature — the
+    // mistake 3.3.0 made by bundling the two. The key is not on the settings
+    // page: 3.12.0 removed that whole section because a page of switches
+    // whose off position can brick an accessory is worse than no page.
+    //
+    // The operational state is deliberately NOT forced to Error along with
+    // it. Wazza151's third test did exactly that and Apple still drew
+    // nothing, so it buys nothing measured — and a robot in Error may be
+    // refused a Start command, which is a real cost for a robot that is
+    // docked, charging and perfectly able to vacuum without water.
     //
     // The Error operational STATE is a different matter and is still
     // reported below: Apple renders operational states perfectly well (the
@@ -3125,24 +3180,41 @@ export default class RoborockMatterVacuumAccessory {
 
   private isExtendedOperationalStateEnabled(): boolean {
     return (
-      this.platform.platformConfig.enableMatterExtendedOperationalStates ===
-      true
+      this.platform.platformConfig.enableMatterExtendedOperationalStates !==
+      false
     );
   }
 
   private isChargingDockedStateEnabled(): boolean {
     return (
-      this.platform.platformConfig.enableMatterChargingDockedStates === true
+      this.platform.platformConfig.enableMatterChargingDockedStates !== false
     );
   }
 
   /**
-   * Opt-in: report the Matter Error state when the robot has genuinely
-   * halted, instead of showing Ready. Off by default because a robot in
-   * Error may be refused a Start command by the controller.
+   * Report the Matter Error state when the robot has genuinely halted,
+   * instead of showing Ready. On by default since 3.12.0. The cost is that a
+   * robot in Error may be refused a Start command by the controller, which is
+   * the right answer for a robot that cannot run; `false` in config.json
+   * restores the old silence.
    */
   private isFaultReportingEnabled(): boolean {
-    return this.platform.platformConfig.enableMatterFaultReporting === true;
+    return this.platform.platformConfig.enableMatterFaultReporting !== false;
+  }
+
+  /**
+   * Separate from fault reporting above on purpose.
+   *
+   * That setting means "a robot that has genuinely halted should say so
+   * instead of showing Ready". An empty clean-water tank is not that: the
+   * robot is docked, charging, and can vacuum all day. Folding the two
+   * together would change what a setting already switched on by other people
+   * does to their tile, which is how 3.3.0 got into trouble.
+   */
+  private isTankFaultReportingEnabled(): boolean {
+    return (
+      this.platform.platformConfig.enableMatterTankFaultReporting !== false
+    );
   }
 
   /**
@@ -3323,7 +3395,7 @@ export default class RoborockMatterVacuumAccessory {
       (operationalState === RVC_OPERATIONAL_STATE.CHARGING ||
         operationalState === RVC_OPERATIONAL_STATE.DOCKED)
     ) {
-      // Opt-in: report real charging/docked states so Apple Home shows
+      // Report real charging/docked states so Apple Home shows
       // "Charging"/"Docked" on the tile instead of "Ready". The battery
       // percentage is the discriminator between the two: worn batteries can
       // make the robot claim "fully charged" (or drop the charging flag)

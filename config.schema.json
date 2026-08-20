@@ -94,27 +94,33 @@
       },
       "enableFanPowerCleanModes": {
         "title": "Enable Suction-Level Cleaning Modes",
-        "description": "Adds Quiet / Balanced / Turbo / Max vacuum modes to the Matter cleaning mode list, so suction can be chosen directly from Apple Home. IMPORTANT: Matter fixes the mode list when the robot is paired, so after enabling or disabling this you must remove the robot from Apple Home and re-pair it once. BEFORE TURNING THIS OFF, select Vacuum, Mop or Vacuum + Mop in Apple Home: Matter restores the stored cleaning mode on every start, and a stored suction level that is no longer offered stops the robot from registering at all, so it disappears from Apple Home until this is switched back on. Requires Matter Cleaning Mode Selection.",
+        "description": "Quiet / Balanced / Turbo / Max vacuum modes in the Matter cleaning mode list, so suction can be chosen directly from Apple Home. On by default. Matter fixes the mode list when the robot is paired, so a robot paired before 3.12.0 needs one remove-and-re-pair before the levels appear. BEFORE TURNING THIS OFF, select Vacuum, Mop or Vacuum + Mop in Apple Home: Matter restores the stored cleaning mode on every start, and a stored suction level that is no longer offered stops the robot from registering at all, so it disappears from Apple Home until this is switched back on. Requires Matter Cleaning Mode Selection.",
         "type": "boolean",
-        "default": false
+        "default": true
       },
       "enableMatterExtendedOperationalStates": {
         "title": "Enable Matter Dock & Returning Status",
-        "description": "Opt in to the extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. Requires removing and re-pairing the robot in Apple Home once, because Matter fixes an accessory's capabilities at commissioning. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no equivalent in the Matter robot vacuum specification, so it cannot be reported by any plugin.",
+        "description": "The extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. On by default. Matter fixes an accessory's capabilities at commissioning, so a robot paired before 3.12.0 needs one remove-and-re-pair in Apple Home before these appear. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no equivalent in the Matter robot vacuum specification, so it cannot be reported by any plugin.",
         "type": "boolean",
-        "default": false
+        "default": true
       },
       "enableMatterChargingDockedStates": {
         "title": "Enable Matter Charging/Docked Status",
-        "description": "Report real Charging and Docked states so the Apple Home tile shows Charging/Docked instead of Ready. Requires a recent iOS/tvOS; if the tile shows odd status text or pairing misbehaves after enabling, turn this off again and restart the Roborock bridge.",
+        "description": "Real Charging and Docked states, so the Apple Home tile shows Charging/Docked instead of Ready. On by default; requires a recent iOS/tvOS. if the tile shows odd status text or pairing misbehaves after enabling, turn this off again and restart the Roborock bridge.",
         "type": "boolean",
-        "default": false
+        "default": true
       },
       "enableMatterFaultReporting": {
         "title": "Report Faults in Apple Home",
-        "description": "Show a robot that has genuinely stopped working as Error instead of Ready: stuck, a blocked brush or wheel, a missing dust bin, a flat battery, a dock it cannot reach. Off by default because a robot reporting Error may be refused a Start command by Apple Home. Dock and tank conditions (empty clean-water tank, full waste-water tank, missing dust bag) are NOT reported: field testing showed Apple Home does not draw Matter vacuum faults at all, so reporting them was pure cost.",
+        "description": "Show a robot that has genuinely stopped working as Error instead of Ready: stuck, a blocked brush or wheel, a missing dust bin, a flat battery, a dock it cannot reach. On by default. The tradeoff is that a robot reporting Error may be refused a Start command by Apple Home, which is the correct behaviour for a robot that cannot run. Set this to false in config.json if you would rather a stuck robot kept showing Ready. The empty clean-water tank has its own setting below; the other dock conditions (full waste-water tank, missing dust bag) are still not reported.",
         "type": "boolean",
-        "default": false
+        "default": true
+      },
+      "enableMatterTankFaultReporting": {
+        "title": "Show an Empty Water Tank on the Tile",
+        "description": "Publishes Matter's WaterTankEmpty fault when the robot reports no clean water, which Apple Home draws as a tap icon on the play button with a 'refill the water tank' message. On by default. This attribute was withdrawn twice before after field tests where Apple drew nothing, and a screenshot in issue #9 showing it rendered correctly is what brought it back. It does NOT force the robot into the Matter Error state, so a docked robot stays startable. No re-pairing needed. If your tile misbehaves after enabling it, switch it off again and restart.",
+        "type": "boolean",
+        "default": true
       },
       "matterChargedBatteryThreshold": {
         "title": "Charged Battery Threshold (%)",

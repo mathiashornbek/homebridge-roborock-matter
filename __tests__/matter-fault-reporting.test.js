@@ -20,6 +20,14 @@
 // same attribute rendered correctly by the same controller, and what
 // separates the two cases is still open. These tests pin the outcome, which
 // was measured; they do not pin an explanation, which was not.
+//
+// UPDATED IN 3.12.0. The attribute is no longer unconditionally absent: one
+// condition, an empty clean-water tank, can now be published behind its own
+// setting, because #9's screenshot is a counter-example to "Apple never draws
+// it". What every test below still pins is that NOTHING changes for anyone
+// who has not switched that setting on — including the people who only ever
+// wanted "Report faults in Apple Home" for a robot stuck under the sofa. The
+// tank setting has its own file, an-empty-tank-can-reach-the-tile.
 
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
@@ -34,6 +42,7 @@ function createPlatform({
   status = {},
   matterUpdates = [],
   enableMatterFaultReporting = true,
+  enableMatterTankFaultReporting = true,
 } = {}) {
   const log = {
     debug: jest.fn(),
@@ -52,6 +61,7 @@ function createPlatform({
       enableMatter: true,
       enableMatterPowerSource: true,
       enableMatterFaultReporting,
+      enableMatterTankFaultReporting,
     },
     getMatterApi: () => ({ updateAccessoryState: publish }),
     shouldAcceptUnscopedLiveMessage: () => true,
@@ -126,7 +136,11 @@ describe("a halted robot stops claiming it is Ready", () => {
   });
 });
 
-describe("the Matter fault attribute is never published (field-proven)", () => {
+// Renamed in 3.12.0 from "is never published": the tank setting can now
+// publish one condition, so the guarantee this describe holds is the narrower
+// and still load-bearing one — with that setting off, nothing reaches the
+// attribute, in any configuration, for any of the conditions below.
+describe("the Matter fault attribute is not published behind the tank setting's back (field-proven)", () => {
   test.each([
     [
       "a halted robot",
@@ -149,27 +163,38 @@ describe("the Matter fault attribute is never published (field-proven)", () => {
       "a robot whose onboard tank ran dry mid-mop",
       { state: 5, water_shortage_status: 1, battery: 70 },
     ],
-  ])("%s publishes no operationalError", async (_label, status) => {
-    const matterUpdates = [];
-    const platform = createPlatform({ status, matterUpdates });
-    const { accessory, vacuum } = createAccessory(platform);
+  ])(
+    "%s publishes no operationalError with the tank setting off",
+    async (_label, status) => {
+      const matterUpdates = [];
+      // 3.12.0 made the tank setting default ON, so the off path it still
+      // honours has to be asked for by name rather than inherited.
+      const platform = createPlatform({
+        status,
+        matterUpdates,
+        enableMatterTankFaultReporting: false,
+      });
+      const { accessory, vacuum } = createAccessory(platform);
 
-    await publishSnapshot(vacuum);
+      await publishSnapshot(vacuum);
 
-    // Absent, in the registration snapshot and in every runtime publish.
-    // Apple never drew it, and sending it wedged the tile.
-    expect(accessory.clusters.rvcOperationalState).not.toHaveProperty(
-      "operationalError"
-    );
-    for (const update of matterUpdates) {
-      if (update.cluster === "rvcOperationalState") {
-        expect(update.attributes).not.toHaveProperty("operationalError");
+      // Absent, in the registration snapshot and in every runtime publish.
+      // Apple never drew it, and sending it wedged the tile.
+      expect(accessory.clusters.rvcOperationalState).not.toHaveProperty(
+        "operationalError"
+      );
+      for (const update of matterUpdates) {
+        if (update.cluster === "rvcOperationalState") {
+          expect(update.attributes).not.toHaveProperty("operationalError");
+        }
       }
     }
-  });
+  );
 
   test("a dock condition never makes a working robot look unstartable", async () => {
     const matterUpdates = [];
+    // The tank setting defaults ON since 3.12.0; off by name keeps this test
+    // on the dock-escalation question it was written for.
     const platform = createPlatform({
       status: {
         state: ROBOROCK_STATE_CHARGING,
@@ -178,6 +203,7 @@ describe("the Matter fault attribute is never published (field-proven)", () => {
         battery: 100,
       },
       matterUpdates,
+      enableMatterTankFaultReporting: false,
     });
     // The 3.4.0 escalation switch is gone; a stale config key must not
     // resurrect the behaviour for anyone who still has it in config.json.

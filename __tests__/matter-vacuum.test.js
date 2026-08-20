@@ -10,6 +10,11 @@ const RVC_OPERATIONAL_STATE_SEEKING_CHARGER = 64;
 const RVC_OPERATIONAL_STATE_EMPTYING_DUST_BIN = 67;
 const RVC_OPERATIONAL_STATE_CLEANING_MOP = 68;
 const RVC_OPERATIONAL_STATE_UPDATING_MAPS = 70;
+// Charging/Docked became a default-on feature, so a robot on its dock now
+// publishes one of these two rather than Stopped. Which one is decided by the
+// charged-battery threshold: below it Charging, at or above it Docked.
+const RVC_OPERATIONAL_STATE_CHARGING = 65;
+const RVC_OPERATIONAL_STATE_DOCKED = 66;
 
 function flush() {
   return new Promise((resolve) => realSetTimeout(resolve, 0));
@@ -25,6 +30,10 @@ function createPlatform({
   enableMatterPowerSource = true,
   enableMatterCleanMode = true,
   enableMatterExtendedOperationalStates = false,
+  // Left undefined so the plugin's own default applies unless a test names it.
+  // Since 3.12.0 that default is on, which is why several expectations below
+  // read Charging/Docked where they used to read Stopped.
+  enableMatterChargingDockedStates = undefined,
   preferCloudForMatterCommands = false,
   acceptUnscopedLiveMessages = true,
   capabilities = { canVacuum: true, canMop: false },
@@ -53,6 +62,7 @@ function createPlatform({
       enableMatterPowerSource,
       enableMatterCleanMode,
       enableMatterExtendedOperationalStates,
+      enableMatterChargingDockedStates,
       preferCloudForMatterCommands,
     },
     log: {
@@ -212,10 +222,13 @@ describe("Matter startup state updates", () => {
     expect(matterUpdates.some((update) => update.cluster === "identify")).toBe(
       false
     );
+    // Docked at 100%, and Charging/Docked now defaults on, so the dock reads
+    // as Docked rather than Stopped. The subject here is still the absence of
+    // identify pulses.
     expect(
       matterUpdates.find((update) => update.cluster === "rvcOperationalState")
         .attributes.operationalState
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
   });
 
   test("uses full payloads for ordinary Roborock state refreshes", async () => {
@@ -243,8 +256,9 @@ describe("Matter startup state updates", () => {
     expect(runModeUpdate.attributes).not.toHaveProperty("onMode");
     expect(operationalUpdate.attributes).toHaveProperty("operationalStateList");
     expect(operationalUpdate.attributes).not.toHaveProperty("countdownTime");
+    // Docked at 100% reads as Docked since Charging/Docked began defaulting on.
     expect(operationalUpdate.attributes.operationalState).toBe(
-      RVC_OPERATIONAL_STATE_STOPPED
+      RVC_OPERATIONAL_STATE_DOCKED
     );
   });
 
@@ -402,9 +416,11 @@ describe("Matter startup state updates", () => {
     });
     const { accessory } = createAccessory(platform, true);
 
+    // Docked at 100% reads as Docked since Charging/Docked began defaulting
+    // on. What is being pinned is that the read is served from cache.
     expect(
       await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
     expect(await accessory.getState("rvcRunMode", "currentMode")).toBe(
       RUN_MODE_IDLE
     );
@@ -754,13 +770,25 @@ describe("Matter operational state", () => {
     }
   });
 
-  test("uses only basic operational states by default for Apple Home compatibility", () => {
+  test("uses the basic operational states plus Charging/Docked by default for Apple Home compatibility", () => {
     const platform = createPlatform();
     const { accessory } = createAccessory(platform);
 
     const list = accessory.clusters.rvcOperationalState.operationalStateList;
 
-    expect(list.map((entry) => entry.operationalStateId)).toEqual([0, 1, 2, 3]);
+    // The default used to be the 4 basic states alone. Charging/Docked now
+    // defaults on, so 65 and 66 are part of what an unconfigured install
+    // advertises — both are standard RVC state IDs, not the manufacturer-range
+    // ones that broke commissioning, and the dock activities still stay out
+    // until the extended toggle asks for them.
+    expect(list.map((entry) => entry.operationalStateId)).toEqual([
+      0,
+      1,
+      2,
+      3,
+      RVC_OPERATIONAL_STATE_CHARGING,
+      RVC_OPERATIONAL_STATE_DOCKED,
+    ]);
     expect(accessory.clusters.rvcOperationalState).not.toHaveProperty(
       "operationalError"
     );
@@ -783,6 +811,9 @@ describe("Matter operational state", () => {
     // (issue #5). All are standard RVC state IDs advertised without labels —
     // the manufacturer-range states with labels that broke Apple Home
     // commissioning in 1.4.40 are a different thing and stay gone.
+    // Charging/Docked now defaults on, so 65 and 66 are appended after the
+    // dock activities; the dock activities themselves are still what this
+    // test is about.
     expect(list.map((entry) => entry.operationalStateId)).toEqual([
       0,
       1,
@@ -792,14 +823,22 @@ describe("Matter operational state", () => {
       RVC_OPERATIONAL_STATE_EMPTYING_DUST_BIN,
       RVC_OPERATIONAL_STATE_CLEANING_MOP,
       RVC_OPERATIONAL_STATE_UPDATING_MAPS,
+      RVC_OPERATIONAL_STATE_CHARGING,
+      RVC_OPERATIONAL_STATE_DOCKED,
     ]);
     expect(list.every((entry) => !("operationalStateLabel" in entry))).toBe(
       true
     );
   });
 
-  test("the basic list is unchanged when the toggle is off", () => {
-    const platform = createPlatform();
+  test("the basic list is unchanged when the toggles are off", () => {
+    // Both display toggles default on since 3.12.0, so the 1.4.40-safe list
+    // now has to be asked for by name. The config keys are still honoured, and
+    // this is the list a user who switches them off must keep getting.
+    const platform = createPlatform({
+      enableMatterExtendedOperationalStates: false,
+      enableMatterChargingDockedStates: false,
+    });
     const { accessory } = createAccessory(platform);
 
     expect(
@@ -871,8 +910,14 @@ describe("Matter operational state", () => {
     );
   });
 
-  test("maps charging to stopped when extended states are disabled", () => {
-    const platform = createPlatform({ status: { state: 8, battery: 100 } });
+  test("maps charging to stopped when both display toggles are disabled", () => {
+    // Charging/Docked defaults on since 3.12.0, so the Stopped rewrite this
+    // test is about now has to be asked for by name — the key is still
+    // honoured, and a user who switches it off must still see Ready.
+    const platform = createPlatform({
+      status: { state: 8, battery: 100 },
+      enableMatterChargingDockedStates: false,
+    });
     const { accessory } = createAccessory(platform);
 
     expect(accessory.clusters.rvcRunMode.currentMode).toBe(RUN_MODE_IDLE);
@@ -902,9 +947,13 @@ describe("Matter operational state", () => {
     expect(accessory.clusters.rvcRunMode.currentMode).toBe(RUN_MODE_IDLE);
   });
 
-  test("keeps charging stopped when extended returning state is enabled", () => {
+  test("keeps charging stopped when extended returning state is enabled and Charging/Docked is not", () => {
+    // The point is that the two toggles are separate: extended states must
+    // not smuggle Charging/Docked in behind their own switch. That is only
+    // observable with Charging/Docked explicitly off, now that it defaults on.
     const platform = createPlatform({
       enableMatterExtendedOperationalStates: true,
+      enableMatterChargingDockedStates: false,
       status: { state: 8, battery: 100 },
     });
     const { accessory } = createAccessory(platform);
@@ -1173,13 +1222,15 @@ describe("Matter power source", () => {
 describe("Matter live status cache", () => {
   test("prefers the freshest live message value over the HomeData snapshot", async () => {
     // HomeData reports the vacuum docked/charging (state 8 -> STOPPED in the
-    // Apple-safe default mode).
+    // Apple-safe default mode). Charging/Docked defaults on since 3.12.0, so
+    // the same snapshot now reads CHARGING at 50%; the freshness question this
+    // test asks is unchanged.
     const platform = createPlatform({ status: { state: 8, battery: 50 } });
     const { accessory, vacuum } = createAccessory(platform, true);
 
     expect(
       await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_CHARGING);
 
     // A live message says it is now cleaning (state 5 -> RUNNING).
     await vacuum.notifyDeviceUpdater("LocalMessage", [
@@ -1202,9 +1253,11 @@ describe("Matter live status cache", () => {
       { state: 5, battery: 50 },
     ]);
 
+    // Still the HomeData snapshot: docked at 50% is CHARGING now that
+    // Charging/Docked defaults on, and it is emphatically not RUNNING.
     expect(
       await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_CHARGING);
     expect(platform.log.debug).toHaveBeenCalledWith(
       expect.stringContaining("Ignoring unscoped live Roborock update")
     );
@@ -1219,9 +1272,11 @@ describe("Matter live status cache", () => {
       payload: [{ state: 5, battery: 50 }],
     });
 
+    // Unmoved from the HomeData snapshot, which is CHARGING at 50% now that
+    // Charging/Docked defaults on.
     expect(
       await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_CHARGING);
 
     await vacuum.notifyDeviceUpdater("CloudMessage", {
       duid: "device-1",
@@ -1264,13 +1319,15 @@ describe("Matter live status cache", () => {
       matterUpdates.find((update) => update.cluster === "rvcRunMode").attributes
         .currentMode
     ).toBe(RUN_MODE_IDLE);
+    // Docked at 100% publishes DOCKED now that Charging/Docked defaults on.
+    // The subject is that the newer snapshot displaces the stale live value.
     expect(
       matterUpdates.find((update) => update.cluster === "rvcOperationalState")
         .attributes.operationalState
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
     expect(
       await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
   });
 });
 
@@ -1341,8 +1398,10 @@ describe("Matter optimistic state", () => {
       (update) => update.cluster === "rvcOperationalState"
     );
     expect(operationalUpdate).toBeDefined();
+    // Docked at 100% publishes DOCKED now that Charging/Docked defaults on.
+    // What is pinned is that the optimistic Cleaning state is abandoned.
     expect(operationalUpdate.attributes.operationalState).toBe(
-      RVC_OPERATIONAL_STATE_STOPPED
+      RVC_OPERATIONAL_STATE_DOCKED
     );
 
     jest.clearAllTimers();
@@ -1498,12 +1557,13 @@ describe("Matter optimistic state", () => {
 
     // The hard failure recovery publishes the real stopped/docked state and a
     // stale optimistic snapshot scheduled before recovery never overrides it.
+    // That real state is DOCKED at 100% now that Charging/Docked defaults on.
     const finalOperationalUpdates = matterUpdates.filter(
       (update) => update.cluster === "rvcOperationalState"
     );
     expect(finalOperationalUpdates.length).toBeGreaterThan(0);
     expect(finalOperationalUpdates.at(-1).attributes.operationalState).toBe(
-      RVC_OPERATIONAL_STATE_STOPPED
+      RVC_OPERATIONAL_STATE_DOCKED
     );
   });
 
@@ -1617,10 +1677,12 @@ describe("Matter optimistic state", () => {
       matterUpdates.find((update) => update.cluster === "rvcRunMode").attributes
         .currentMode
     ).toBe(RUN_MODE_IDLE);
+    // Arrival is DOCKED at 100% now that Charging/Docked defaults on. The
+    // subject is that SEEKING_CHARGER holds until the robot really is home.
     expect(
       matterUpdates.find((update) => update.cluster === "rvcOperationalState")
         .attributes.operationalState
-    ).toBe(RVC_OPERATIONAL_STATE_STOPPED);
+    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
     jest.clearAllTimers();
   });
 });

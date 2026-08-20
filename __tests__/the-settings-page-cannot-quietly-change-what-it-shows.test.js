@@ -52,6 +52,21 @@ function functionBody(name) {
 describe("a config that does not exist yet still lands on the schema defaults", () => {
   const loadConfig = functionBody("loadConfig");
 
+  // The Matter feature keys that default ON. It was four; the five that used
+  // to default OFF now default ON too, so it is nine, and every one of them is
+  // a key the plugin reads as `!== false`.
+  const DEFAULT_ON_FEATURE_KEYS = [
+    "enableMatterServiceArea",
+    "enableLiveRoomTracking",
+    "enableMatterCleanMode",
+    "enableMatterPowerSource",
+    "enableFanPowerCleanModes",
+    "enableMatterExtendedOperationalStates",
+    "enableMatterChargingDockedStates",
+    "enableMatterFaultReporting",
+    "enableMatterTankFaultReporting",
+  ];
+
   test("the checkbox initialisation does not sit behind a config check", () => {
     // The tell is `elements.<something>.checked =` appearing inside the
     // `if (!config) { … } else {` arm. It now runs against `config || {}`.
@@ -59,16 +74,27 @@ describe("a config that does not exist yet still lands on the schema defaults", 
     expect(loadConfig).not.toMatch(/\} else \{[\s\S]*\.checked =/);
   });
 
-  test("the four default-on features are still read as on-unless-false", () => {
-    // `Boolean(config.x)` would turn absent into off. These four must stay
-    // `!== false`, matching the plugin and config.schema.json.
-    for (const key of [
-      "enableMatterServiceArea",
-      "enableLiveRoomTracking",
-      "enableMatterCleanMode",
-      "enableMatterPowerSource",
-    ]) {
-      expect(loadConfig).toMatch(new RegExp(`config\\.${key} !== false`));
+  test("the default-on features cannot be written off by a form the user never touched", () => {
+    // Defect 1 was that an unchecked box saved `false` for a feature the
+    // plugin treats as on-when-absent. The boxes are gone now that all nine
+    // default on, which closes the same hole from the other end: the form has
+    // no opinion to save. So the rule is that none of these keys may appear in
+    // getFormValues at all — one `Boolean(elements.x?.checked)` line reappearing
+    // there is the whole defect back, and three of the nine are re-pair
+    // settings, so it still costs a re-pair per robot.
+    const formValues = functionBody("getFormValues");
+    for (const key of DEFAULT_ON_FEATURE_KEYS) {
+      expect(formValues).not.toMatch(new RegExp(`\\b${key}\\b`));
+    }
+  });
+
+  test("the default-on features are still read as on-unless-false", () => {
+    // `Boolean(config.x)` would turn absent into off. The settings page still
+    // reads all nine to report what a robot is actually publishing, and every
+    // read must stay `!== false`, matching the plugin and config.schema.json.
+    const report = functionBody("describeEnabledMatterFeatures");
+    for (const key of DEFAULT_ON_FEATURE_KEYS) {
+      expect(report).toMatch(new RegExp(`config\\.${key} !== false`));
     }
   });
 });
@@ -132,11 +158,29 @@ describe("the switch block starts in the state the setting is actually in", () =
 });
 
 describe("settings that do nothing without their prerequisite say so", () => {
-  test("the three dependent controls are gated", () => {
-    const body = functionBody("syncFeatureDependencies");
-    expect(body).toMatch(/enableFanPowerCleanModes\.disabled/);
-    expect(body).toMatch(/enableLiveRoomTracking\.disabled/);
-    expect(body).toMatch(/matterChargedBatteryThreshold\.disabled/);
+  test("the three dependent controls have no unmet prerequisite left to gate", () => {
+    // Two of the three — suction-level modes and live room tracking — were
+    // re-pair settings a user could tick, save, restart, re-pair, and only
+    // then find out had never been going to do anything. Their prerequisites
+    // now default on and can no longer be switched off from this page, so the
+    // controls themselves are gone: a box that cannot exist cannot be ticked
+    // dead, which is the same guarantee the greying-out bought.
+    expect(html).not.toMatch(/id="enable-fan-power-clean-modes"/);
+    expect(html).not.toMatch(/id="enable-live-room-tracking"/);
+    expect(js).not.toMatch(/elements\.enableFanPowerCleanModes/);
+    expect(js).not.toMatch(/elements\.enableLiveRoomTracking/);
+
+    // The third survives, because a number is a preference rather than a
+    // feature. Its prerequisite (Charging/Docked) is permanently met, so it
+    // must ship enabled and nothing may disable it again.
+    expect(html).toMatch(/id="matter-charged-battery-threshold"/);
+    expect(html).not.toMatch(
+      /id="matter-charged-battery-threshold"[^>]*disabled/
+    );
+    expect(js).not.toMatch(/matterChargedBatteryThreshold\.disabled/);
+
+    // And nothing is left greying anything out behind the page's back.
+    expect(functionBody("syncFeatureDependencies")).not.toMatch(/\.disabled/);
   });
 
   test("the gate is re-evaluated when a prerequisite changes", () => {

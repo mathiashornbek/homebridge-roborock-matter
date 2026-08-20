@@ -169,118 +169,14 @@
       <div>
         <h2>Apple Home Features</h2>
         <p class="help">
-          What each robot exposes through Matter. Options marked
-          <strong>&#9888; re-pair</strong> change the robot's announced
-          capabilities: after toggling them, save, restart Homebridge, then
-          remove the robot from Apple Home and pair it again — Matter locks
-          capabilities at pairing time.
+          Everything the robot can show in Apple Home is on, and there is
+          nothing here to switch on or get wrong: rooms, live room tracking,
+          cleaning and suction modes, battery, dock and charging status, and the
+          empty-tank warning all come with the robot. The number below is a
+          preference rather than a feature.
         </p>
       </div>
     </div>
-
-    <label class="checkbox">
-      <input id="enable-matter-service-area" type="checkbox" />
-      <span>
-        Room &amp; map selection <strong>&#9888; re-pair</strong>
-        <small
-          >Pick rooms to clean directly in Apple Home, using your Roborock room
-          names (multi-map homes included).</small
-        >
-      </span>
-    </label>
-
-    <label class="checkbox">
-      <input id="enable-live-room-tracking" type="checkbox" />
-      <span>
-        Live room tracking
-        <small
-          >While cleaning, the robot's map position is resolved to the room it
-          is physically inside and shown as the current room in Apple Home
-          (first room immediately, then every ~10 s, active runs only).</small
-        >
-      </span>
-    </label>
-
-    <label class="checkbox">
-      <input id="enable-matter-clean-mode" type="checkbox" />
-      <span>
-        Cleaning mode selection <strong>&#9888; re-pair</strong>
-        <small
-          >Vacuum / Mop / Vacuum + Mop in Apple Home's mode picker,
-          capability-gated per robot.</small
-        >
-      </span>
-    </label>
-
-    <label class="checkbox">
-      <input id="enable-fan-power-clean-modes" type="checkbox" />
-      <span>
-        Suction-level cleaning modes <strong>&#9888; re-pair</strong>
-        <small
-          >Adds Quiet / Balanced / Turbo / Max (and Max+ on Q7) to the mode
-          picker — Apple renders them as Quiet / Automatic / Quick / Max / Deep
-          Clean. Requires cleaning mode selection above.
-          <strong>Before you turn this off,</strong> select Vacuum, Mop or
-          Vacuum + Mop in Apple Home first: Matter restores the stored mode on
-          every start, and a stored suction level that is no longer offered
-          stops the robot from registering at all — it disappears from Apple
-          Home until this is turned back on.</small
-        >
-      </span>
-    </label>
-
-    <label class="checkbox">
-      <input id="enable-matter-power-source" type="checkbox" />
-      <span>
-        Battery status <strong>&#9888; re-pair</strong>
-        <small
-          >Battery percentage and charging state on the Matter accessory. See
-          the README for a known Apple-side limitation on percentage
-          refresh.</small
-        >
-      </span>
-    </label>
-
-    <label class="checkbox">
-      <input id="enable-matter-extended-states" type="checkbox" />
-      <span>
-        Dock &amp; Returning status
-        <small
-          >Shows the extended Matter states: Returning to the dock, Emptying the
-          dust bin, Washing the mop, and Updating maps. Requires removing and
-          re-pairing the robot in Apple Home once. Which of them Apple Home
-          draws is Apple's decision, and Emptying/Washing only appear while the
-          dock is actually doing that. Mop drying has no equivalent in the
-          Matter vacuum specification, so it cannot be reported. Off by default
-          for maximum Apple Home compatibility.</small
-        >
-      </span>
-    </label>
-
-    <label class="checkbox">
-      <input id="enable-matter-charging-docked" type="checkbox" />
-      <span>
-        Show Charging/Docked on the Apple Home tile
-        <small
-          >Reports real Matter Charging and Docked states instead of Ready while
-          on the dock. Requires a recent iOS/tvOS; turn off and restart the
-          bridge if the tile misbehaves.</small
-        >
-      </span>
-    </label>
-    <label class="checkbox">
-      <input id="enable-matter-fault-reporting" type="checkbox" />
-      <span>
-        Report faults in Apple Home
-        <small
-          >Shows a robot that has genuinely stopped working as Error instead of
-          Ready &mdash; stuck, a blocked brush, a missing dust bin, a flat
-          battery. Off by default because a robot in Error may be refused a
-          Start command by Apple Home. Dock and tank warnings are not reported:
-          Apple Home does not draw Matter vacuum faults.</small
-        >
-      </span>
-    </label>
 
     <label class="field">
       <span>Charged Battery Threshold (%)</span>

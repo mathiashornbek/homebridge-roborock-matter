@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.12.0
+
+**An empty water tank now shows on the tile, and the page of switches that used to decide such things is gone.**
+
+Apple Home draws a tap icon on the play button with "refill the water tank" when a robot publishes Matter's `WaterTankEmpty` fault. This plugin has written that attribute twice and withdrawn it twice — 1.4.61, then 3.3.0 into 3.4.1 — because 3 controlled tests on an S8 Pro Ultra with a genuinely empty tank produced nothing at all in Apple Home, and wedged the tile on "Updating…" for good measure. Then vp-debug12 posted a screenshot in [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9) of the same attribute rendered correctly by the same controller. One counterexample is worth more than my explanation, so it is back.
+
+It is deliberately narrow. `WaterTankEmpty` goes out when the robot says the tank is empty and `NoError` when it says the tank is full, because an attribute only ever written when something is wrong never clears and a warning that survives a refill is worse than no warning. A robot that has not reported its tank gets no attribute at all rather than a cheerful all-clear. And the robot is **not** dragged into the Matter Error state along with it: that was the third of Wazza151's tests, Apple still drew nothing, and a robot in Error may be refused a Start command — a real cost for a robot that is docked, charging and perfectly able to vacuum without water. No re-pairing is needed; an error attribute is a live value, not a capability.
+
+Both robots that have been measured with an empty tank disagree about how they say so. The S8 Pro Ultra sets `dock_error_status: 38` and leaves `water_shortage_status` at 0; the Q Revo sets both. Either is enough, which is the same rule the `Water Tank Empty` contact sensor already used.
+
+**And the Apple Home Features section of the settings page is gone.** 9 switches, several of them marked "⚠ re-pair", every one of them a way to end up with a robot that shows less than it could. They are all on now. Rooms and map selection, live room tracking, cleaning and suction modes, battery, dock and returning status, charging and docked on the tile, fault reporting, and the tank warning — that is what a Roborock in Apple Home is, and it should not have been a quiz.
+
+The switches were not just clutter, they were sharp. 3.10.1 measured what turning a mode set **off** does: Matter persists `CurrentMode` and does not persist `SupportedModes`, so a stored mode 6 meeting a freshly shrunken list of 0, 1, 2 throws inside `RvcCleanModeServer.initialize`, the endpoint rolls back, and the accessory never registers again — on that restart and every restart after it. The settings page was offering that as a checkbox. Growing a list has no such failure: the stored mode stays valid, which is why turning everything on is the safe direction and turning things off never was.
+
+Every key is still read from `config.json`, so `"enableMatterFaultReporting": false` still works for anyone who wants the old silence, and an existing config that already says `false` is left alone. Nothing on the settings page writes them any more, which also closes a quieter bug: a save could previously write `false` for a feature the page had no opinion about.
+
+**If your robot was paired before this release, re-pair it once.** Matter fixes an accessory's announced capabilities at commissioning, so a robot that was paired with 3 clean modes and 4 operational states keeps showing 3 and 4 until Apple Home is shown the new shape. Remove the robot in Apple Home, then add it again with the same Matter code. Anyone who already had these switched on has nothing to do.
+
 ## 3.11.2
 
 **"Attempt 12 this run" counted every run since Homebridge started. So did "failed 10 times in a row", and the once-per-run explanation of why no room could be named was only ever printed on the first run of the process.**

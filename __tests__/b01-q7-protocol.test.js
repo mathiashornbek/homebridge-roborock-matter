@@ -647,7 +647,19 @@ describe("Q7 mop/vacuum mode switching", () => {
     const labels = accessory.clusters.rvcCleanMode.supportedModes.map(
       (mode) => mode.label
     );
-    expect(labels).toEqual(["Vacuum", "Mop", "Vacuum + Mop"]);
+    // The three clean TYPES are what this test is about, and they are still
+    // the first three. Suction-level modes now default on, and this fixture's
+    // Q7 reports canControlFanPower, so the four suction variants follow them
+    // — 4 and not 5, because canMaxPlusFanPower is not claimed here.
+    expect(labels).toEqual([
+      "Vacuum",
+      "Mop",
+      "Vacuum + Mop",
+      "Quiet Vacuum",
+      "Balanced Vacuum",
+      "Turbo Vacuum",
+      "Max Vacuum",
+    ]);
   });
 });
 

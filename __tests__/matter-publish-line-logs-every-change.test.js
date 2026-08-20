@@ -72,10 +72,14 @@ function snapshot({
   operationalState = DOCKED,
   runMode = 0,
   cleanMode = 0,
+  operationalError,
 } = {}) {
   return {
     rvcRunMode: { currentMode: runMode },
-    rvcOperationalState: { operationalState },
+    rvcOperationalState:
+      operationalError === undefined
+        ? { operationalState }
+        : { operationalState, operationalError },
     rvcCleanMode: { currentMode: cleanMode },
     powerSource: { batPercentRemaining: battery },
   };
@@ -144,18 +148,47 @@ describe("the Matter publish line is emitted whenever what it says changes", () 
     );
   });
 
-  test("the line says nothing about faults, because none are published", async () => {
-    // This test used to hand-build an operationalError and assert the line
-    // rendered `fault=4 (stuck)`. That cluster shape has been unreachable
-    // since 3.4.1 withdrew fault publishing, so the assertion was keeping a
-    // dead branch alive and contradicting matter-fault-reporting.test.js,
-    // which pins that operationalError is never published in any
-    // configuration. Two tests disagreeing about whether a feature exists is
-    // worse than either answer; the withdrawal is the one backed by field
-    // evidence, so the line follows it.
+  test("a snapshot with no fault says nothing about faults", async () => {
+    // The history here is worth keeping, because this test has now been on
+    // both sides of the same question. It originally hand-built an
+    // operationalError and asserted `fault=4 (stuck)`; 3.4.1 withdrew fault
+    // publishing, that cluster shape became unreachable, and the assertion was
+    // keeping a dead branch alive. It was rewritten to assert the line never
+    // mentions faults at all — which is now equally wrong, because 3.12.0
+    // publishes WaterTankEmpty again.
+    //
+    // So the rule is neither "always" nor "never": the field appears when the
+    // cluster carries a real fault and stays away when it does not. Both
+    // halves are asserted, here and in the test below, so the line can never
+    // again describe an attribute that is not there.
     const { instance, info } = createHarness();
-    const base = snapshot({ operationalState: 3 });
-    await publish(instance, base);
+    await publish(instance, snapshot({ operationalState: 3 }));
+
+    const lines = publishLines(info);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain("fault");
+  });
+
+  test("a snapshot carrying a fault names it", async () => {
+    const { instance, info } = createHarness();
+    await publish(
+      instance,
+      snapshot({ operationalState: 0, operationalError: { errorStateId: 68 } })
+    );
+
+    const lines = publishLines(info);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("fault=68 (Clean water tank empty)");
+  });
+
+  test("a cleared fault is not rendered as one", async () => {
+    // NoError is published on every healthy update, so if the line rendered
+    // `fault=0` it would say something is wrong on every robot, forever.
+    const { instance, info } = createHarness();
+    await publish(
+      instance,
+      snapshot({ operationalState: 0, operationalError: { errorStateId: 0 } })
+    );
 
     const lines = publishLines(info);
     expect(lines).toHaveLength(1);

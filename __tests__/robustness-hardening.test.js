@@ -9,6 +9,10 @@ const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 const { setTimeout: realSetTimeout } = require("node:timers");
 
+// Matter RVC operational state 66, "Docked". A robot on a full battery
+// publishes this rather than Stopped since Charging/Docked began defaulting on.
+const RVC_OPERATIONAL_STATE_DOCKED = 66;
+
 function flush() {
   return new Promise((resolve) => realSetTimeout(resolve, 0));
 }
@@ -236,7 +240,12 @@ describe("Matter dispatch of device-not-ready command failures", () => {
     const lastOperationalState = [...matterUpdates]
       .reverse()
       .find((update) => update.cluster === "rvcOperationalState");
-    expect(lastOperationalState.attributes.operationalState).toBe(0);
+    // The rolled-back state is whatever the robot really is: docked at 100%,
+    // which publishes DOCKED (66) rather than Stopped (0) now that
+    // Charging/Docked defaults on. The rollback itself is the subject.
+    expect(lastOperationalState.attributes.operationalState).toBe(
+      RVC_OPERATIONAL_STATE_DOCKED
+    );
   });
 });
 
