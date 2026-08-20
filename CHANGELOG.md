@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.14.1
+
+**The publish line now names the phase, so 3.14.0 can actually be measured.**
+
+3.14.0 shipped a feature whose status is "unmeasured": nobody knows whether Apple Home draws a Matter phase. That is a fine thing to ship — an attribute no controller reads costs nothing, and drying the mop has no other route to the tile — but it is only worth shipping if the answer can be found afterwards.
+
+It could not have been. A tile showing nothing during a dry would have been ambiguous between "the controller ignored it" and "the plugin never sent it", and that exact ambiguity is what cost the empty-tank warning 2 withdrawn releases and 3 field tests before 3.12.1 found the plugin had never sent anything at all.
+
+So the evidence line says it: `phase=Drying mop` while the dock dries, `phase=Washing mop` while it washes, and nothing at all when the dock is idle. One look at the log and one look at the tile now answer different halves of the same question.
+
 ## 3.14.0
 
 **Your dock spends 2 to 4 hours drying the mop after every mop clean, and until now there was no way for Apple Home to know.**

@@ -487,3 +487,51 @@ describe("drying survives the journey from a live message", () => {
     expect(new Set(lists).size).toBe(1);
   });
 });
+
+describe("the publish line reports the phase, because the feature is unmeasured", () => {
+  // Without this, a tile that shows nothing during a dry is ambiguous: the
+  // controller ignored the attribute, or the plugin never sent it. That
+  // ambiguity is what cost the tank warning 2 releases and 3 field tests.
+  function publishLines(platform) {
+    return platform.log.info.mock.calls
+      .concat(platform.log.debug.mock.calls)
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("Matter publish for"));
+  }
+
+  test("a drying dock says so in the log, by name", async () => {
+    const { platform } = await publishWith({
+      state: ROBOROCK_STATE_CHARGING,
+      battery: 100,
+      dry_status: 1,
+    });
+
+    expect(
+      publishLines(platform).some((line) => line.includes("phase=Drying mop"))
+    ).toBe(true);
+  });
+
+  test("washing the mop says that instead", async () => {
+    const { platform } = await publishWith({
+      state: ROBOROCK_STATE_WASHING_MOP,
+      battery: 90,
+    });
+
+    expect(
+      publishLines(platform).some((line) => line.includes("phase=Washing mop"))
+    ).toBe(true);
+  });
+
+  test("a robot doing nothing in particular says nothing about phases", async () => {
+    const { platform } = await publishWith({
+      state: ROBOROCK_STATE_CHARGING,
+      battery: 55,
+    });
+
+    const lines = publishLines(platform);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line).not.toContain("phase=");
+    }
+  });
+});

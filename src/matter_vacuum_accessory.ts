@@ -1343,6 +1343,19 @@ export default class RoborockMatterVacuumAccessory {
     // threaded through the cluster, because the cluster carries only what
     // Matter defines.
     const faultDetail = this.getMatterFault()?.text ?? "";
+    // The phase, named rather than numbered, and only when there is one.
+    //
+    // This field is here because the feature it reports is UNMEASURED: nobody
+    // knows whether Apple Home draws a phase. Without it, someone looking at a
+    // tile that says nothing during a dry cannot tell whether the controller
+    // ignored the attribute or the plugin never sent it — which is exactly the
+    // mistake that cost the tank warning 2 releases and 3 field tests.
+    const phaseIndex = opState?.currentPhase;
+    const phaseList = opState?.phaseList;
+    const phaseText =
+      typeof phaseIndex === "number" && Array.isArray(phaseList)
+        ? `, phase=${phaseList[phaseIndex] ?? phaseIndex}`
+        : "";
     const faultText =
       typeof fault?.errorStateId === "number" && fault.errorStateId !== 0
         ? `, fault=${fault.errorStateId} (${RVC_OPERATIONAL_ERROR_NAMES[fault.errorStateId] ?? "unnamed"}${
@@ -1352,7 +1365,7 @@ export default class RoborockMatterVacuumAccessory {
           })`
         : "";
 
-    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${faultText}.`;
+    return `Matter publish for ${this.getVacuumName()}: battery=${typeof halfPercent === "number" ? halfPercent / 2 + "%" : "n/a"}, operationalState=${opState?.operationalState ?? "n/a"}, runMode=${runMode?.currentMode ?? "n/a"}, cleanMode=${cleanMode?.currentMode ?? "n/a"}${phaseText}${faultText}.`;
   }
 
   /**
