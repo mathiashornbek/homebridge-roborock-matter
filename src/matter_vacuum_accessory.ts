@@ -192,6 +192,7 @@ const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "dock_error_status",
   "water_shortage_status",
   "error_code",
+  "dry_status",
 ] as const;
 
 const CLEAN_MODE_VACUUM = 0;
@@ -348,6 +349,40 @@ const RVC_OPERATIONAL_ERROR = {
   WATER_TANK_MISSING: 69,
   WATER_TANK_LID_OPEN: 70,
   MOP_CLEANING_PAD_MISSING: 71,
+} as const;
+
+/**
+ * The dock's own jobs, named for `RvcOperationalState.PhaseList`.
+ *
+ * Drying is why this exists. Matter has an operational state for emptying the
+ * dust bin (0x43), washing the mop (0x44) and updating maps (0x46), and the
+ * plugin publishes all 3 — but the dock then spends 2 to 4 hours blowing air
+ * through a wet mop, and the specification has no state for that at all. A
+ * phase is the only place it can be said.
+ *
+ * THE LIST IS CONSTANT AND MUST STAY CONSTANT. `PhaseList` is not a Fixed
+ * attribute, so rewriting it is legal — and 1.4.58 removed a version of this
+ * plugin that changed phases as a refresh trick and flapped them against every
+ * Apple Home hub in the house. Only `CurrentPhase` moves here. A test fails if
+ * the list is ever built from anything but this constant.
+ *
+ * The other 3 are included even though each has its own operational state,
+ * because those states are optional in the device type and nothing establishes
+ * that Apple draws them. A phase costs nothing extra and gives the same fact a
+ * second route to the tile.
+ */
+const RVC_PHASE_LIST = [
+  "Emptying dust bin",
+  "Washing mop",
+  "Drying mop",
+  "Updating maps",
+] as const;
+
+const RVC_PHASE = {
+  EMPTYING_DUST_BIN: 0,
+  WASHING_MOP: 1,
+  DRYING_MOP: 2,
+  UPDATING_MAPS: 3,
 } as const;
 
 /** Reverse lookup for the published id, so the log line says what was sent. */
@@ -1016,6 +1051,77 @@ export default class RoborockMatterVacuumAccessory {
 
     // Neither source has said anything.
     return null;
+  }
+
+  /**
+   * The phase attributes, with an escape hatch.
+   *
+   * On by default, and not on the settings page — 3.12.0 removed that whole
+   * section. This exists for the same reason the fault attribute's key does:
+   * a controller that dislikes an attribute can leave a tile unusable, and
+   * this plugin has measured Apple Home refusing to finish commissioning over
+   * a neighbouring list attribute it did not like. `PhaseList` is a list of
+   * manufacturer-defined strings by design, which is not the same situation —
+   * but "not the same situation" is what was said before, twice, and both
+   * times a line in config.json would have saved somebody a reinstall.
+   */
+  private areDockPhasesEnabled(): boolean {
+    return this.platform.platformConfig.enableMatterDockPhases !== false;
+  }
+
+  /**
+   * Is the dock drying the mop right now?
+   *
+   * One field, 2 producers. A v1 robot with a drying dock reports `dry_status`
+   * itself — it is declared in this library's own feature table under
+   * `isSupportedDrying()`, gated on the robot's capability bitmask. A B01/Q7
+   * reports raw status 10, `mop_airdrying`, which the adapter maps to v1 state
+   * 8 so the tile reads Docked; since 3.14.0 it also writes `dry_status` under
+   * the same name so the fact is not lost in that mapping.
+   *
+   * Null means the robot has not said, which is not the same as "not drying" —
+   * a robot with no drying dock never reports the field at all.
+   */
+  private isMopDrying(): boolean | null {
+    const dryStatus = this.getNumberStatus("dry_status");
+    if (dryStatus === null) {
+      return null;
+    }
+    return dryStatus !== 0;
+  }
+
+  /**
+   * The index into RVC_PHASE_LIST, or null when the dock is not doing any of
+   * its own jobs.
+   *
+   * Order is deliberate: the states the robot reports directly win over the
+   * derived one. A dock washing the mop is also, technically, about to dry it,
+   * and saying "Washing mop" while it washes is the more useful of the 2.
+   */
+  private getCurrentPhase(): number | null {
+    // The UNGATED state on purpose. `getOperationalState` applies the user's
+    // extended-states choice, and someone who has turned those off has asked
+    // for a plainer tile, not for the dock to stop saying what it is doing.
+    // A phase naming the sub-activity inside a running state is exactly the
+    // shape the base cluster describes, so the 2 attributes do not contradict
+    // each other even when the gate is closed.
+    const dockActivity = this.getRoborockOperationalState(
+      this.getNumberStatus("state"),
+      this.getNumberStatus("charge_status")
+    );
+
+    switch (dockActivity) {
+      case RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN:
+        return RVC_PHASE.EMPTYING_DUST_BIN;
+      case RVC_OPERATIONAL_STATE.CLEANING_MOP:
+        return RVC_PHASE.WASHING_MOP;
+      case RVC_OPERATIONAL_STATE.UPDATING_MAPS:
+        return RVC_PHASE.UPDATING_MAPS;
+      default:
+        break;
+    }
+
+    return this.isMopDrying() === true ? RVC_PHASE.DRYING_MOP : null;
   }
 
   /**
@@ -1913,6 +2019,7 @@ export default class RoborockMatterVacuumAccessory {
       status.water_shortage_status
     );
     const errorCode = this.getNumberFromValue(status.error_code);
+    const dryStatus = this.getNumberFromValue(status.dry_status);
 
     // Fan power and clean type count as meaningful updates too. A suction or
     // mop-mode change made in the Roborock app (or chosen by SmartPlan) pushes
@@ -1938,6 +2045,7 @@ export default class RoborockMatterVacuumAccessory {
       dock_error_status: dockErrorStatus,
       water_shortage_status: waterShortageStatus,
       error_code: errorCode,
+      dry_status: dryStatus,
     };
     if (
       MEANINGFUL_LIVE_STATUS_FIELDS.every(
@@ -1994,6 +2102,11 @@ export default class RoborockMatterVacuumAccessory {
     // the tile while the robot is still stuck rather than after the next
     // cloud refresh.
     this.rememberLiveStatus("error_code", errorCode);
+    // Drying is a dock job, so it arrives while the robot itself is idle and
+    // the frames are at their sparsest. Without the cache a single frame
+    // carrying only `dry_status` would light the phase and the next heartbeat
+    // would put it out again.
+    this.rememberLiveStatus("dry_status", dryStatus);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -2696,15 +2809,19 @@ export default class RoborockMatterVacuumAccessory {
     const operationalState = this.getOperationalState();
 
     const cluster: Record<string, unknown> = {
-      // Null by choice, not by rule. Both attributes are mandatory on the RVC
-      // Operational State cluster but nullable, and null is the spec's own way
-      // of saying "this mode has no phases". 1.4.58 removed a version that used
-      // phase changes as a refresh hack and flapped them at every Apple Home hub;
-      // the nulls are what replaced it. Naming real phases -- washing the mop,
-      // drying, emptying the bin -- is open, and is the one place those dock
-      // states could be expressed at all. It has not been measured on Apple Home.
-      phaseList: null,
-      currentPhase: null,
+      // The dock's own jobs, named. Both attributes are mandatory on this
+      // cluster and nullable; they were null from 1.4.58 until 3.14.0, because
+      // the version 1.4.58 removed had used phase changes as a refresh hack
+      // and flapped them at every Apple Home hub in the house. The answer to
+      // flapping is a list that never changes, not an empty one — so the list
+      // is a module constant and only CurrentPhase moves.
+      //
+      // Whether Apple Home draws a phase is UNMEASURED. Drying the mop is the
+      // reason to try: it runs for hours after every mop clean and the
+      // specification gives it no operational state, so a phase is the only
+      // place it can be expressed at all.
+      phaseList: this.areDockPhasesEnabled() ? [...RVC_PHASE_LIST] : null,
+      currentPhase: this.areDockPhasesEnabled() ? this.getCurrentPhase() : null,
       // Advertise operational state IDs without labels. Apple Home stops
       // commissioning ("Connecting" forever) when the list carries labels or
       // manufacturer-range IDs, so only bare IDs are exposed here.

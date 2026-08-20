@@ -1021,7 +1021,7 @@ function canAnswerV1Method(method) {
  * Map a Q7 `prop.get` status payload to v1-shaped status fields.
  * Fixture reference: {"status":4,"quantity":87,"fault":0,...}
  * @param {any} data
- * @returns {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number}}
+ * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number}}
  */
 /**
  * Translate a raw Q7 work-status code to the v1 state code, for HomeData
@@ -1036,7 +1036,7 @@ function translateQ7WorkStatusToV1State(rawStatus) {
 
 /**
  * @param {any} data
- * @returns {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
+ * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
  */
 function mapStatusToV1(data) {
   const source = data && typeof data === "object" ? data : {};
@@ -1044,7 +1044,7 @@ function mapStatusToV1(data) {
   const rawStatus = Number(source.status);
   const mappedState = B01_STATUS_TO_V1_STATE[rawStatus];
 
-  /** @type {{state: number, error_code: number, charge_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
+  /** @type {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
   const v1 = {
     // The Q7 fault field is a separate diagnostic channel: informational
     // codes (e.g. 407 "cleaning in progress / scheduled cleanup ignored")
@@ -1055,6 +1055,14 @@ function mapStatusToV1(data) {
     // Charging (4) and dock air-drying (10) count as on-charger so the
     // PowerSource cluster and the Charging/Docked tile logic see it.
     charge_status: rawStatus === 4 || rawStatus === 10 ? 1 : 0,
+    // Status 10 is the dock air-drying the mop, and mapping it to v1 state 8
+    // deliberately throws that away so the tile reads Docked rather than
+    // inventing a state. The information is worth keeping though: drying is
+    // the one dock job Matter has no operational state for, and the plugin
+    // publishes it as a phase instead. `dry_status` is the field a v1 robot
+    // with a drying dock uses for exactly this, so the B01 answer is written
+    // under the same name rather than a private one.
+    dry_status: rawStatus === 10 ? 1 : 0,
   };
 
   const battery = Number(source.quantity);

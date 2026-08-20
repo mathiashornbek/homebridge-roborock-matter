@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.14.0
+
+**Your dock spends 2 to 4 hours drying the mop after every mop clean, and until now there was no way for Apple Home to know.**
+
+Matter gives a robot vacuum an operational state for emptying the dust bin, one for washing the mop and one for updating the map. This plugin has published all 3 since 3.12.0. There is no state for drying — not in Matter 1.2, not in 1.6, not anywhere — so for the whole of that time the tile has said "Docked" while the dock worked.
+
+The one place it can be said is `PhaseList` and `CurrentPhase` on the same cluster, and this release says it there. The dock's 4 jobs are announced as a fixed list of phases, and `CurrentPhase` steps through them: washing, then drying for as long as the dock takes, then nothing.
+
+**The list never changes, and that is the entire safety argument.** Both attributes were null from 1.4.58 until today, and the reason was real even though the explanation written down for it was not: 1.4.58 removed a version that changed phases as a refresh trick and flapped them at every Apple Home hub in the house. The answer to flapping is a list that cannot move, not an empty one. The list is a module constant, only `CurrentPhase` moves, and a test fails if any future edit builds the list from anything else. A second test walks a full mop run frame by frame and asserts the list is byte-for-byte identical at every step.
+
+Drying is detected on both protocols. A classic S- or Q-series robot with a drying dock reports `dry_status` itself. A B01/Q7 reports raw status 10, air-drying, which the adapter maps to "docked" so the tile does not claim a working robot — that mapping is correct and it stays, because Apple Home may refuse a Start command to a robot it thinks is busy, but it was also where the information disappeared. The adapter now writes the fact out under the same field name the v1 robots use, so both roads arrive at the same phase.
+
+`dry_status` went into the live cache with it. Drying starts while the robot is parked and idle, which is exactly when the frames are sparsest and the cloud snapshot is stalest — without the cache the phase would light for 1 frame and go out on the next heartbeat, which is worse than never showing it. That is the same hole 3.12.1 found in the tank fields and 3.13.0 found in the error code, and the tests take the robot's own route through the live handler rather than stubbing the status reader.
+
+**Whether Apple Home draws a phase at all is unmeasured, and this release does not pretend otherwise.** An attribute nobody reads costs nothing, and drying is worth the attempt because no other route to it exists. `enableMatterDockPhases: false` in `config.json` puts both attributes back to null if a controller dislikes them — not on the settings page, which 3.12.0 removed, but there for the person who would otherwise be reinstalling.
+
 ## 3.13.1
 
 **A correction to 3.13.0, found on the maintainer's own robots within the hour, by the release that caused it.**

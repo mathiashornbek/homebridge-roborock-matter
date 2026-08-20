@@ -122,6 +122,13 @@
         "type": "boolean",
         "default": true
       },
+      "enableMatterDockPhases": {
+        "title": "Say What the Dock Is Doing",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "description": "Names the dock's own jobs through Matter's PhaseList and CurrentPhase attributes: emptying the dust bin, washing the mop, drying the mop, updating the map. Drying is the reason it exists — it runs for hours after every mop clean and Matter has no operational state for it, so a phase is the only way to express it at all. On by default. Whether your controller draws a phase is unmeasured; turn this off if a tile misbehaves."
+      },
       "matterChargedBatteryThreshold": {
         "title": "Charged Battery Threshold (%)",
         "description": "Battery percentage at which a docked robot switches from Charging to Docked on the Apple Home tile. Default 100. Lower it (e.g. 90) if a worn battery makes the robot report fully charged early.",

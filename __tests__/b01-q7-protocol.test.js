@@ -125,6 +125,7 @@ describe("B01/Q7 status mapping", () => {
       state: 5,
       error_code: 0,
       charge_status: 0,
+      dry_status: 0,
       battery: 87,
       fan_power: 102,
       matter_clean_type: 2,
@@ -344,6 +345,7 @@ describe("B01 getStatus end-to-end mapping", () => {
           state: 8,
           error_code: 0,
           charge_status: 1,
+          dry_status: 0,
           battery: 91,
           fan_power: 102,
         },
@@ -821,6 +823,18 @@ describe("Q7 room discovery via the B01 map channel", () => {
 });
 
 describe("Q7 charging tile (both status paths)", () => {
+  test("dock air-drying is carried as dry_status, not lost in the v1 mapping", () => {
+    // Raw status 10 is the dock blowing air through the mop. It maps to v1
+    // state 8 so the tile reads Docked rather than inventing a state, and
+    // that mapping is where the information used to disappear. Matter has no
+    // operational state for drying, so the plugin publishes it as a phase —
+    // which it can only do if the adapter says so here.
+    expect(b01.mapStatusToV1({ status: 10, quantity: 99 }).dry_status).toBe(1);
+    expect(b01.mapStatusToV1({ status: 4, quantity: 99 }).dry_status).toBe(0);
+    expect(b01.mapStatusToV1({ status: 9, quantity: 99 }).dry_status).toBe(0);
+    expect(b01.mapStatusToV1({ status: 5, quantity: 74 }).dry_status).toBe(0);
+  });
+
   test("live mapping carries charge_status for charging and dock-drying", () => {
     expect(b01.mapStatusToV1({ status: 4, quantity: 74 }).charge_status).toBe(
       1
@@ -891,7 +905,15 @@ describe("Q7 charging tile (both status paths)", () => {
     // Simulate the refreshB01Status live dispatch for a charging robot.
     await vacuum.notifyDeviceUpdater("CloudMessage", {
       duid: "duid-q7",
-      payload: [{ state: 8, battery: 74, error_code: 0, charge_status: 1 }],
+      payload: [
+        {
+          state: 8,
+          battery: 74,
+          error_code: 0,
+          charge_status: 1,
+          dry_status: 0,
+        },
+      ],
     });
 
     const lastOpState = [...matterUpdates]

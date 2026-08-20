@@ -848,14 +848,27 @@ describe("Matter operational state", () => {
     ).toEqual([0, 1, 2, 3]);
   });
 
-  test("keeps phase attributes null as required by the RVC Operational State cluster", () => {
+  test("announces the dock's jobs as phases, and no phase while idle", () => {
+    // This test used to assert both attributes were null "as required by the
+    // RVC Operational State cluster". No such requirement exists — 3.12.5
+    // removed the claim from the source and 3.14.0 removed it from here. Both
+    // attributes are mandatory and nullable; null means "this mode has no
+    // phases", not "phases are forbidden".
+    //
+    // What was real is the reason underneath it: 1.4.58 removed a version that
+    // changed phases as a refresh hack and flapped them at every Apple Home
+    // hub. The list is a module constant for that reason, and only
+    // CurrentPhase moves. The dedicated guard lives in
+    // __tests__/the-dock-says-what-it-is-doing.test.js.
     const platform = createPlatform();
     const { accessory } = createAccessory(platform);
 
-    // RVC Operational State requires PhaseList and CurrentPhase to be null.
-    // Non-null phases (or flapping CurrentPhase as a refresh signal) confuse
-    // Matter controllers and must never be reintroduced.
-    expect(accessory.clusters.rvcOperationalState.phaseList).toBeNull();
+    expect(accessory.clusters.rvcOperationalState.phaseList).toEqual([
+      "Emptying dust bin",
+      "Washing mop",
+      "Drying mop",
+      "Updating maps",
+    ]);
     expect(accessory.clusters.rvcOperationalState.currentPhase).toBeNull();
   });
 
