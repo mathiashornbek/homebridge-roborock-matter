@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.11.2
+
+**"Attempt 12 this run" counted every run since Homebridge started. So did "failed 10 times in a row", and the once-per-run explanation of why no room could be named was only ever printed on the first run of the process.**
+
+Caught on my own a70. It ran a two-room clean from Apple Home, the cloud map channel was timing out that morning, and `get_map_v1` failed all ten times it was asked — ten guaranteed-to-fail cloud requests, 10 seconds of timeout each, spread across one ten-minute clean, and not one room named.
+
+The clear that runs at every run boundary exists so nothing leaks into the next run. It dropped the cached room and nothing else. Every counter behind the log lines survived for the lifetime of the process, so three lines were telling you about a window that was not the one they named. A run that fails every attempt is exactly the run that leaves the counters high, and that run never had a cached room to clear in the first place — which is why the leak survived a release that went looking for the same class of thing. 3.11.0 stopped placeholder poses from inflating the miss count; it did not make the count per-run. It is per-run now.
+
+**The failing fetch is also no longer retried at live-display cadence for the whole run.** After 2 failures in a row the gap doubles with each further failure, capped at 5 minutes, and drops straight back to the live cadence the moment one succeeds. The first two failures are deliberately not slowed: a single lost frame on a healthy channel must not make a working live room sluggish, the same rule 3.11.1's local-mute limit follows. A streak long enough to have been slowed now says so when it ends, because "failed N times in a row" at warn level had no counterpart and a channel that recovered left the log's last word saying it was broken.
+
+Both protocol paths are covered — the classic `get_map_v1` fetch and the Q7/B01 SCMap fetch had the same two defects in the same shape. The test enumerates the rule across every live-room state the plugin keeps rather than the two call sites that happened to be found, so a third path added later fails the test instead of leaking quietly.
+
+Not addressed, because there is no measurement to justify it: why the cloud map channel timed out at all. `get_map_v1` has the default 10-second timeout and had been resolving every position on this same robot nine days earlier, so a longer timeout would be a guess. The morning also carried an unrelated cloud `get_prop` timeout on the same robot, which points at the account's cloud rather than at the map request.
+
 ## 3.11.1
 
 **The LAN port was open, the robot never answered on it, and the plugin kept asking for the life of the process — 10 seconds thrown away on every poll and every command.**

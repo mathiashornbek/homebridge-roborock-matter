@@ -87,6 +87,57 @@ const LOCAL_MUTE_TIMEOUT_LIMIT = 3;
 // modest while making the room track the robot closely enough to be useful.
 const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 10000;
 
+// A live-room fetch that keeps failing is a channel that is down for this
+// robot, not a lost frame. The request is heavy, it always rides the cloud
+// (get_map_v1 is a secure request), and every failure costs a full request
+// timeout. Retrying it at live-display cadence for a whole run buys nothing:
+// measured on an a70 whose map channel was timing out, one ten-minute clean
+// spent ten guaranteed-to-fail cloud requests and never named a room. So widen
+// the gap as failures pile up, and drop straight back to the live cadence the
+// moment one answers. The first two failures are deliberately NOT slowed — a
+// single lost frame on a healthy channel must not make a working live display
+// sluggish, the same rule the local-mute limit follows.
+const LIVE_ROOM_FAILURE_BACKOFF_AFTER = 2;
+const LIVE_ROOM_FAILURE_BACKOFF_MAX_MS = 300000; // 5 min
+
+/**
+ * Required gap before the next live-room fetch attempt, given how many
+ * attempts in a row have already failed.
+ * @param {number} [consecutiveFailures]
+ * @returns {number}
+ */
+function liveRoomFetchGapMs(consecutiveFailures) {
+  const over = Number(consecutiveFailures) - LIVE_ROOM_FAILURE_BACKOFF_AFTER;
+  if (!Number.isFinite(over) || over <= 0) {
+    return B01_LIVE_ROOM_MIN_FETCH_GAP_MS;
+  }
+  return Math.min(
+    B01_LIVE_ROOM_MIN_FETCH_GAP_MS * 2 ** over,
+    LIVE_ROOM_FAILURE_BACKOFF_MAX_MS
+  );
+}
+
+/**
+ * Zero the counters that describe THIS run. clearLiveRoomForDevice runs at
+ * every run boundary and its stated job is to stop state leaking into the next
+ * run, but it used to drop only the cached room. Everything else survived, so
+ * a line reading "attempt N this run" counted every run since Homebridge
+ * started, the placeholder explanation meant to be said once per run was only
+ * ever visible on the very first run of the process, and "failed N times in a
+ * row" could greet a new run's first failure with N already at 5. Resetting
+ * has to happen even when no room was ever resolved — a run that failed every
+ * attempt is precisely the run that left the counters high.
+ * @param {{consecutiveFailures?: number, unresolvedPoseCount?: number, placeholderReported?: boolean} | null | undefined} liveState
+ */
+function resetLiveRoomRunCounters(liveState) {
+  if (!liveState) {
+    return;
+  }
+  liveState.consecutiveFailures = 0;
+  liveState.unresolvedPoseCount = 0;
+  liveState.placeholderReported = false;
+}
+
 // B01/Q7 status cadence. These were literals in three places — the two gap
 // values, the loop interval, and a hand-written startup line quoting all
 // three. 3.2.0 changed the idle gap from 45s to 25s and the startup line kept
@@ -4602,7 +4653,10 @@ class Roborock {
     if (liveState.inflight) {
       return liveState.inflight;
     }
-    if (Date.now() - liveState.lastAttemptAt < B01_LIVE_ROOM_MIN_FETCH_GAP_MS) {
+    if (
+      Date.now() - liveState.lastAttemptAt <
+      liveRoomFetchGapMs(liveState.consecutiveFailures)
+    ) {
       return liveState.current;
     }
     liveState.lastAttemptAt = Date.now();
@@ -4644,7 +4698,7 @@ class Roborock {
 
         const resolution2 = b01Q7Adapter.describeLiveRoomResolution(parsed);
         const roomId = resolution2.roomId;
-        liveState.consecutiveFailures = 0;
+        this.noteLiveRoomFetchRecovered(duid, liveState);
 
         if (roomId === null) {
           // Debug-only used to make this invisible, and it is the single most
@@ -4749,6 +4803,27 @@ class Roborock {
     return this._b01LiveRoomState?.get(duid)?.current || null;
   }
 
+  /**
+   * Close the loop on a failure streak. "Live-room map fetch has failed N
+   * times in a row" had no counterpart, so a channel that came back left the
+   * last word in the log saying it was broken. Said exactly when the backoff
+   * had begun slowing the fetch down, so the message and the behaviour it
+   * reports on cannot drift apart.
+   * @param {string} duid
+   * @param {{consecutiveFailures?: number} | null | undefined} liveState
+   */
+  noteLiveRoomFetchRecovered(duid, liveState) {
+    const failures = liveState?.consecutiveFailures || 0;
+    if (failures > LIVE_ROOM_FAILURE_BACKOFF_AFTER) {
+      this.log.info(
+        `Live-room map fetch for ${this.describeDevice(duid)} recovered after ${failures} failed attempt(s).`
+      );
+    }
+    if (liveState) {
+      liveState.consecutiveFailures = 0;
+    }
+  }
+
   /** @param {string} duid */
   clearB01LiveRoom(duid) {
     const liveState = this._b01LiveRoomState?.get(duid);
@@ -4758,6 +4833,7 @@ class Roborock {
       );
       liveState.current = null;
     }
+    resetLiveRoomRunCounters(liveState);
   }
 
   /**
@@ -4805,6 +4881,7 @@ class Roborock {
       );
       liveState.current = null;
     }
+    resetLiveRoomRunCounters(liveState);
   }
 
   /**
@@ -4876,7 +4953,7 @@ class Roborock {
         // microseconds).
         const segmentId =
           RRMapParser.resolveLiveSegmentFromMapBuffer(mapBuffer);
-        liveState.consecutiveFailures = 0;
+        this.noteLiveRoomFetchRecovered(duid, liveState);
 
         if (segmentId === null) {
           this.log.debug(
