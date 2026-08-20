@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.12.4
+
+**A correction. For one release this README said the opposite of the truth about how your robots reach Apple Home.**
+
+3.12.3 rewrote the paragraph on Matter fault reporting around 2 beliefs: that Homebridge puts every Matter accessory on 1 shared node, and that the field tests which found Apple Home drawing no vacuum faults had therefore been run on a bridge. Both are wrong, and the evidence was in the maintainer's own log the whole time.
+
+Homebridge has never bridged a robot vacuum. Its Matter layer keeps a list of device types that must be published on a dedicated Matter server of their own, and `RoboticVacuumCleaner` has been on that list since the first Matter commit landed on 23 February 2026 — before any released Homebridge could speak Matter at all. Every robot gets its own server, its own port and its own pairing code. On the maintainer's host that is ports 5532, 5533 and 5534 and 3 distinct bridge identifiers, printed in the Homebridge log at every startup.
+
+So the sentence 3.12.3 deleted was correct and the one it added was not. "Bridged versus not" cannot explain why Apple Home drew nothing in those 3 controlled tests and drew the tap icon on this maintainer's own tile on 20 August, because every one of those measurements was taken on a standalone node. The condition is still unknown, and the README says so again.
+
+The wrong version was live for 17 minutes. Nothing in the plugin changed in this release; the code shipped by 3.12.3 is untouched.
+
 ## 3.12.3
 
 **A robot asked to mop said it was vacuuming — for the 40 seconds it spent driving home.**
