@@ -613,6 +613,9 @@ describe("the drive home is not a mode change", () => {
   // SEEKING_CHARGER (64). While that is the state, the derivation is frozen.
 
   const ROBOROCK_STATE_RETURNING = 6;
+  const ROBOROCK_STATE_WASHING_MOP = 23;
+  const ROBOROCK_STATE_EMPTYING = 22;
+  const ROBOROCK_STATE_MAPPING = 29;
 
   test("a mop run stays Mop while the robot drives home", async () => {
     const harness = createHarness({
@@ -650,6 +653,64 @@ describe("the drive home is not a mode change", () => {
     harness.set({ state: ROBOROCK_STATE_CHARGING });
 
     expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+  });
+
+  test("and the dock washing the mop afterwards is not one either", async () => {
+    // 3.12.3 froze the drive home and was too narrow by exactly one dock.
+    // Replayed from the same robot 3 hours later, 20 Aug:
+    //
+    //   21:04:33  publish … operationalState=1,  cleanMode=1   mopping the hall
+    //   21:07:43  publish … operationalState=64, cleanMode=1   driving home
+    //   21:09:31  publish … operationalState=68, cleanMode=2   washing the mop
+    //
+    // Roborock state 23 is "washing the mop", which maps to Matter
+    // CLEANING_MOP (68) and still counts as part of the run. A dock washing a
+    // mop runs water with the fan off and on again, which is the same
+    // signature read the same wrong way.
+    const harness = createHarness({
+      initialStatus: { fan_power: FAN_POWER_OFF, water_box_mode: WATER_BOX_ON },
+    });
+    await harness.handlers.rvcCleanMode.changeToMode({
+      newMode: CLEAN_MODE_MOP,
+    });
+    await settle();
+    await startFromHome(harness);
+
+    // The robot agrees while it works, exactly as it did in the log — which
+    // is what releases the applied-type pin. Without this read the pin would
+    // still be holding and would mask the defect being tested.
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+
+    harness.set({ state: ROBOROCK_STATE_RETURNING, fan_power: FAN_POWER_MAX });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+
+    harness.set({ state: ROBOROCK_STATE_WASHING_MOP });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+  });
+
+  test("nor is the dock emptying the bin, nor updating the map", async () => {
+    const harness = createHarness({
+      initialStatus: { fan_power: FAN_POWER_OFF, water_box_mode: WATER_BOX_ON },
+    });
+    await harness.handlers.rvcCleanMode.changeToMode({
+      newMode: CLEAN_MODE_MOP,
+    });
+    await settle();
+    await startFromHome(harness);
+
+    harness.set({ state: ROBOROCK_STATE_ROOM_CLEAN });
+    expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+    harness.set({ state: ROBOROCK_STATE_RETURNING, fan_power: FAN_POWER_MAX });
+
+    for (const state of [
+      ROBOROCK_STATE_EMPTYING,
+      ROBOROCK_STATE_MAPPING,
+      ROBOROCK_STATE_WASHING_MOP,
+    ]) {
+      harness.set({ state });
+      expect(harness.cleanMode()).toBe(CLEAN_MODE_MOP);
+    }
   });
 
   test("a mode genuinely changed mid-clean still reaches Apple Home", async () => {

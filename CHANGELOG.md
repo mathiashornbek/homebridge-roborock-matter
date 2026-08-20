@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.14.3
+
+**The wind-down fix from 3.12.3 was too narrow by exactly one dock.**
+
+3.12.3 stopped a mop run from reporting "Vacuum + Mop" while the robot drove home. Three hours later the same robot did the same thing one step further along, and the log is as plain as the first one:
+
+```
+21:04:33  publish … operationalState=1,  cleanMode=1   mopping the hall
+21:07:43  publish … operationalState=64, cleanMode=1   driving home, correctly held
+21:09:31  publish … operationalState=68, cleanMode=2   washing its mop
+```
+
+The freeze covered the drive home and nothing else. A dock washing a mop runs water with the fan off and on again, which is the same signature that made the robot look like it was vacuuming in the first place — so the moment it arrived and started washing, the derivation woke up and changed the user's mode under them.
+
+Everything the plugin already counts as part of a run except actually running or paused is now the wind-down: driving home, emptying the bin, washing the mop, updating the map. During those the fan power and the water box belong to the dock's business, not to what the user asked for. A mode genuinely changed in the Roborock app while the robot is still cleaning reaches Apple Home exactly as before, and that case keeps the test it has had since 3.12.3.
+
+Two new tests replay the 21:04 to 21:09 window frame by frame. Both fail against 3.12.3.
+
 ## 3.14.2
 
 **3.14.0 froze the operational state on the tile, and it did it to every robot that was not actively doing a dock job. Fix immediately.**

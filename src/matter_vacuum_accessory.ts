@@ -2396,13 +2396,30 @@ export default class RoborockMatterVacuumAccessory {
     // box stays configured, and "fan not off plus water on" is precisely the
     // signature getLiveCleanType() reads as vacuum+mop.
     //
-    // So the derivation is frozen while the robot is driving home. It stays
-    // authoritative for the rest of a run, because a mode genuinely changed
-    // in the Roborock app mid-clean must still reach Apple Home — that is a
-    // real case with a test of its own. A robot that reports its clean type
-    // directly is unaffected either way: its answer is not a guess.
+    // So the derivation is frozen from the moment the robot stops cleaning
+    // the floor until the run formally ends. It stays authoritative while the
+    // robot is actually working, because a mode genuinely changed in the
+    // Roborock app mid-clean must still reach Apple Home — that is a real case
+    // with a test of its own. A robot that reports its clean type directly is
+    // unaffected either way: its answer is not a guess.
+    //
+    // 3.12.3 froze only the drive home, and that was too narrow by exactly
+    // one dock. Measured on the same robot 3 hours later: the flap moved from
+    // 16:56 to 21:09, from state 64 to state 68. The robot finished mopping
+    // the hall, drove home with the type correctly held at Mop, and then
+    // reported Vacuum + Mop the moment it reached the dock and started
+    // washing its mop — because a dock washing a mop runs water with the fan
+    // off and on again, which is the same signature read the same wrong way.
+    //
+    // Everything `isInCleaningRunMode` counts as part of a run except
+    // actually running or paused IS the wind-down: driving home, emptying the
+    // bin, washing the mop, updating the map. During those the fan power and
+    // water box belong to the dock's business, not to what the user asked for.
+    const operationalState = this.getOperationalState();
     const windingDown =
-      this.getOperationalState() === RVC_OPERATIONAL_STATE.SEEKING_CHARGER;
+      inCleaningRun &&
+      operationalState !== RVC_OPERATIONAL_STATE.RUNNING &&
+      operationalState !== RVC_OPERATIONAL_STATE.PAUSED;
 
     if (!this.selectedCleanModeNeedsApply && inCleaningRun && !windingDown) {
       const liveCleanType = this.getLiveCleanType();
