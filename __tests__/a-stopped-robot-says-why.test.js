@@ -141,25 +141,77 @@ describe("a robot that stopped says what stopped it", () => {
     expect(cluster.operationalError).toEqual({ errorStateId: expected });
   });
 
-  test("an error_code this plugin has never seen still reports something", async () => {
-    // 2105 is real: it appears on a Q7 in the maintainer's own house and is in
-    // no table anywhere. Silence would be the worst of the 3 options — the
-    // robot has stopped, Apple Home already says Error, and the number needs
-    // to reach a log where somebody can report it.
+  test("an error_code this plugin has never seen publishes nothing", async () => {
+    // The 3.13.1 correction, and it was measured rather than reasoned.
+    // 3.13.0 gave an unknown code the generic fault on the grounds that
+    // silence is worse than vagueness. Within the hour, 2 docked robots at
+    // 100 % battery both carrying `error_code: 2105` had a fault drawn on
+    // tiles with nothing wrong with them. The B01/Q7 fault field is a
+    // diagnostic channel where informational codes linger — this repository's
+    // own adapter zeroes 407 for that exact reason.
     const { cluster, platform } = await publishWith({
-      state: ROBOROCK_STATE_IN_ERROR,
-      battery: 55,
+      state: ROBOROCK_STATE_CHARGING,
+      battery: 100,
+      error_code: 2105,
+    });
+
+    expect(cluster).not.toHaveProperty("operationalError");
+    expect(
+      platform.log.info.mock.calls
+        .map((call) => String(call[0]))
+        .some(
+          (line) =>
+            line.includes("error_code 2105") &&
+            line.includes("no mapping") &&
+            line.includes("issues")
+        )
+    ).toBe(true);
+  });
+
+  test("the unmapped code is named once, not once per poll", async () => {
+    const { vacuum, platform } = buildVacuum({
+      status: {
+        state: ROBOROCK_STATE_CHARGING,
+        battery: 100,
+        error_code: 2105,
+      },
+    });
+    await vacuum.updateMatterStateFromRoborock("test");
+    await vacuum.updateMatterStateFromRoborock("test");
+    await vacuum.updateMatterStateFromRoborock("test");
+
+    const named = platform.log.info.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("error_code 2105"));
+    expect(named).toHaveLength(1);
+  });
+
+  test("an unmapped code does not clear a fault the tank is still carrying", async () => {
+    const { cluster } = await publishWith({
+      state: ROBOROCK_STATE_CHARGING,
+      battery: 100,
+      dock_error_status: 38,
       error_code: 2105,
     });
 
     expect(cluster.operationalError).toEqual({
-      errorStateId: RVC_ERROR_UNABLE_TO_COMPLETE,
+      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
     });
-    expect(
-      publishLines(platform).some((line) =>
-        line.includes("unmapped Roborock error 2105")
-      )
-    ).toBe(true);
+  });
+
+  test("a B01/Q7 robot's fault channel is not read through the v1 table", async () => {
+    // `matter_clean_type` is only reported by B01/Q7 robots, and their fault
+    // numbers are a different space that happens to share a field name. 254
+    // means "bin full" in Roborock's v1 table and means nothing established
+    // on a Q7, so it must not be translated.
+    const { cluster } = await publishWith({
+      state: ROBOROCK_STATE_CHARGING,
+      battery: 100,
+      matter_clean_type: 1,
+      error_code: 254,
+    });
+
+    expect(cluster).not.toHaveProperty("operationalError");
   });
 
   test("a healthy robot publishes NoError, so a cleared fault clears", async () => {
@@ -237,7 +289,7 @@ describe("nothing newer than Matter 1.2 ever leaves the plugin", () => {
   // attribute. If a future edit reaches for the accurate name, this fails.
   const EVERY_KNOWN_ROBOROCK_ERROR = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-    22, 23, 24, 254, 255, 9999,
+    22, 23, 24, 254, 255,
   ];
 
   test.each(EVERY_KNOWN_ROBOROCK_ERROR)(

@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.13.1
+
+**A correction to 3.13.0, found on the maintainer's own robots within the hour, by the release that caused it.**
+
+3.13.0 gave an unrecognised `error_code` the generic Matter fault rather than silence. The argument was that a robot which has stopped and says nothing is worse than one which says something vague, and it was wrong.
+
+Within 30 minutes of the deploy, 2 robots that were docked, charging, at 100 % and in perfect health were both carrying `error_code: 2105` and both had a fault drawn on their Apple Home tile. Neither was in any kind of trouble. The reason is written in this repository already: a B01/Q7 robot's fault field is a separate diagnostic channel where informational codes linger after harmless events, which is why the adapter has always zeroed 407 — "cleaning in progress, scheduled cleanup ignored" — before it reaches anything else.
+
+So an unrecognised number is not evidence of a fault. It is evidence of a number. It is now named once in the log, per code and per robot, with a link for reporting it, and nothing is published to Apple Home for it. An existing fault is not cleared by one either.
+
+The same release stops reading a B01/Q7 robot's fault through Roborock's v1 error table at all. The 2 numbering spaces share a field name and nothing else, so translating 254 from a Q7 as "dust bin full" would have been a coincidence rather than a reading.
+
+Curated codes are unaffected: stuck, jammed wheel, blocked brush, dust bin missing or full, unreachable dock, flat battery and the rest still reach the tile exactly as 3.13.0 shipped them.
+
 ## 3.13.0
 
 **Apple Home could always tell you a robot had stopped. It could never tell you why. Now it can.**

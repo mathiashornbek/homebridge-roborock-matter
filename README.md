@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 1232 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 1234 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -139,7 +139,7 @@ Everything is configurable from the Homebridge UI. The essentials:
 
 By default a robot that has stopped for any reason shows as **Ready** in Apple Home — whether it finished the job or is wedged under the sofa. Since 3.12.0 it does not: a robot that is stuck, has a blocked brush or wheel, a missing dust bin, a flat battery or a dock it cannot reach reports the Matter **Error** state instead of Ready. The cost of that is real — a robot in Error may be refused a Start command by Apple Home — but that is the correct answer for a robot which cannot run, and the old silence is a `enableMatterFaultReporting: false` in `config.json` away.
 
-**Since 3.13.0 it also says what stopped it.** The Error state on its own tells you the robot needs you without telling you why — you still have to open the Roborock app to find out whether it is wedged under the sofa or just missing its dust bin. The plugin now publishes Matter's `OperationalError` attribute alongside the state, mapped from the robot's own error code: stuck, a jammed wheel, a blocked brush, a missing or full dust bin, a dock it cannot reach, a flat battery, a no-go zone in the way. An error code the plugin has never seen still reports a fault rather than silence, and the raw number goes to the Homebridge log so it can be [reported](https://github.com/mathiashornbek/homebridge-roborock-matter/issues) and mapped properly.
+**Since 3.13.0 it also says what stopped it.** The Error state on its own tells you the robot needs you without telling you why — you still have to open the Roborock app to find out whether it is wedged under the sofa or just missing its dust bin. The plugin now publishes Matter's `OperationalError` attribute alongside the state, mapped from the robot's own error code: stuck, a jammed wheel, a blocked brush, a missing or full dust bin, a dock it cannot reach, a flat battery, a no-go zone in the way. An error code the plugin has no entry for publishes nothing at all — it is named once in the Homebridge log so it can be [reported](https://github.com/mathiashornbek/homebridge-roborock-matter/issues) and mapped properly, and no fault is invented from it. 3.13.0 did invent one, and 2 of this maintainer's robots sat docked at 100 % with a fault on the tile within the hour to prove why that was wrong.
 
 The published codes deliberately stop at 71. Matter 1.5 added names that fit several of these faults exactly — `WheelsJammed`, `BrushJammed`, `NavigationSensorObscured` — but everything up to 71 has been in the cluster since Matter 1.2, and nothing establishes which revision your controller implements. This plugin has already measured what Apple Home does with a value it does not recognise in the neighbouring attribute: the tile sticks on "Connecting" forever. A known-but-generic code is worth more than an accurate-but-unknown one, and the accurate name is written to the log either way. When somebody measures a 1.5 code on a real tile, the mapping moves.
 
@@ -227,7 +227,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 1232 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 1234 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 

@@ -766,6 +766,7 @@ export default class RoborockMatterVacuumAccessory {
   } | null = null;
   private lastVacuumFanPower: number | null = null;
   private lastWaterBoxMode: number | null = null;
+  private readonly reportedUnmappedErrorCodes = new Set<number>();
   private matterInitializationRetryAttempt = 0;
   private matterInitializationRetryPending = false;
   private returnToDockRetryPending = false;
@@ -966,7 +967,15 @@ export default class RoborockMatterVacuumAccessory {
 
     const errorCode = this.getNumberStatus("error_code");
     if (errorCode !== null && errorCode !== 0) {
-      const mapped = ROBOROCK_ERROR_TO_MATTER.get(errorCode);
+      // The table is Roborock's v1 numbering. A B01/Q7 robot's `fault` field
+      // is a different space entirely — 407, 2105 — passed through under the
+      // same name by the adapter, so reading 254 from one of those robots as
+      // "bin full" would be a coincidence, not a translation.
+      const speaksV1ErrorCodes =
+        this.getNumberStatus("matter_clean_type") === null;
+      const mapped = speaksV1ErrorCodes
+        ? ROBOROCK_ERROR_TO_MATTER.get(errorCode)
+        : undefined;
       if (mapped) {
         return {
           id: mapped.id,
@@ -976,15 +985,25 @@ export default class RoborockMatterVacuumAccessory {
         };
       }
 
-      // An error_code this plugin has never seen. It is still a fault — the
-      // robot has stopped and Apple Home is already showing the Error state —
-      // so it gets the generic code rather than silence, and the raw number
-      // reaches the log where it can be reported. error_code 2105 on a Q7 is
-      // exactly this case and is why the branch exists.
-      return {
-        id: RVC_OPERATIONAL_ERROR.UNABLE_TO_COMPLETE_OPERATION,
-        text: `unmapped Roborock error ${errorCode}`,
-      };
+      // An error_code with no entry in the table publishes NOTHING, and this
+      // is the correction 3.13.1 exists for.
+      //
+      // 3.13.0 published a generic fault for it, on the reasoning that a
+      // robot which has stopped saying nothing is worse than a robot saying
+      // something vague. That reasoning had a hole, and 2 of the maintainer's
+      // own robots found it within the hour: both sat docked at 100 %, both
+      // carrying `error_code: 2105`, and both got a fault drawn on a tile
+      // that had nothing wrong with it. The B01/Q7 fault channel is
+      // documented in this very repository as one where informational codes
+      // linger after harmless events — the adapter already zeroes 407 for
+      // exactly that reason.
+      //
+      // So an unrecognised number is not evidence of a fault. It is evidence
+      // of a number. It gets logged once so it can be reported and mapped,
+      // and the attribute is left alone: no fault invented, and no existing
+      // fault cleared either.
+      this.reportUnmappedErrorCode(errorCode);
+      return null;
     }
 
     if (tankEmpty === false || errorCode === 0) {
@@ -997,6 +1016,27 @@ export default class RoborockMatterVacuumAccessory {
 
     // Neither source has said anything.
     return null;
+  }
+
+  /**
+   * Name an unmapped error_code in the log once per code, per robot, per run.
+   *
+   * Once, because these codes linger: 2105 was present on every poll of 2
+   * robots for the whole evening it was found, and a line per poll would bury
+   * the log the way the ioBroker leftover did before 3.11.2 removed it.
+   */
+  private reportUnmappedErrorCode(errorCode: number): void {
+    if (this.reportedUnmappedErrorCodes.has(errorCode)) {
+      return;
+    }
+    this.reportedUnmappedErrorCodes.add(errorCode);
+    this.platform.log.info(
+      `${this.getVacuumName()} reports error_code ${errorCode}, which this plugin has no mapping for. ` +
+        "Nothing is published to Apple Home for it, because an unrecognised code is as likely to be " +
+        "informational as it is to be a fault. If the robot really is in trouble right now, please report " +
+        "the number and what the Roborock app says: " +
+        "https://github.com/mathiashornbek/homebridge-roborock-matter/issues"
+    );
   }
 
   /**
