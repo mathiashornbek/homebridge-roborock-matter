@@ -561,9 +561,9 @@ async function handleSaveClick(button) {
   }
 }
 
-/** An auto-save that cannot fail silently. */
+/** An auto-save that cannot fail silently, and cannot write the panel below. */
 function autoSave() {
-  saveCredentials(false).catch(() =>
+  saveCredentials(false, { only: AUTO_SAVED_FIELDS }).catch(() =>
     showToast("error", "Could not save that change.")
   );
 }
@@ -584,6 +584,50 @@ function getTransientWarningThrottleHours() {
 
 function getCode() {
   return elements.code.value.trim();
+}
+
+/**
+ * The keys an implicit save is allowed to write.
+ *
+ * Every control wired to `autoSave()` lives in the Account panel or the
+ * advanced block inside it, and the device rows only ever edit `skipDevices`.
+ * The Apple Home checkboxes sit in their own panel with their own Save button
+ * and deliberately have no autoSave binding — but the implicit saves spread the
+ * WHOLE form, so a change to debug mode, region, email or a device row
+ * committed whatever those four Apple Home keys happened to be in the DOM at
+ * that moment. Two ways that goes wrong, and the first one cost nine
+ * accessories three times in one day:
+ *
+ *  - a box was unticked and NOT saved, and an unrelated change persisted it.
+ *    On 20 Aug `debugMode` went `false` -> `true` and
+ *    `enableHomeKitStateSensors` went `true` -> `false` in the SAME write: one
+ *    debug-mode toggle, and the untouched checkbox rode along.
+ *  - the same in reverse — a stray tick committed without a Save.
+ *
+ * `updatePluginConfig` is a merge, so leaving a key out of the patch keeps
+ * whatever is saved. That is the whole fix: an implicit save writes the fields
+ * whose own controls triggered it, and nothing else. The password is off the
+ * list for the same reason `login()` deletes it — an email-field blur should
+ * not write an account password into config.json in cleartext.
+ */
+const AUTO_SAVED_FIELDS = [
+  "email",
+  "baseURL",
+  "skipDevices",
+  "debugMode",
+  "matterChargedBatteryThreshold",
+  "preferCloudForMatterCommands",
+  "cloudOnlyMode",
+  "transientWarningThrottleHours",
+];
+
+/** The listed keys only. Absent keys survive, because the save is a merge. */
+function pickFields(source, keys) {
+  const picked = {};
+  for (const key of keys) {
+    picked[key] = source[key];
+  }
+  return picked;
 }
 
 function getFormValues() {
@@ -733,7 +777,9 @@ function onManagedDeviceToggle(device, managed) {
 
   setSkipTokens(tokens);
   rerenderMatterPairing();
-  saveCredentials(false)
+  // A device row edits `skipDevices`. It has no business saving the Apple Home
+  // panel on the way past.
+  saveCredentials(false, { only: AUTO_SAVED_FIELDS })
     .then(() => {
       showToast(
         "success",
@@ -748,7 +794,13 @@ function onManagedDeviceToggle(device, managed) {
   renderManagedDevices();
 }
 
-async function saveCredentials(showSuccess = false) {
+/**
+ * @param {boolean} showSuccess
+ * @param {{only?: string[] | null}} [options] `only` narrows the patch to those
+ *   keys — see AUTO_SAVED_FIELDS. Omit it for the explicit Save buttons, which
+ *   are the only thing allowed to write the whole form.
+ */
+async function saveCredentials(showSuccess = false, { only = null } = {}) {
   const formValues = getFormValues();
   const { email, password } = formValues;
   if (!email) {
@@ -756,10 +808,12 @@ async function saveCredentials(showSuccess = false) {
     return;
   }
 
-  const patch = {
-    ...formValues,
-    enableMatterServiceAreaBeta: undefined,
-  };
+  const patch = only
+    ? pickFields(formValues, only)
+    : {
+        ...formValues,
+        enableMatterServiceAreaBeta: undefined,
+      };
 
   if (!password) {
     delete patch.password;
@@ -767,7 +821,8 @@ async function saveCredentials(showSuccess = false) {
 
   await updatePluginConfig(patch);
 
-  if (password) {
+  // Only when this save actually carried it. A narrowed patch never does.
+  if (password && !only) {
     state.hasPassword = true;
   }
 
