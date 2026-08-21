@@ -1432,8 +1432,83 @@ function supportsMaxPlusFanPower(model) {
   return MAX_PLUS_FAN_POWER_MODELS.has(model);
 }
 
+// Marketing names for the model codes the robot reports, so a controller shows
+// "Roborock Qrevo S" where it used to show "roborock.vacuum.a104" (#10).
+//
+// DISPLAY ONLY. Every poll profile, feature lookup, capability branch and
+// `isSupportedDevice` call in this codebase keys on the raw code, and a name
+// resolved anywhere a model is *compared* would break model detection silently
+// — a robot whose name we happen to know would stop matching its own profile.
+// `__tests__/the-model-row-is-a-name-not-a-code.test.js` enforces both halves.
+//
+// Every entry is upstream copystring/ioBroker.roborock's own
+// `VacuumProfile.name` from `src/lib/features/vacuum/<model>_features.ts`, with
+// upstream's trailing "(a104)" bookkeeping suffix removed, cross-checked
+// against this file's model comments. Models with no upstream profile are
+// deliberately absent — Mathias' own sc05 among them — because a wrong
+// marketing name is worse than a code: the code is at least unambiguous.
+const MODEL_MARKETING_NAMES = Object.freeze(
+  Object.assign(Object.create(null), {
+    "roborock.vacuum.s4": "Roborock S4",
+    "roborock.vacuum.s5e": "Roborock S5 Max",
+    "roborock.vacuum.s6": "Roborock S6",
+    "roborock.vacuum.sc01": "Roborock Q7 L5",
+    "roborock.vacuum.a08": "Roborock S6 Pure",
+    "roborock.vacuum.a10": "Roborock S6 MaxV",
+    "roborock.vacuum.a15": "Roborock S7",
+    "roborock.vacuum.a19": "Roborock S4 Max",
+    "roborock.vacuum.a21": "Roborock Qrevo Slim",
+    "roborock.vacuum.a27": "Roborock S7 MaxV (Pro/Ultra)",
+    "roborock.vacuum.a38": "Roborock Q7 Max",
+    "roborock.vacuum.a40": "Roborock Q7",
+    "roborock.vacuum.a51": "Roborock S8",
+    "roborock.vacuum.a62": "Roborock S7 Pro Ultra",
+    "roborock.vacuum.a65": "Roborock S7 Max Ultra",
+    "roborock.vacuum.a70": "Roborock S8 Pro Ultra",
+    "roborock.vacuum.a72": "Roborock Q5 Pro",
+    "roborock.vacuum.a73": "Roborock Q8 Max",
+    "roborock.vacuum.a75": "Roborock Q Revo",
+    "roborock.vacuum.a87": "Roborock Qrevo MaxV",
+    "roborock.vacuum.a97": "Roborock S8 MaxV Ultra",
+    "roborock.vacuum.a101": "Roborock Q Revo Pro",
+    "roborock.vacuum.a104": "Roborock Qrevo S",
+    "roborock.vacuum.a117": "Roborock Qrevo Master",
+    "roborock.vacuum.a135": "Roborock Qrevo Curv",
+    "roborock.vacuum.a144": "Roborock Saros 10R",
+    "roborock.vacuum.a147": "Roborock Saros 10",
+    "roborock.vacuum.a156": "Roborock Qrevo Edge",
+    "roborock.vacuum.a159": "Roborock Qrevo Curv Series",
+    "roborock.vacuum.a168": "Roborock Qrevo L",
+    "roborock.vacuum.a179": "Roborock Saros Z70",
+    "roborock.vacuum.a187": "Roborock Qrevo Edge Series",
+    "roborock.vacuum.a288": "Roborock Saros 20",
+    "roborock.vacuum.a298": "Roborock Qrevo Edge 2",
+  })
+);
+
+/**
+ * The human-readable model name for a reported model code, or null when we
+ * cannot source one. Callers must fall back to the code, never to a guess.
+ *
+ * @param {unknown} model
+ * @returns {string|null}
+ */
+function getModelMarketingName(model) {
+  if (typeof model !== "string" || !model) {
+    return null;
+  }
+
+  // The table has a null prototype, so an inherited `toString` cannot be
+  // mistaken for an entry — but read it defensively anyway, because this is
+  // called with whatever the cloud reported.
+  const name = MODEL_MARKETING_NAMES[model];
+  return typeof name === "string" && name ? name : null;
+}
+
 module.exports = {
   deviceFeatures,
   errorCodes,
   supportsMaxPlusFanPower,
+  getModelMarketingName,
+  MODEL_MARKETING_NAMES,
 };

@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.15.0
+
+**A Q Revo S owner asked for the accessory details to read like a native device. Half of that is fixed here; the other half is Homebridge's and is now filed.**
+
+`accessory.model` has always been the raw string the robot reports itself as, so every surface that shows a model showed `roborock.vacuum.a104`. The HAP contact sensors carried it visibly today — their Model characteristic read "roborock.vacuum.a70 Docked" — and it is what the Matter node would show the moment Homebridge stops discarding it.
+
+There is now a marketing-name table: `roborock.vacuum.a104` reads "Roborock Qrevo S", `a70` reads "Roborock S8 Pro Ultra", and 34 models are covered. Every entry is upstream `copystring/ioBroker.roborock`'s own `VacuumProfile.name`, cross-checked against this repository's model comments — the test that does the cross-check found a real disagreement on the a97 while it was being written. Models with no upstream profile are deliberately absent and keep showing the code, including the maintainer's own sc05: a wrong marketing name is worse than a code, because a code is at least unambiguous.
+
+**The table is display-only, and that is the part worth guarding.** Every poll profile, feature lookup, capability branch and `isSupportedDevice` call keys on the raw code. A name resolved where a model is _compared_ would break model detection silently — a robot whose name we happen to know would stop matching its own profile, and the stale-accessory sweep would unregister it, which costs its owner a re-pair. So `__tests__/the-model-row-is-a-name-not-a-code.test.js` enumerates the rule instead of asserting the cases: it reads the source and fails if a model comparison is ever fed the display helper.
+
+**What this does not fix, measured end to end before shipping so nobody re-measures it:** for an external Matter accessory, Homebridge hardcodes `vendorName: 'Homebridge'` and derives `productName` from the display name, discarding the manufacturer and model the plugin hands it. `ServerConfig.ts` validates and truncates both to the Matter 32-character limit and returns them; `ServerLifecycle.ts:319-326` then never reads either. So Apple Home shows Manufacturer "Homebridge" and a Model row containing the robot's _name_, and no plugin change can alter that. Filed as homebridge/homebridge#3996 with the three-line fix. The values are correct on this side so they are right the moment it lands.
+
 ## 3.14.3
 
 **The wind-down fix from 3.12.3 was too narrow by exactly one dock.**

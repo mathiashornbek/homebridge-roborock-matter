@@ -84,6 +84,10 @@ function installDeprecationWarningFilter(): void {
 installDeprecationWarningFilter();
 
 const Roborock = require("../roborockLib/roborockAPI").Roborock;
+const { getModelMarketingName } =
+  require("../roborockLib/lib/deviceFeatures") as {
+    getModelMarketingName: (model: unknown) => string | null;
+  };
 
 /**
  * Roborock App Platform Plugin for Homebridge
@@ -1075,10 +1079,17 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     return this.matterVacuums.get(duid);
   }
 
+  /**
+   * The model as a human should read it: "Roborock Qrevo S", not
+   * "roborock.vacuum.a104" (#10).
+   *
+   * Display only — see the note on MODEL_MARKETING_NAMES. Anything that
+   * *compares* a model must keep reading `getProductAttribute` directly, and a
+   * test enumerates that rule rather than trusting this comment.
+   */
   getVacuumModel(duid: string): string {
-    return (
-      this.roborockAPI.getProductAttribute(duid, "model") || "Roborock Vacuum"
-    );
+    const reported = this.roborockAPI.getProductAttribute(duid, "model");
+    return getModelMarketingName(reported) || reported || "Roborock Vacuum";
   }
 
   getVacuumSerialNumber(duid: string): string {
@@ -1253,8 +1264,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     accessory.serialNumber =
       this.roborockAPI.getVacuumDeviceInfo(duid, "sn") || duid;
     accessory.manufacturer = "Roborock";
-    accessory.model =
-      this.roborockAPI.getProductAttribute(duid, "model") || "Roborock Vacuum";
+    accessory.model = this.getVacuumModel(duid);
     accessory.context = { ...(accessory.context || {}), duid };
 
     if (firmwareRevision) {

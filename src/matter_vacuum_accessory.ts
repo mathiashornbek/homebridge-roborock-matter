@@ -5,6 +5,11 @@ import { getLiveMessageForThisAccessory } from "./live_message";
 import { HomeKitActionKey, HomeKitStateSensorKey } from "./types";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
+const { getModelMarketingName } =
+  require("../roborockLib/lib/deviceFeatures") as {
+    getModelMarketingName: (model: unknown) => string | null;
+  };
+
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
 const MATTER_CLEAN_MODE_PREP_TIMEOUT_MS = 2500;
 
@@ -1249,9 +1254,23 @@ export default class RoborockMatterVacuumAccessory {
     // set both so Apple Home is less likely to show a generic name.
     this.accessory.name = displayName;
     this.accessory.manufacturer = "Roborock";
-    this.accessory.model =
+    // Reads as a name, not a code (#10). Note that neither this nor the
+    // manufacturer above reaches Apple Home yet: Homebridge discards both for
+    // external Matter accessories and reports "Homebridge" with the display
+    // name as the model (homebridge/homebridge#3996). They are correct here so
+    // that they are right the moment that lands, and they are already visible
+    // in the Homebridge UI and on the HAP sensors today.
+    //
+    // Resolved here rather than delegated to the platform on purpose: this
+    // accessory is constructed directly by two dozen test harnesses whose
+    // platform is a stub, and reaching for a platform method for a pure
+    // model-string lookup made every one of them a mock-shape problem.
+    const reportedModel =
       this.api.getProductAttribute(duid, "model") ||
-      this.api.getVacuumDeviceInfo(duid, "model") ||
+      this.api.getVacuumDeviceInfo(duid, "model");
+    this.accessory.model =
+      getModelMarketingName(reportedModel) ||
+      reportedModel ||
       "Roborock Vacuum";
     this.accessory.serialNumber =
       this.api.getVacuumDeviceInfo(duid, "sn") || duid;
