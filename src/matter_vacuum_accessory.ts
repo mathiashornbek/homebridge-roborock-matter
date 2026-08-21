@@ -1091,6 +1091,25 @@ export default class RoborockMatterVacuumAccessory {
    * when a warning is welcome — the plugin was asserting a block that did not
    * exist.
    *
+   * WHERE THE 2-MINUTE REPEAT COMES FROM, AND WHY IT IS NOT FIXABLE HERE.
+   * Measured against matter.js 0.18.0-alpha, the build Homebridge ships:
+   * writing the same `{ errorStateId: 68 }` three times in a row produces one
+   * change event and one attribute report, and the 2nd and 3rd writes are
+   * dropped in the store. The cluster's `OperationalError` event — the more
+   * likely trigger for a phone notification than the attribute — fires on the
+   * change only, for the same reason. This plugin also has no 2-minute timer
+   * anywhere in it; the only periodic write is the 60-second heartbeat above,
+   * which by that same measurement generates no traffic when nothing moved.
+   * So the repeat is Apple re-raising a block that is still standing, and the
+   * only lever on this side is not to assert the block. Do not go looking for
+   * a flap to fix; there isn't one unless the tank reading itself flips.
+   *
+   * AND DO NOT GATE THIS ON "A RUN WAS REQUESTED" EITHER, however tempting —
+   * in a mopping mode the sentence is still not quite true for a parked robot.
+   * Wazza151's confirmed case in #5 is a docked, idle robot with an empty
+   * tank, which is precisely the case such a gate would silence. Warning about
+   * an empty tank while the robot is parked is the point of the warning.
+   *
    * WHY "VACUUM IS SELECTED" IS NOT THE TEST. `selectedCleanMode` is not
    * persisted: it starts at CLEAN_MODE_VACUUM on every restart (measured 20
    * Aug), so reading it directly would silence the tank warning on every robot
