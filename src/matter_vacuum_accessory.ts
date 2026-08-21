@@ -1101,8 +1101,29 @@ export default class RoborockMatterVacuumAccessory {
    * anywhere in it; the only periodic write is the 60-second heartbeat above,
    * which by that same measurement generates no traffic when nothing moved.
    * So the repeat is Apple re-raising a block that is still standing, and the
-   * only lever on this side is not to assert the block. Do not go looking for
-   * a flap to fix; there isn't one unless the tank reading itself flips.
+   * only lever on this side is not to assert the block. No timer in this
+   * plugin can produce a 68 → 0 → 68 cycle: the fault is computed from live
+   * data only, and the 2-minute OPTIMISTIC_STATE_TTL_MS is armed by a command,
+   * overlaid on the cluster payload after this has already run, and never
+   * carries operationalError.
+   *
+   * BUT THERE ARE EXACTLY TWO WAYS IT CAN STILL FLAP, and the second one is
+   * easy to miss because it is not in isWaterTankEmpty() at all. First, the
+   * tank reading itself flipping. Second — and this is the one vp-debug12
+   * described in #9 as "changes to ready momentarily and then activates the
+   * water error" — the AUTHORITY below switching. Which branch decides depends
+   * on the robot's live state, so a robot dipping in and out of a run state
+   * hands the decision back and forth between its own report and the user's
+   * selection, and when those two disagree the fault tracks the oscillation.
+   * Neither path is timed; both are the robot's own data moving.
+   *
+   * The log settles which, if any, is happening, but read it knowing that the
+   * "Matter publish for …" line is de-duplicated against the previous rendered
+   * line (lastLoggedMatterPublishLine): a steady fault appears ONCE and then
+   * the log goes quiet, so repeated identical lines are not what a stuck fault
+   * looks like. A flap looks like the `, fault=68 …` segment appearing and
+   * disappearing between lines — a cleared fault renders as no fault segment
+   * rather than as `fault=0`.
    *
    * AND DO NOT GATE THIS ON "A RUN WAS REQUESTED" EITHER, however tempting —
    * in a mopping mode the sentence is still not quite true for a parked robot.
