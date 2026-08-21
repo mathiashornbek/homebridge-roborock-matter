@@ -166,7 +166,9 @@ The list is either that fixed set of 4 or absent entirely, and never anything el
 
 Drying is detected on both protocols. A classic S- or Q-series robot with a drying dock reports it itself; a B01/Q7 reports its own air-drying status, which the plugin previously discarded when it mapped that state to "docked" so the tile would not claim the robot was busy. It still maps it that way — a drying dock must not look like a working robot, or Apple Home may refuse it a Start command — but the fact now survives the mapping as a phase.
 
-**Whether your controller draws a phase is unmeasured.** Nothing is lost if it does not: an attribute nobody reads costs nothing, and there is no other route to this information at all. If a tile misbehaves, `enableMatterDockPhases: false` in `config.json` puts both attributes back to null.
+**Measured, and the answer is no — on every controller checked so far.** Apple Home renders `OperationalState`, including its optional values, and ignores `CurrentPhase` entirely: an S8 Pro Ultra caught all 3 dock jobs in one cycle, and the 2 that appeared on the tile were exactly the 2 that have an operational state of their own, while drying — which travels only as a phase — appeared nowhere. Home Assistant's Matter vacuum integration asks for one attribute from this cluster, `OperationalState`, and never reads the phase either.
+
+The phases are published anyway. They are correct, they are mandatory in the cluster, and an attribute nobody reads costs nothing. But they are not currently a route to anything, so do not choose this plugin expecting to see drying on a tile. If one misbehaves, `enableMatterDockPhases: false` in `config.json` puts both attributes back to null.
 
 ## Automations in Apple Home
 
