@@ -772,6 +772,16 @@ export default class RoborockMatterVacuumAccessory {
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
+  /**
+   * Whether `selectedCleanMode` holds a choice or merely its initial value.
+   *
+   * The two are indistinguishable by value — the initial value IS Vacuum — and
+   * the difference decides whether an empty clean-water tank is announced as a
+   * blocking fault. See isVacuumOnlyModeChosen(). This never returns to false:
+   * a choice, once made, remains the last thing the user said about this robot
+   * for the life of the process.
+   */
+  private userSelectedCleanMode = false;
   // The run mode last decided by a state that was not a dock chore. Dock
   // chores inherit it instead of deciding one of their own — see
   // resolveRunMode(). Idle is the honest starting point: a plugin that boots
@@ -998,7 +1008,7 @@ export default class RoborockMatterVacuumAccessory {
    */
   private getMatterFault(): { id: number; text: string } | null {
     const tankEmpty = this.isWaterTankEmpty();
-    if (tankEmpty === true) {
+    if (tankEmpty === true && !this.isVacuumOnlyModeChosen()) {
       return {
         id: RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY,
         text: "Clean water tank empty",
@@ -1046,16 +1056,95 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
 
-    if (tankEmpty === false || errorCode === 0) {
+    if (tankEmpty !== null || errorCode === 0) {
       // At least one source affirmatively says it is fine and neither says
       // otherwise. Requiring both to be known would mean a robot that never
       // reports `error_code` could never clear a tank warning after a refill,
       // which is worse than no warning at all.
+      //
+      // `tankEmpty === true` reaches here only when the run was ruled to use
+      // no water above, and then NoError is the affirmative answer rather
+      // than an invention: the tank is known, and it is known not to block
+      // anything. Going quiet instead would leave a 68 standing in the Matter
+      // store, and Apple Home re-notifies about a blocking condition for as
+      // long as it stands — which is the loop reported in issue #9.
       return { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" };
     }
 
     // Neither source has said anything.
     return null;
+  }
+
+  /**
+   * Whether something has affirmatively said this robot is not going to use
+   * water.
+   *
+   * WHY THE TANK FAULT NEEDS THIS AT ALL. Apple Home does not draw
+   * `operationalError` as a passive warning — it draws WaterTankEmpty as a
+   * BLOCKING condition and says so in words. vp-debug12's screenshot in issue
+   * #9: "Rellena el depósito de agua — 'Roborock Qrevo' empezará a limpiar
+   * cuando se llene el depósito de agua." It is a push notification, not tile
+   * decoration (Wazza151 confirmed the same on an a70 in #5), and it repeated
+   * every 2 minutes while his robot was set to Vacuum. On a vacuum-only run
+   * every word of it is false: the robot is not waiting for water and will not
+   * start cleaning when the tank is filled. So this is not a preference about
+   * when a warning is welcome — the plugin was asserting a block that did not
+   * exist.
+   *
+   * WHY "VACUUM IS SELECTED" IS NOT THE TEST. `selectedCleanMode` is not
+   * persisted: it starts at CLEAN_MODE_VACUUM on every restart (measured 20
+   * Aug), so reading it directly would silence the tank warning on every robot
+   * until somebody happened to touch the mode picker — quietly undoing the one
+   * field-verified thing this attribute does. Only a mode somebody actually
+   * said counts: the robot's own report while it is genuinely cleaning, the
+   * user's selection outside that. The wind-down is excluded for the same
+   * reason getCurrentCleanMode() excludes it — a dock washing a mop runs water
+   * with the fan off and on again, which reads as vacuum+mop and is nothing of
+   * the sort.
+   *
+   * WHERE THIS DELIBERATELY DIFFERS FROM getCurrentCleanMode(), because the
+   * difference looks like an oversight and is not: there, a Matter selection
+   * that has not been applied yet outranks the robot's live report, so the
+   * mode picker keeps showing what the user just asked for instead of
+   * flickering back. Here it does not. A selection made mid-run is not applied
+   * mid-run — the prep only runs before a start — so the robot carries on with
+   * the water it already had, and a robot physically mopping with an empty
+   * tank is blocked no matter what the picker shows. The picker reports
+   * intent; this reports what is happening to the floor.
+   *
+   * The derived type goes through acceptLiveCleanType() like every other
+   * consumer of it, and that gate is right here for the same reason it is
+   * right there: a robot whose water this plugin has already turned off and
+   * had acknowledged is not using water, however long its own report takes to
+   * agree. Announcing a block during that window would be the lag talking.
+   *
+   * The HAP `Water Tank Empty` sensor is deliberately NOT gated by this. It
+   * states a fact about the tank, makes no claim about what the robot is going
+   * to do, and automations are built on it.
+   */
+  private isVacuumOnlyModeChosen(): boolean {
+    const operationalState = this.getOperationalState();
+    const inCleaningRun = this.isInCleaningRunMode(operationalState);
+    const windingDown =
+      inCleaningRun &&
+      operationalState !== RVC_OPERATIONAL_STATE.RUNNING &&
+      operationalState !== RVC_OPERATIONAL_STATE.PAUSED;
+
+    if (inCleaningRun && !windingDown) {
+      const liveCleanType = this.getLiveCleanType();
+      if (liveCleanType !== null && this.acceptLiveCleanType(liveCleanType)) {
+        return this.getBaseCleanType(liveCleanType) === CLEAN_MODE_VACUUM;
+      }
+    }
+
+    if (this.userSelectedCleanMode) {
+      return (
+        this.getBaseCleanType(this.selectedCleanMode) === CLEAN_MODE_VACUUM
+      );
+    }
+
+    // Nothing has said. An unknown mode must not silence a real warning.
+    return false;
   }
 
   /**
@@ -1636,6 +1725,7 @@ export default class RoborockMatterVacuumAccessory {
       this.rememberCurrentRoborockCleanModeSettings();
       this.selectedCleanMode = newMode;
       this.selectedCleanModeNeedsApply = true;
+      this.userSelectedCleanMode = true;
       // Discard the level remembered from the robot: from here on the user
       // has said what they want, and an unreadable fan power must fall back
       // to their choice rather than to what the robot said before it. The

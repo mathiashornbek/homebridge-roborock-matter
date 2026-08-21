@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.15.3
+
+**An empty water tank told Apple Home a vacuum-only run was blocked, and Apple said so every 2 minutes.**
+
+vp-debug12 confirmed in [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9) that 3.15.2 fixed the status line — the tile now reads "Limpiando" during a run instead of "Desplazándose" — and reported this in the same breath: a **"Fill the water tank"** notification, arriving every 2 minutes, on a robot set to **Vacuum**.
+
+Apple does not draw the Matter fault attribute as a passive warning. It draws WaterTankEmpty as a **blocking** condition, and it says so in words:
+
+> Rellena el depósito de agua
+> "Roborock Qrevo" empezará a limpiar cuando se llene el depósito de agua.
+>
+> _(Fill the water tank. "Roborock Qrevo" will start cleaning once the water tank is filled.)_
+
+On a vacuum-only run every word of that is false. The robot is not waiting for water, it will not start cleaning when the tank is filled, and it needs nothing from anybody. This was never a question of when a warning is welcome — the plugin was asserting a block that did not exist, and Apple re-notifies about a block for as long as it stands.
+
+**The fault is now published only when water is actually in play.** An empty tank on a vacuum-only run publishes `NoError`, so switching the tile to Vacuum stops the notifications rather than merely not starting them.
+
+- "Vacuum-only" has to be something that was **said** — by the user picking a mode, or by the robot reporting one. The selection defaults to Vacuum on every restart and is not persisted, so treating that default as a choice would have silenced the tank warning on every robot until somebody happened to touch the mode picker.
+- Suction levels reduce to their base clean type, so Max Vacuum counts as vacuum-only like the rest of the family.
+- During a run the robot's own report wins, deliberately unlike the mode picker: a mode picked mid-run is not applied mid-run, so a robot physically mopping with an empty tank is still blocked whatever the picker shows. The mode picker reports intent; this reports what is happening to the floor.
+- A real robot fault is not swallowed with the tank — once the tank is ruled out, the robot's own error takes the attribute as usual.
+- The HomeKit **Water Tank Empty** contact sensor is unchanged and still reports the tank whatever the mode is. It states a fact and makes no claim about what the robot is going to do, and automations are built on it.
+
 ## 3.15.2
 
 **3.15.1 only fixed the runs you start in Apple Home, and most runs are not.**
@@ -41,7 +64,9 @@ There is now a marketing-name table: `roborock.vacuum.a104` reads "Roborock Qrev
 
 **The table is display-only, and that is the part worth guarding.** Every poll profile, feature lookup, capability branch and `isSupportedDevice` call keys on the raw code. A name resolved where a model is _compared_ would break model detection silently — a robot whose name we happen to know would stop matching its own profile, and the stale-accessory sweep would unregister it, which costs its owner a re-pair. So `__tests__/the-model-row-is-a-name-not-a-code.test.js` enumerates the rule instead of asserting the cases: it reads the source and fails if a model comparison is ever fed the display helper.
 
-**What this does not fix, measured end to end before shipping so nobody re-measures it:** for an external Matter accessory, Homebridge hardcodes `vendorName: 'Homebridge'` and derives `productName` from the display name, discarding the manufacturer and model the plugin hands it. `ServerConfig.ts` validates and truncates both to the Matter 32-character limit and returns them; `ServerLifecycle.ts:319-326` then never reads either. So Apple Home shows Manufacturer "Homebridge" and a Model row containing the robot's _name_, and no plugin change can alter that. Filed as homebridge/homebridge#3996 with the three-line fix. The values are correct on this side so they are right the moment it lands.
+**What this does not fix, measured end to end before shipping so nobody re-measures it:** for an external Matter accessory, Homebridge hardcodes `vendorName: 'Homebridge'` and derives `productName` from the display name, discarding the manufacturer and model the plugin hands it. `ServerConfig.ts` validates and truncates both to the Matter 32-character limit and returns them; `ServerLifecycle.ts:319-326` then never reads either. So Apple Home shows Manufacturer "Homebridge" and a Model row containing the robot's _name_, and no plugin change could alter that. Filed as homebridge/homebridge#3996 with the three-line fix. The values are correct on this side so they are right the moment it lands.
+
+**Since fixed upstream, and out: `homebridge@2.4.1-beta.3`.** Measured on a robot commissioned long before the beta and not otherwise touched, Manufacturer now reads "Roborock" and the Model row reads the actual model. No re-pairing and no removal from the Home app — both attributes are Fixed quality and therefore never persisted, so the new values simply apply on the next start. The upstream fix is gated on `externalAccessory`, because reading the config unconditionally would have renamed every commissioned bridge as a side effect.
 
 ## 3.14.3
 
