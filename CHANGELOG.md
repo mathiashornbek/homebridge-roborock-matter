@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.15.1
+
+**A whole-home clean told Apple Home the robot had not started yet, for the whole run.**
+
+vp-debug12 reported it in [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9): the tile says "Desplazándose" — Moving — when the robot leaves the dock, and never changes to "Limpiando" while it cleans. skmzwanke reported the same thing in [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) months and many versions ago, in English: "Traveling to Room" for an entire run.
+
+Apple's status line during a run comes from the Service Area progress list, not from the operational state. It reads "nothing is operating" as _the robot is on its way_. For a room clean the plugin marks the requested room operating and Apple says the right thing. For a **whole-home** clean it marked every room `Pending`, because the robots do not report which room they are physically inside — so Apple was told, truthfully in one sense, that the robot had started none of them, and said so for an hour.
+
+2.3.1 already tried this. It moved a full clean from an empty list to an all-pending list hoping the label would improve, and said out loud that whether it did was up to Apple's renderer. It did not, and 2 users have now reported the same symptom against it.
+
+Matter has 4 progress values and none of them means "in this run, exact position unknown", so both available encodings are imperfect: every area operating asserts the robot is in all of them, every area pending asserts it is in none of them. This release picks the one that is true at the only place a person looks. **The robot is operating; it is not on its way.**
+
+- `currentArea` still stays null on a whole-home clean. No room is named that the plugin is not sure of, because naming the wrong room is worse than naming none.
+- Live map-position tracking still collapses the wide claim to the accurate single room the moment it resolves one, and the run still flips wholly to completed on the charger.
+- A room clean is unchanged.
+
 ## 3.15.0
 
 **A Q Revo S owner asked for the accessory details to read like a native device. Half of that is fixed here; the other half is Homebridge's and is now filed.**

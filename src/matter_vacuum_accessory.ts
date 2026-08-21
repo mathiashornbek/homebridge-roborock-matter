@@ -3089,12 +3089,34 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
-   * A full-home clean operates on every supported area. We cannot know which
-   * room the robot is physically inside (the robots do not report it), so no
-   * area is marked operating and currentArea stays null — but publishing the
-   * run's scope as pending -> completed gives controllers real progress data
-   * instead of an empty list, which Apple Home otherwise renders as a
-   * permanent "Preparing".
+   * A full-home clean operates on every supported area, and we cannot know
+   * which room the robot is physically inside — the robots do not report it.
+   * So `currentArea` stays null: no room is named that we are not sure of.
+   *
+   * The scope is published as OPERATING rather than PENDING, and that choice
+   * is the whole point of this function, so it is worth writing down why.
+   *
+   * Matter has 4 progress values and none of them means "in this run, exact
+   * position unknown". Both available encodings are therefore imperfect:
+   * every area operating asserts the robot is in all of them, every area
+   * pending asserts it is in none of them. The second is the one that reads
+   * as a bug, because Apple Home renders "nothing is operating" as *the robot
+   * is still on its way* — "Traveling to Room", "heading to the room",
+   * "Desplazándose" — and keeps saying it for the entire run while the robot
+   * is demonstrably cleaning.
+   *
+   * 2.3.1 already tried the honest-looking option. It moved a full clean from
+   * an empty list to an all-pending list hoping Apple's label would improve,
+   * and said out loud that whether it did was up to Apple's renderer. It did
+   * not: skmzwanke reported the stuck label in #8, and vp-debug12 reported
+   * exactly the same thing in #9 months and many versions later, in Spanish.
+   * 2 independent users, one unchanged symptom, one failed mitigation.
+   *
+   * So this picks the encoding that produces the true statement at the only
+   * place a person looks. The robot IS operating; it is not on its way. Live
+   * map-position tracking still collapses this to the accurate single-room
+   * picture the moment it resolves a room, and the run still flips wholly to
+   * completed when the robot returns to the charger.
    */
   private beginFullCleanServiceAreaProgress(): void {
     const areaIds = this.getMatterServiceAreas().map((area) => area.areaId);
@@ -3106,7 +3128,7 @@ export default class RoborockMatterVacuumAccessory {
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
-      status: SERVICE_AREA_PROGRESS.PENDING,
+      status: SERVICE_AREA_PROGRESS.OPERATING,
     }));
     this.persistServiceAreaProgress();
   }

@@ -1313,18 +1313,22 @@ describe("Service Area cleaning progress (the 'Forbereder' fix)", () => {
     ]);
   });
 
-  test("a full-home clean publishes the whole run scope as pending, then completed", () => {
+  test("a full-home clean publishes the whole run scope as operating, then completed", () => {
+    // Operating, not pending, and the reasoning is in the source: pending
+    // asserts the robot has not started any of these rooms, which Apple Home
+    // renders as "still heading there" for the entire run. Reported twice by
+    // 2 users (#8, #9) against the all-pending encoding 2.3.1 shipped.
     const vacuum = createRoomVacuum();
     vacuum.beginServiceAreaProgress([10]);
     vacuum.beginFullCleanServiceAreaProgress();
 
     let cluster = vacuum.buildServiceAreaCluster();
-    // No area is claimed as current (the robot does not report its room),
-    // but the run's scope is real progress data for the controller.
+    // Still no area claimed as CURRENT — that would name a room we are not
+    // sure of, and naming the wrong one is worse than naming none.
     expect(cluster.currentArea).toBeNull();
     expect(cluster.progress).toEqual([
-      { areaId: 10, status: 0 }, // pending
-      { areaId: 11, status: 0 },
+      { areaId: 10, status: 1 }, // operating
+      { areaId: 11, status: 1 },
     ]);
     expect(cluster.estimatedEndTime).toBeNull();
 
@@ -1336,6 +1340,10 @@ describe("Service Area cleaning progress (the 'Forbereder' fix)", () => {
       { areaId: 11, status: 3 },
     ]);
   });
+
+  // The collapse to a single room once live tracking resolves one is covered
+  // by "full clean: detected rooms become operating, left rooms completed" in
+  // __tests__/b01-live-room.test.js, which has the live-room stub wired up.
 
   test("a full-home clean without exposed rooms keeps the progress list empty", () => {
     const platform = createMatterPlatformB01();
