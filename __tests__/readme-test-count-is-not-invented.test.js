@@ -48,6 +48,18 @@ function claimedCounts() {
 describe("the README's test count is checked against the suite", () => {
   test("the count is stated with one number, not two", () => {
     const distinct = [...new Set(claimedCounts())];
+    if (distinct.length !== 1) {
+      // Jest's expect takes no message argument, so this used to print a bare
+      // "Expected length: 1" that told nobody which 2 numbers disagreed or
+      // what to do about it. Three people have now hit this, always the same
+      // way: tests were added, 1 of the 2 README claims was updated, and CI
+      // was what found out — once on the release workflow itself, which left
+      // npm a version behind GitHub.
+      throw new Error(
+        `The README states ${distinct.length} different test counts (${distinct.join(", ")}). ` +
+          `Run "npm run sync:test-count" and commit the change.`
+      );
+    }
     expect(distinct).toHaveLength(1);
   });
 

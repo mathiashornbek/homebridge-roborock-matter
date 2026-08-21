@@ -49,7 +49,8 @@
     "lint": "prettier --check .",
     "lint:fix": "prettier --write .",
     "test": "jest",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.roborockLib.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.roborockLib.json",
+    "sync:test-count": "node scripts/sync-readme-test-count.mjs"
   },
   "dependencies": {
     "@homebridge/plugin-ui-utils": "^2.1.2",
