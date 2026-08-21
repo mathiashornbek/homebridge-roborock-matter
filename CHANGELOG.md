@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.15.2
+
+**3.15.1 only fixed the runs you start in Apple Home, and most runs are not.**
+
+3.15.1 stopped a whole-home clean from telling Apple Home that the robot had not started yet. It worked — but it ran from the Matter start handler, which means it only ever fired for a clean somebody tapped in the Home app. A clean started **in the Roborock app**, by a **schedule stored in that app**, by the **button on the robot** or by a **voice assistant** never touches that handler. It arrives here as a status change and nothing else, so the progress list stayed empty — or stale all-completed from the last Home-app run — for the entire run, and Apple went on saying "Traveling to Room" / "Desplazándose" exactly as before.
+
+That is very likely how [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) and [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9) start their robots, so for them 3.15.1 may well have changed nothing at all.
+
+The asymmetry was the tell, and it is worth writing down as a habit: **finishing a run was already status-driven and starting one was not.** When one half of a pair reads the robot and the other half only reads commands, the half that reads commands is a bug waiting for a user who does not use commands.
+
+- A robot that reports it is cleaning now announces the run's scope as `operating`, however the run was started.
+- The guard is the robot's **own** state, not the one shown on the tile. With extended operational states switched off, a dock washing the mop or emptying the bin is reported as `Running` — and a dock doing its chores must not claim the robot is cleaning every room in the house.
+- A room clean picked in Apple Home is never widened. Anything still `operating` or `pending` is a run that was already announced, with a narrower and better-known scope than this can produce.
+- `currentArea` still stays empty on a run of unknown position, and live map-position tracking still narrows the claim to one room the moment it resolves one.
+
 ## 3.15.1
 
 **A whole-home clean told Apple Home the robot had not started yet, for the whole run.**

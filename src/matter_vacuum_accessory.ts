@@ -2163,6 +2163,7 @@ export default class RoborockMatterVacuumAccessory {
       this.completeServiceAreaProgressIfDone(
         this.getOperationalState(state, chargeStatus)
       );
+      this.beginFullCleanServiceAreaProgressIfUnannounced(state, chargeStatus);
     }
 
     // Live map-position room tracking: reflect the physically detected room
@@ -3131,6 +3132,56 @@ export default class RoborockMatterVacuumAccessory {
       status: SERVICE_AREA_PROGRESS.OPERATING,
     }));
     this.persistServiceAreaProgress();
+  }
+
+  /**
+   * Announce a run that arrived as a status change rather than as a command.
+   *
+   * 3.15.1 fixed the encoding of a whole-home clean's progress list, but it
+   * only ever ran from the Matter/HAP start handler — so it only fixed runs
+   * started in Apple Home, and most runs are not. A clean started in the
+   * Roborock app, by a schedule stored in the app, by the button on the lid or
+   * by a voice assistant reaches this plugin as a state change and nothing
+   * else. The progress list then stayed empty, or stale all-completed from the
+   * last Apple Home run, for the whole run — which is precisely the "Traveling
+   * to Room" / "Desplazándose" symptom #8 and #9 reported, still unfixed for
+   * the way they most likely start their robots.
+   *
+   * The asymmetry was the tell: completion has always been status-driven
+   * (`completeServiceAreaProgressIfDone`), and only the start was not.
+   */
+  private beginFullCleanServiceAreaProgressIfUnannounced(
+    state: number | null,
+    chargeStatus: number | null
+  ): void {
+    // The UNGATED state on purpose. With extended operational states off, the
+    // dock chores are rewritten to RUNNING, and a dock washing the mop must
+    // not announce that the robot is cleaning every room in the house. The
+    // rule is deliberately "whatever we already publish as a running robot",
+    // one list rather than a second one that can drift out of step with it.
+    if (
+      this.getRoborockOperationalState(state, chargeStatus) !==
+      RVC_OPERATIONAL_STATE.RUNNING
+    ) {
+      return;
+    }
+
+    // Anything still operating or pending is a run somebody already announced
+    // — either one started here, whose narrower and better-known scope must
+    // not be widened, or one this function announced on an earlier poll. Only
+    // an empty list, or a stale all-completed one from the previous run, means
+    // no controller has been told that the robot is working.
+    if (
+      this.serviceAreaProgress.some(
+        (entry) =>
+          entry.status === SERVICE_AREA_PROGRESS.OPERATING ||
+          entry.status === SERVICE_AREA_PROGRESS.PENDING
+      )
+    ) {
+      return;
+    }
+
+    this.beginFullCleanServiceAreaProgress();
   }
 
   private clearServiceAreaProgress(): void {
