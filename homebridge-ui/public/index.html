@@ -197,7 +197,8 @@
     <label class="checkbox">
       <input id="enable-homekit-action-switches" type="checkbox" />
       <span>
-        Add Home app switches for Start, Dock, Pause, Find and Schedules
+        Add Home app switches for Start, Dock, Empty Bin, Pause, Find and
+        Schedules
         <small
           >Apple Home does not offer &ldquo;send the vacuum to its dock&rdquo;
           as an automation action for a Matter vacuum &mdash; measured in issue
@@ -226,6 +227,16 @@
         <span
           >Return to Dock
           <small>The one Apple Home cannot do any other way.</small></span
+        >
+      </label>
+      <label class="checkbox">
+        <input id="homekit-action-empty" type="checkbox" disabled />
+        <span
+          >Empty Bin
+          <small
+            >Starts a compatible auto-empty dock while the robot is docked.
+            Hidden for robots and docks that do not support it.</small
+          ></span
         >
       </label>
       <label class="checkbox">

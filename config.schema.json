@@ -138,7 +138,7 @@
         "default": 100
       },
       "enableHomeKitActionSwitches": {
-        "title": "Add Home App Switches for Start, Dock, Pause and Find",
+        "title": "Add Home App Switches for Start, Dock, Empty Bin, Pause and Find",
         "description": "Publishes one extra HomeKit switch per robot per action, so Apple Home automations and Shortcuts can send a command that Apple does not offer for a Matter vacuum. Measured in issue #3: Apple Home has no \"send the vacuum to its dock\" automation action for a Matter vacuum, and a plain switch is an automation action everywhere. Each switch is momentary: it turns itself off again about a second after it is pressed. Off by default, because turning it on adds accessories to your Home app. IMPORTANT \u2014 THESE NEED THEIR OWN PAIRING: the robot reaches Apple Home over Matter, but the switches are HomeKit accessories on this plugin's Homebridge child bridge, which is paired separately. Go to Plugins -> homebridge-roborock-matter -> the three-dot menu -> Child Bridge Config, make sure Enable HAP is ON (on a Matter-only setup it is often off, and until it is on no QR code will work), restart, then press Connect to HomeKit on that same screen and scan THAT QR code. It is not the main Homebridge QR code, and not the robot's Matter pairing code.",
         "type": "boolean",
         "default": false
@@ -151,13 +151,13 @@
       },
       "homeKitActionSwitches": {
         "title": "Which Switches to Add",
-        "description": "Which Home app action switches to add. Return to Dock is the one Apple Home cannot do any other way; Start Cleaning, Pause and Find expose their corresponding commands. Schedules are controlled separately by the \"Add Home app schedule switches\" setting above.",
+        "description": "Which Home app action switches to add. Return to Dock is the one Apple Home cannot automate, and Empty Bin provides the dock action Apple Home does not show while a compatible robot is docked. Start Cleaning starts the same clean as the Home tile's play button, including any rooms selected there; Pause and Find expose their corresponding commands. Schedules are controlled separately by the \"Add Home app schedule switches\" setting above. Only used when the action-switch setting is on.",
         "type": "array",
         "uniqueItems": true,
         "default": ["dock"],
         "items": {
           "type": "string",
-          "enum": ["clean", "dock", "pause", "locate"],
+          "enum": ["clean", "dock", "empty", "pause", "locate"],
           "oneOf": [
             {
               "title": "Start Cleaning",
@@ -166,6 +166,10 @@
             {
               "title": "Return to Dock",
               "enum": ["dock"]
+            },
+            {
+              "title": "Empty Bin (compatible auto-empty docks only)",
+              "enum": ["empty"]
             },
             {
               "title": "Pause",

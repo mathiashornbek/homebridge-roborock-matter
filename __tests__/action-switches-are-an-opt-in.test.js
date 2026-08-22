@@ -193,6 +193,36 @@ describe("the action switches are off until they are asked for", () => {
     );
   });
 
+  test("Empty Bin is published only for a robot with an auto-empty dock", () => {
+    const platform = createPlatform({
+      config: {
+        enableHomeKitActionSwitches: true,
+        homeKitActionSwitches: ["empty"],
+      },
+      vacuums: new Map([
+        [
+          "device-1",
+          {
+            supportsHomeKitAction: () => true,
+            getDisplayName: () => "Robot device-1",
+          },
+        ],
+      ]),
+    });
+
+    platform.syncActionSwitches(DEVICES);
+
+    expect(platform.registered).toEqual(["Robot device-1 Empty Bin"]);
+
+    platform.platformConfig.homeKitActionSwitches = ["empty", "dock"];
+    platform.matterVacuums.get("device-1").supportsHomeKitAction = (action) =>
+      action !== "empty";
+    platform.syncActionSwitches(DEVICES);
+
+    expect(platform.unregistered).toContain("Robot device-1 Empty Bin");
+    expect(platform.registered).toContain("Robot device-1 Return to Dock");
+  });
+
   test("one switch per robot per action", () => {
     const platform = createPlatform({
       config: {

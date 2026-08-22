@@ -14,6 +14,7 @@ import { PlatformConfig } from "homebridge";
 export const HOMEKIT_ACTION_KEYS = [
   "clean",
   "dock",
+  "empty",
   "pause",
   "locate",
 ] as const;

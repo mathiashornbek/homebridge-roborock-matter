@@ -89,6 +89,7 @@ function createHarness({
   const matterUpdates = [];
   const appCharge = jest.fn().mockResolvedValue(undefined);
   const appPause = jest.fn().mockResolvedValue(undefined);
+  const appStartCollectDust = jest.fn().mockResolvedValue(undefined);
 
   const platform = {
     platformConfig: {
@@ -131,6 +132,8 @@ function createHarness({
       app_stop: jest.fn().mockResolvedValue(undefined),
       app_pause: appPause,
       app_charge: appCharge,
+      app_start_collect_dust: appStartCollectDust,
+      supportsDustCollection: () => true,
       find_me: findMe,
       getStatus: jest.fn().mockResolvedValue(undefined),
     },
@@ -169,6 +172,7 @@ function createHarness({
     on,
     appCharge,
     appPause,
+    appStartCollectDust,
     findMe,
     matterUpdates,
     press: async () => {
@@ -219,6 +223,34 @@ describe("pressing the switch reaches the robot the way the tile does", () => {
     expect(harness.appPause).toHaveBeenCalledTimes(1);
     expect(harness.platform.log.info).toHaveBeenCalledWith(
       "Pausing Vicky from the Home switch."
+    );
+  });
+
+  test("Empty Bin starts dust collection while the robot is docked", async () => {
+    const harness = createHarness({
+      action: "empty",
+      status: { state: 8, charge_status: 1 },
+    });
+
+    await harness.press();
+
+    expect(harness.appStartCollectDust).toHaveBeenCalledWith(
+      "device-1",
+      expect.objectContaining({ waitForResult: true, throwOnError: true })
+    );
+    expect(harness.platform.log.info).toHaveBeenCalledWith(
+      "Emptying Vicky's dust bin from the Home switch."
+    );
+  });
+
+  test("Empty Bin is rejected while the robot is away from its dock", async () => {
+    const harness = createHarness({ action: "empty", status: { state: 5 } });
+
+    await harness.press();
+
+    expect(harness.appStartCollectDust).not.toHaveBeenCalled();
+    expect(harness.platform.log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("robot is not docked")
     );
   });
 
