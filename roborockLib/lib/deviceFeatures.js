@@ -1423,6 +1423,14 @@ class deviceFeatures {
 // the modelConfig action lists in processSupportedFeatures above; models are
 // only added here once the upstream feature data (or a field report with a
 // diagnostics export) confirms the level.
+// Field reports that contradict upstream, so nobody "fixes" the list back:
+//
+// - a104 (Qrevo S). Upstream declares `maxSuctionValue: 108`, the marker for a
+//   Max+ level. Its owner checked the Roborock app for #10 and the picker
+//   offers Quiet, Balanced, Turbo, Max and nothing above. The app wins over a
+//   table. Adding it would have offered every Qrevo S owner a level their robot
+//   does not have, and — because the announced clean-mode list is fixed at
+//   commissioning — the only way to pick up the corrected list is a re-pair.
 const MAX_PLUS_FAN_POWER_MODELS = new Set([
   "roborock.vacuum.a70", // S8 Pro Ultra
 ]);
