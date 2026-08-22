@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.15.5
+
+**B01 is two protocol families, and this plugin treated them as one.**
+
+`pv === "B01"` covers the Q7 series (`sc01`, `sc05`) and the Q10 series (`ss07`). They are not the same wire protocol, and everything B01 went through the Q7 tables. On a Q10 that meant:
+
+- **Max+ sent `wind: 5`, a value that does not exist in its scale.** The Q7 scale is 1–4 with Max+ at 5; the Q10's is 0–4 with Max+ at **8**.
+- **The robot's own Max+ never came back.** An inbound `wind: 8` resolved to undefined, so the mode the user had actually selected never reached Apple Home.
+- **A finished clean looked like a fault.** Upstream confirms `501` on Q10 hardware as "cleaning completed, returning to the dock", firing after every task — but 501 is not in the Q7 informational set, so a Q10 would sit at a non-zero error code permanently. The 2 families are documented upstream as disagreeing about 500, 501, 503, 569 and 570.
+- **`wind: 0`, a genuine off level on the Q10, had nowhere to go**, because the Q7 has none.
+
+Both scales are now read from python-roborock's own enums — `SCWindMapping` and `YXFanLevel` — rather than inferred. The family is derived from the model suffix, **anchored**: upstream uses an unanchored `if "ss" in model_part`, which would misroute any future model that merely contains those letters, and that is deliberately not copied. Anything unrecognised stays Q7, which is what every B01 device was treated as before, so no unknown model is made worse.
+
+**Nobody has reported a Q10 yet.** This is a correctness fix ahead of the first one rather than a repair, and it is shipped now because the alternative is that the first `ss07` owner installs the plugin and finds a Max+ button that sends a value their robot has never heard of.
+
+6 new tests, 5 of which fail against the single-family version.
+
+Found by a systematic audit of this plugin's model tables against upstream — which also confirmed the plugin does **not** share 3 upstream defects worth naming, since the temptation on reading a reference implementation is to converge on it: an unknown model here grants no capabilities rather than silently becoming a top-of-range Qrevo MaxV; model matching is anchored rather than substring; and dock drying comes from the robot's own capability bit rather than being inferred by excluding 3 known dock types.
+
 ## 3.15.4
 
 **Apple Home read "Roborock" and then "Roborock Qrevo S". The Model row no longer repeats the Manufacturer row.**

@@ -63,11 +63,57 @@ const CTRL = { STOP: 0, START: 1, PAUSE: 2 };
 // service.set_room_clean clean task types (CleanTaskTypeMapping).
 const CLEAN_TASK = { ALL: 0, ROOM: 1 };
 
+// B01 IS TWO PROTOCOL FAMILIES, NOT ONE, AND THEIR SUCTION SCALES DISAGREE.
+//
+// `pv === "B01"` covers the Q7 series (`sc01`, `sc05`) and the Q10 series
+// (`ss07`). They are not the same wire protocol. Until 3.15.5 everything B01
+// went through the Q7 tables, which on a Q10 meant:
+//
+//   * Max+ sent `wind: 5`, a value that does not exist in the Q10 scale;
+//   * the robot's own Max+, `wind: 8`, resolved to undefined and never
+//     reported back;
+//   * `wind: 0` (off) had nowhere to go, because the Q7 has no such level.
+//
+// Read from python-roborock's own enums rather than guessed:
+// `SCWindMapping` (Q7) is 1-4 with Max+ at 5, `YXFanLevel` (Q10) is 0-4 with
+// Max+ at 8 and a genuine off at 0. The 2 families also disagree about what
+// their shared fault numbers mean, which is why the informational sets below
+// are separate too — upstream documents the collision explicitly for 500,
+// 501, 503, 569 and 570.
+//
+// No Q10 has been seen in the field yet. This is a correctness fix ahead of
+// the first one, not a repair.
+const B01_FAMILY = { Q7: "Q7", Q10: "Q10" };
+
+/**
+ * Which B01 family a model belongs to.
+ *
+ * Anchored on the model suffix. Upstream uses an unanchored substring test
+ * (`if "ss" in model_part`) which would misroute any future model that merely
+ * contains those letters; this does not copy that.
+ *
+ * @param {string | null | undefined} model
+ * @returns {string}
+ */
+function b01FamilyForModel(model) {
+  const suffix = String(model ?? "")
+    .split(".")
+    .pop()
+    ?.toLowerCase();
+  if (suffix && suffix.startsWith("ss")) {
+    return B01_FAMILY.Q10;
+  }
+  // Q7 remains the default for `sc*` and for anything unrecognised: it is
+  // what every B01 device was treated as before, so an unknown model cannot
+  // be made worse by this function than it already was.
+  return B01_FAMILY.Q7;
+}
+
 // Q7 `wind` (suction) codes <-> v1 fan_power codes.
 /** @type {Record<number, number>} */
-const WIND_TO_V1_FAN_POWER = { 1: 101, 2: 102, 3: 103, 4: 104, 5: 108 };
+const Q7_WIND_TO_V1_FAN_POWER = { 1: 101, 2: 102, 3: 103, 4: 104, 5: 108 };
 /** @type {Record<number, number>} */
-const V1_FAN_POWER_TO_WIND = {
+const Q7_V1_FAN_POWER_TO_WIND = {
   101: 1, // quiet
   102: 2, // balanced
   103: 3, // turbo
@@ -76,6 +122,41 @@ const V1_FAN_POWER_TO_WIND = {
   105: 1, // "off" has no Q7 equivalent; degrade to quiet
   106: 2, // custom -> balanced
 };
+
+// Q10 `wind` codes <-> v1 fan_power codes (upstream `YXFanLevel`).
+/** @type {Record<number, number>} */
+const Q10_WIND_TO_V1_FAN_POWER = {
+  0: 105, // off — the Q10 has one and the Q7 does not
+  1: 101,
+  2: 102,
+  3: 103,
+  4: 104,
+  8: 108, // max+
+};
+/** @type {Record<number, number>} */
+const Q10_V1_FAN_POWER_TO_WIND = {
+  101: 1,
+  102: 2,
+  103: 3,
+  104: 4,
+  108: 8, // max+ — 5 on this family is not a level at all
+  105: 0, // off is real here, so it is not degraded to quiet
+  106: 2, // custom -> balanced
+};
+
+/** @param {string} family */
+function windToV1FanPower(family) {
+  return family === B01_FAMILY.Q10
+    ? Q10_WIND_TO_V1_FAN_POWER
+    : Q7_WIND_TO_V1_FAN_POWER;
+}
+
+/** @param {string} family */
+function v1FanPowerToWind(family) {
+  return family === B01_FAMILY.Q10
+    ? Q10_V1_FAN_POWER_TO_WIND
+    : Q7_V1_FAN_POWER_TO_WIND;
+}
 
 /**
  * Q7 WorkStatusMapping -> the plugin's universal v1 state codes, which the
@@ -93,9 +174,26 @@ const V1_FAN_POWER_TO_WIND = {
  *   9 mop_cleaning        -> 23  Washing the mop
  *  10 mop_airdrying       -> 8   Charging/docked (battery threshold decides tile)
  */
-// Q7 fault codes that are informational rather than active errors (B01Fault
-// in the reference: 407 = "Cleaning in progress. Scheduled cleanup ignored").
-const INFORMATIONAL_B01_FAULTS = new Set([0, 407]);
+// Fault codes that are informational rather than active errors — per family,
+// because the 2 families reuse the same numbers for different things.
+//
+// Q7: 407 = "Cleaning in progress. Scheduled cleanup ignored".
+// Q10: 400 = scheduled clean starting, 501 = cleaning completed and returning
+// (hardware-confirmed upstream, and it fires after EVERY task, so treating it
+// as a fault would leave a Q10 permanently in error), 502 = low-battery
+// resume.
+const INFORMATIONAL_Q7_FAULTS = new Set([0, 407]);
+const INFORMATIONAL_Q10_FAULTS = new Set([0, 400, 501, 502]);
+
+/** @param {string} family */
+function informationalFaults(family) {
+  return family === B01_FAMILY.Q10
+    ? INFORMATIONAL_Q10_FAULTS
+    : INFORMATIONAL_Q7_FAULTS;
+}
+
+// Kept for callers that predate the family split; Q7 is the default family.
+const INFORMATIONAL_B01_FAULTS = INFORMATIONAL_Q7_FAULTS;
 
 /** @type {Record<number, number>} */
 const B01_STATUS_TO_V1_STATE = {
@@ -886,7 +984,7 @@ function normalizeSegmentIds(params) {
  * @param {any} params
  * @returns {{method: string, params: any, kind?: string} | null}
  */
-function translateOutgoing(method, params) {
+function translateOutgoing(method, params, family = B01_FAMILY.Q7) {
   switch (method) {
     case "app_start":
       return {
@@ -933,7 +1031,7 @@ function translateOutgoing(method, params) {
     }
     case "set_custom_mode": {
       const v1Code = Array.isArray(params) ? params[0] : params;
-      const wind = V1_FAN_POWER_TO_WIND[v1Code];
+      const wind = v1FanPowerToWind(family)[v1Code];
       return wind === undefined
         ? null
         : { method: "prop.set", params: { wind } };
@@ -1036,9 +1134,10 @@ function translateQ7WorkStatusToV1State(rawStatus) {
 
 /**
  * @param {any} data
+ * @param {string} [family] one of B01_FAMILY; Q7 when not given
  * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
  */
-function mapStatusToV1(data) {
+function mapStatusToV1(data, family = B01_FAMILY.Q7) {
   const source = data && typeof data === "object" ? data : {};
   const fault = Number(source.fault ?? 0) || 0;
   const rawStatus = Number(source.status);
@@ -1051,7 +1150,7 @@ function mapStatusToV1(data) {
     // linger after harmless events, so fault NEVER overrides the work
     // status. The reference implementation treats fault the same way.
     state: mappedState !== undefined ? mappedState : 3,
-    error_code: INFORMATIONAL_B01_FAULTS.has(fault) ? 0 : fault,
+    error_code: informationalFaults(family).has(fault) ? 0 : fault,
     // Charging (4) and dock air-drying (10) count as on-charger so the
     // PowerSource cluster and the Charging/Docked tile logic see it.
     charge_status: rawStatus === 4 || rawStatus === 10 ? 1 : 0,
@@ -1070,7 +1169,7 @@ function mapStatusToV1(data) {
     v1.battery = battery;
   }
 
-  const fanPower = WIND_TO_V1_FAN_POWER[Number(source.wind)];
+  const fanPower = windToV1FanPower(family)[Number(source.wind)];
   if (fanPower !== undefined) {
     v1.fan_power = fanPower;
   }
@@ -1107,4 +1206,6 @@ module.exports = {
   neutralResponse,
   canAnswerV1Method,
   mapStatusToV1,
+  B01_FAMILY,
+  b01FamilyForModel,
 };

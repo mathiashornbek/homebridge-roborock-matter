@@ -1546,3 +1546,101 @@ describe("Adaptive B01 poll cadence", () => {
     expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(4);
   });
 });
+
+describe("B01 is two families and their scales disagree", () => {
+  // Until 3.15.5 every `pv === "B01"` device went through the Q7 tables. A
+  // Q10 (`ss07`) has a different suction scale, a real "off" level the Q7
+  // does not have, and reuses fault numbers for other meanings. Read from
+  // python-roborock's own enums: SCWindMapping (Q7) is 1-4 with Max+ at 5,
+  // YXFanLevel (Q10) is 0-4 with Max+ at 8.
+  //
+  // Nobody has reported a Q10 yet. These tests exist so the first person to
+  // own one does not get a Max+ button that sends a value their robot has
+  // never heard of.
+  const Q7 = b01.B01_FAMILY.Q7;
+  const Q10 = b01.B01_FAMILY.Q10;
+
+  test("the family is read off the model, anchored, not by substring", () => {
+    expect(b01.b01FamilyForModel("roborock.vacuum.ss07")).toBe(Q10);
+    expect(b01.b01FamilyForModel("roborock.vacuum.sc01")).toBe(Q7);
+    expect(b01.b01FamilyForModel("roborock.vacuum.sc05")).toBe(Q7);
+
+    // Upstream tests `if "ss" in model_part`, unanchored, which would call
+    // this one a Q10. Anchoring is the whole point of not copying that.
+    expect(b01.b01FamilyForModel("roborock.vacuum.class1")).toBe(Q7);
+
+    // Anything unrecognised stays Q7, which is what every B01 device was
+    // treated as before, so this function cannot make an unknown model worse.
+    expect(b01.b01FamilyForModel("roborock.vacuum.a70")).toBe(Q7);
+    expect(b01.b01FamilyForModel(undefined)).toBe(Q7);
+    expect(b01.b01FamilyForModel(null)).toBe(Q7);
+  });
+
+  test("Max+ goes out as 5 on a Q7 and 8 on a Q10", () => {
+    expect(b01.translateOutgoing("set_custom_mode", [108], Q7)).toEqual({
+      method: "prop.set",
+      params: { wind: 5 },
+    });
+    expect(b01.translateOutgoing("set_custom_mode", [108], Q10)).toEqual({
+      method: "prop.set",
+      params: { wind: 8 },
+    });
+  });
+
+  test("the Q10 has a real off level and the Q7 does not", () => {
+    // 105 is v1 "fan off". A Q7 has no such wind level, so it degrades to
+    // quiet rather than inventing one; a Q10 has 0 and should use it.
+    expect(b01.translateOutgoing("set_custom_mode", [105], Q7)).toEqual({
+      method: "prop.set",
+      params: { wind: 1 },
+    });
+    expect(b01.translateOutgoing("set_custom_mode", [105], Q10)).toEqual({
+      method: "prop.set",
+      params: { wind: 0 },
+    });
+  });
+
+  test("the robot's own Max+ comes back, on either family", () => {
+    expect(b01.mapStatusToV1({ status: 5, wind: 5 }, Q7).fan_power).toBe(108);
+    expect(b01.mapStatusToV1({ status: 5, wind: 8 }, Q10).fan_power).toBe(108);
+
+    // The defect this replaces: a Q10 reporting 8 against the Q7 table
+    // resolved to undefined and never reached Apple Home at all.
+    expect(
+      b01.mapStatusToV1({ status: 5, wind: 8 }, Q7).fan_power
+    ).toBeUndefined();
+    expect(b01.mapStatusToV1({ status: 5, wind: 0 }, Q10).fan_power).toBe(105);
+  });
+
+  test("a Q10 finishing a clean is not an error, and 501 is not shared", () => {
+    // Upstream confirms 501 on hardware as "cleaning completed, returning to
+    // the dock" and says it fires after every task. Read against the Q7 set
+    // it would leave a Q10 sitting at a non-zero error code permanently.
+    expect(b01.mapStatusToV1({ status: 4, fault: 501 }, Q10).error_code).toBe(
+      0
+    );
+    expect(b01.mapStatusToV1({ status: 4, fault: 400 }, Q10).error_code).toBe(
+      0
+    );
+    expect(b01.mapStatusToV1({ status: 4, fault: 502 }, Q10).error_code).toBe(
+      0
+    );
+
+    // The same number on a Q7 means something else and must still surface.
+    expect(b01.mapStatusToV1({ status: 4, fault: 501 }, Q7).error_code).toBe(
+      501
+    );
+
+    // And the Q7's own informational code is unchanged.
+    expect(b01.mapStatusToV1({ status: 5, fault: 407 }, Q7).error_code).toBe(0);
+  });
+
+  test("callers that pass no family still get Q7, as before", () => {
+    expect(b01.translateOutgoing("set_custom_mode", [108])).toEqual({
+      method: "prop.set",
+      params: { wind: 5 },
+    });
+    expect(b01.mapStatusToV1({ status: 5, wind: 5 }).fan_power).toBe(108);
+    expect(b01.mapStatusToV1({ status: 5, fault: 407 }).error_code).toBe(0);
+  });
+});

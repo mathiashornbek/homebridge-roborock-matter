@@ -119,6 +119,7 @@ function getRequestTimeout(method, requestTimeoutMs) {
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(message: string, location: string, duid?: string) => void} catchError
  * @property {(duid: string) => string} [describeDevice]
+ * @property {(duid: string, attribute: string) => string} [getProductAttribute]
  */
 
 /**
@@ -191,7 +192,13 @@ class messageQueueHandler {
     // single choke point covers every caller (Matter, polling, UI).
     if (b01Q7Adapter.isB01Protocol(version)) {
       const neutral = b01Q7Adapter.neutralResponse(method);
-      const translated = b01Q7Adapter.translateOutgoing(method, params);
+      const translated = b01Q7Adapter.translateOutgoing(
+        method,
+        params,
+        b01Q7Adapter.b01FamilyForModel(
+          this.adapter?.getProductAttribute?.(duid, "model")
+        )
+      );
 
       if (!translated) {
         if (neutral) {

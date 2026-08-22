@@ -4328,7 +4328,12 @@ class Roborock {
           "get_status",
           []
         );
-        const v1Status = b01Q7Adapter.mapStatusToV1(data);
+        const v1Status = b01Q7Adapter.mapStatusToV1(
+          data,
+          b01Q7Adapter.b01FamilyForModel(
+            this.getProductAttribute(duid, "model")
+          )
+        );
         // A run that has just started is the moment the user is watching, and
         // it was also the slowest: the live-room fetch below rides its own
         // throttle, counted from the last attempt, so the first room of a run
