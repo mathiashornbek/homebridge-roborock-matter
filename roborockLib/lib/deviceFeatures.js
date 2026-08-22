@@ -867,6 +867,13 @@ class deviceFeatures {
       ].includes(robotModel),
       // this isn't the correct way to use this. This code must be from a different robot
       // isVoiceControlSupported: !!(parseInt(`0x${this.featuresStr || "0"}`.slice(-10, -9)) & 2),
+      // Do not uncomment this as-is: the `.slice()` runs on the already
+      // "0x"-prefixed string and yields a single bare character, so the hex
+      // digits a-f parse as NaN and the whole test silently reads false. The
+      // two live bitmask reads in this object (isBackChargeAutoWashSupported,
+      // isCleanRouteFastModeSupported) keep the "0x" on the value they hand to
+      // parseInt, which is why they are correct without an explicit radix —
+      // parseInt infers base 16 from the prefix. Slice first, then prefix.
       // These two were written as bare arrays while every other model list in
       // this object ends in `.includes(robotModel)`. An array is truthy in JS
       // — an EMPTY array included — and the gate below is
