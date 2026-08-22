@@ -18,6 +18,7 @@ const elements = {
   homeKitSwitchPairing: document.getElementById("homekit-switch-pairing"),
   homeKitActionClean: document.getElementById("homekit-action-clean"),
   homeKitActionDock: document.getElementById("homekit-action-dock"),
+  homeKitActionEmpty: document.getElementById("homekit-action-empty"),
   homeKitActionPause: document.getElementById("homekit-action-pause"),
   homeKitActionLocate: document.getElementById("homekit-action-locate"),
   enableHomeKitStateSensors: document.getElementById(
@@ -80,10 +81,11 @@ const DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS = 6;
 
 // Kept in the same order as HOMEKIT_ACTION_KEYS in src/types.ts, so the form,
 // the saved config and the plugin all name these the same way.
-const ACTION_SWITCH_KEYS = ["clean", "dock", "pause", "locate"];
+const ACTION_SWITCH_KEYS = ["clean", "dock", "empty", "pause", "locate"];
 const ACTION_SWITCH_ELEMENTS = {
   clean: () => elements.homeKitActionClean,
   dock: () => elements.homeKitActionDock,
+  empty: () => elements.homeKitActionEmpty,
   pause: () => elements.homeKitActionPause,
   locate: () => elements.homeKitActionLocate,
 };

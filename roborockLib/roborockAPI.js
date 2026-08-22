@@ -325,6 +325,7 @@ const SIMPLE_VACUUM_COMMANDS = new Set([
   "stop_zoned_clean",
   "app_pause",
   "app_charge",
+  "app_start_collect_dust",
   "find_me",
   "app_segment_clean_by_ids",
   "load_multi_map",
@@ -2453,6 +2454,16 @@ class Roborock {
     };
   }
 
+  supportsDustCollection(duid) {
+    const dockType = Number(this.getVacuumDeviceStatus(duid, "dock_type"));
+    const autoEmptyDockTypes = new Set([1, 3, 5, 6, 7, 8, 9]);
+
+    return (
+      autoEmptyDockTypes.has(dockType) ||
+      this.hasVacuumFeature(duid, "isDustCollectionSettingSupported")
+    );
+  }
+
   buildCommandOptions(options, extraDefaults = {}) {
     const waitForResult = Boolean(options.waitForResult);
     const commandOptions = waitForResult
@@ -4169,6 +4180,10 @@ class Roborock {
 
   async app_charge(duid, options) {
     await this.startCommand(duid, "app_charge", null, options);
+  }
+
+  async app_start_collect_dust(duid, options) {
+    await this.startCommand(duid, "app_start_collect_dust", null, options);
   }
 
   async find_me(duid, options) {

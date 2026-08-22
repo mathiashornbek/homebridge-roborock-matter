@@ -136,6 +136,11 @@ interface RoborockApi {
   app_stop(duid: string, options?: RoborockCommandOptions): Promise<void>;
   app_pause(duid: string, options?: RoborockCommandOptions): Promise<void>;
   app_charge(duid: string, options?: RoborockCommandOptions): Promise<void>;
+  app_start_collect_dust?(
+    duid: string,
+    options?: RoborockCommandOptions
+  ): Promise<void>;
+  supportsDustCollection?(duid: string): boolean;
   find_me?(duid: string, options?: RoborockCommandOptions): Promise<void>;
   app_segment_clean_by_ids(
     duid: string,
@@ -900,6 +905,14 @@ export default class RoborockMatterVacuumAccessory {
    * published in the first place.
    */
   supportsHomeKitAction(action: HomeKitActionKey): boolean {
+    if (action === "empty") {
+      return (
+        typeof this.api.app_start_collect_dust === "function" &&
+        typeof this.api.supportsDustCollection === "function" &&
+        this.api.supportsDustCollection(this.getDuid())
+      );
+    }
+
     if (action === "locate") {
       return typeof this.api.find_me === "function";
     }
@@ -1323,6 +1336,9 @@ export default class RoborockMatterVacuumAccessory {
         return;
       case "dock":
         await this.returnToDock(HOME_SWITCH_SURFACE);
+        return;
+      case "empty":
+        await this.emptyDustBin(HOME_SWITCH_SURFACE);
         return;
       case "pause":
         await this.pauseCleaning(HOME_SWITCH_SURFACE);
@@ -1877,6 +1893,37 @@ export default class RoborockMatterVacuumAccessory {
       "return to dock",
       () => this.api.app_charge(this.getDuid(), this.getMatterCommandOptions()),
       { retryReturnToDockIfStillActive: true, surface }
+    );
+  }
+
+  private async emptyDustBin(surface: string): Promise<void> {
+    if (!this.isDockedOrChargingNow()) {
+      this.platform.log.warn(
+        `Not emptying ${this.getVacuumName()} from ${surfacePhrase(surface)} because the robot is not docked.`
+      );
+      return;
+    }
+
+    const startDustCollection = this.api.app_start_collect_dust;
+    if (typeof startDustCollection !== "function") {
+      this.platform.log.warn(
+        `Not emptying ${this.getVacuumName()} from ${surfacePhrase(surface)} because the auto-empty command is unavailable.`
+      );
+      return;
+    }
+
+    this.platform.log.info(
+      `Emptying ${this.getVacuumName()}'s dust bin from ${surfacePhrase(surface)}.`
+    );
+    this.dispatchRoborockMatterCommand(
+      "empty dust bin",
+      () =>
+        startDustCollection.call(
+          this.api,
+          this.getDuid(),
+          this.getMatterCommandOptions()
+        ),
+      { surface }
     );
   }
 

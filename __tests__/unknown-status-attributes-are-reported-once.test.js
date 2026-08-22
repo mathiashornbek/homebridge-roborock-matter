@@ -29,7 +29,12 @@ const UNMAPPED_SAROS_ATTRIBUTES = {
   seq_type: 0,
 };
 
-const MAPPED_ATTRIBUTES = { state: 8, battery: 100, charge_status: 1 };
+const MAPPED_ATTRIBUTES = {
+  state: 8,
+  battery: 100,
+  charge_status: 1,
+  dock_type: 1,
+};
 
 /**
  * An adapter whose profile knows only `MAPPED_ATTRIBUTES`, and which has a
@@ -91,6 +96,17 @@ function unmappedWarnings(adapter) {
 }
 
 describe("unmapped get_status attributes are reported once per robot", () => {
+  test("dock capability detection receives the dock type value", async () => {
+    const adapter = createAdapter(() => ({ ...MAPPED_ATTRIBUTES }));
+    const robot = new vacuum(adapter, "roborock.vacuum.a08");
+
+    await poll(robot, "s7-duid");
+
+    expect(
+      adapter.vacuums["s7-duid"].features.processDockType
+    ).toHaveBeenCalledWith(1);
+  });
+
   test("the first poll reports the unmapped attributes, naming the robot", async () => {
     const adapter = createAdapter(() => ({
       ...MAPPED_ATTRIBUTES,
