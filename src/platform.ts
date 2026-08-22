@@ -84,9 +84,9 @@ function installDeprecationWarningFilter(): void {
 installDeprecationWarningFilter();
 
 const Roborock = require("../roborockLib/roborockAPI").Roborock;
-const { getModelMarketingName } =
+const { getModelNameWithoutBrand } =
   require("../roborockLib/lib/deviceFeatures") as {
-    getModelMarketingName: (model: unknown) => string | null;
+    getModelNameWithoutBrand: (model: unknown) => string | null;
   };
 
 /**
@@ -1080,8 +1080,11 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * The model as a human should read it: "Roborock Qrevo S", not
+   * The model as a human should read it: "Qrevo S", not
    * "roborock.vacuum.a104" (#10).
+   *
+   * De-branded, because every caller sets `manufacturer = "Roborock"` on the
+   * same accessory — see the note on getModelNameWithoutBrand.
    *
    * Display only — see the note on MODEL_MARKETING_NAMES. Anything that
    * *compares* a model must keep reading `getProductAttribute` directly, and a
@@ -1089,7 +1092,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    */
   getVacuumModel(duid: string): string {
     const reported = this.roborockAPI.getProductAttribute(duid, "model");
-    return getModelMarketingName(reported) || reported || "Roborock Vacuum";
+    return getModelNameWithoutBrand(reported) || reported || "Roborock Vacuum";
   }
 
   getVacuumSerialNumber(duid: string): string {

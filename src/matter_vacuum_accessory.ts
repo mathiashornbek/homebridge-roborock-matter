@@ -5,9 +5,9 @@ import { getLiveMessageForThisAccessory } from "./live_message";
 import { HomeKitActionKey, HomeKitStateSensorKey } from "./types";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
-const { getModelMarketingName } =
+const { getModelNameWithoutBrand } =
   require("../roborockLib/lib/deviceFeatures") as {
-    getModelMarketingName: (model: unknown) => string | null;
+    getModelNameWithoutBrand: (model: unknown) => string | null;
   };
 
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
@@ -1397,8 +1397,11 @@ export default class RoborockMatterVacuumAccessory {
     const reportedModel =
       this.api.getProductAttribute(duid, "model") ||
       this.api.getVacuumDeviceInfo(duid, "model");
+    // De-branded, because `manufacturer` two lines up already says Roborock
+    // (#10). The last-resort string keeps the brand on purpose: it is a
+    // placeholder for "we know nothing", not a model name.
     this.accessory.model =
-      getModelMarketingName(reportedModel) ||
+      getModelNameWithoutBrand(reportedModel) ||
       reportedModel ||
       "Roborock Vacuum";
     this.accessory.serialNumber =

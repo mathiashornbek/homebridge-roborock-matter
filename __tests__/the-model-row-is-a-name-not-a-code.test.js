@@ -27,6 +27,7 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const {
   getModelMarketingName,
+  getModelNameWithoutBrand,
   MODEL_MARKETING_NAMES,
 } = require("../roborockLib/lib/deviceFeatures");
 
@@ -156,6 +157,118 @@ describe("the marketing-name table", () => {
   });
 });
 
+// The reporter of #10 came back after the Manufacturer row was fixed upstream
+// and read the pair as a duplicate: Manufacturer "Roborock", Model "Roborock
+// Qrevo S". He is right, and his original request was for both rows. So the
+// table keeps the brand — upstream's names are the authority and the
+// cross-check above compares in that form — and the row is de-branded at the
+// display edge instead.
+//
+// This block enumerates rather than spot-checks for the same reason as above:
+// the failure mode is one entry that de-brands to something wrong or empty,
+// and no single-case test would find it.
+describe("the model row does not repeat the manufacturer", () => {
+  test("every entry de-brands to a non-empty name that is a suffix of it", () => {
+    const problems = [];
+
+    for (const model of Object.keys(MODEL_MARKETING_NAMES)) {
+      const branded = getModelMarketingName(model);
+      const row = getModelNameWithoutBrand(model);
+
+      if (typeof row !== "string" || !row || row.trim() !== row) {
+        problems.push(`${model}: row is empty or padded`);
+        continue;
+      }
+      if (/^Roborock\b/.test(row)) {
+        problems.push(`${model}: row still starts with the brand ("${row}")`);
+      }
+      // The row must be a piece of the vetted name, never a rewrite of it.
+      if (!branded.endsWith(row)) {
+        problems.push(`${model}: row "${row}" is not a suffix of "${branded}"`);
+      }
+      // Matter BasicInformation caps ProductName at 32. De-branding only ever
+      // shortens, so this cannot regress — assert it anyway, cheaply.
+      if (row.length > 32) {
+        problems.push(`${model}: row is ${row.length} chars, over the 32 cap`);
+      }
+    }
+
+    expect(problems).toEqual([]);
+  });
+
+  test("reads as the reporter of #10 asked for", () => {
+    expect(getModelNameWithoutBrand("roborock.vacuum.a104")).toBe("Qrevo S");
+  });
+
+  test("de-brands the maintainer's own a70", () => {
+    expect(getModelNameWithoutBrand("roborock.vacuum.a70")).toBe(
+      "S8 Pro Ultra"
+    );
+  });
+
+  // The guard that matters most. An unknown model must fall through to the raw
+  // reported code untouched: `roborock.vacuum.sc05` is the robot's own string,
+  // and trimming a brand off it would invent a model that does not exist. Two
+  // of the maintainer's three robots are exactly this case.
+  test("never rewrites a code it cannot resolve", () => {
+    expect(getModelNameWithoutBrand("roborock.vacuum.sc05")).toBeNull();
+    expect(getModelNameWithoutBrand("roborock.vacuum.zz999")).toBeNull();
+    expect(getModelNameWithoutBrand("")).toBeNull();
+    expect(getModelNameWithoutBrand(undefined)).toBeNull();
+    expect(getModelNameWithoutBrand(null)).toBeNull();
+    expect(getModelNameWithoutBrand(42)).toBeNull();
+    expect(getModelNameWithoutBrand("__proto__")).toBeNull();
+  });
+
+  // The table is the data and must stay upstream-verbatim; only the display
+  // helper strips. If a future edit "simplifies" this by de-branding the table
+  // itself, the upstream cross-check silently starts comparing the wrong form.
+  test("the table itself still carries the brand", () => {
+    expect(getModelMarketingName("roborock.vacuum.a104")).toBe(
+      "Roborock Qrevo S"
+    );
+  });
+
+  // Every surface that shows the model shows the manufacturer beside it, which
+  // is the whole premise of de-branding. If a caller ever sets `model` without
+  // setting `manufacturer` on the same accessory, the row becomes a bare SKU
+  // and this decision needs revisiting — so pin the pairing in the source.
+  test("both writers of accessory.model also set the manufacturer", () => {
+    const files = ["src/platform.ts", "src/matter_vacuum_accessory.ts"];
+
+    const unpaired = [];
+    for (const file of files) {
+      const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+      const lines = source.split("\n");
+      lines.forEach((line, index) => {
+        if (!/^\s*(this\.)?accessory\.model\s*=/.test(line)) {
+          return;
+        }
+        // Scan backwards to the start of the enclosing method rather than a
+        // fixed number of lines: the two assignments are 1 line apart in
+        // platform.ts and 18 apart in matter_vacuum_accessory.ts, where a
+        // comment block sits between them, so a tight window would fail on
+        // correct code. A method opener at two-space indent is the boundary.
+        let start = 0;
+        for (let i = index - 1; i >= 0; i -= 1) {
+          if (
+            /^ {2}(private |public |protected )?[\w]+\(.*\{\s*$/.test(lines[i])
+          ) {
+            start = i;
+            break;
+          }
+        }
+        const method = lines.slice(start, index).join("\n");
+        if (!/accessory\.manufacturer\s*=\s*"Roborock"/.test(method)) {
+          unpaired.push(`${file}:${index + 1}: ${line.trim()}`);
+        }
+      });
+    }
+
+    expect(unpaired).toEqual([]);
+  });
+});
+
 describe("the raw code still drives every decision", () => {
   // This is the half that would fail silently. `getVacuumModel` feeds display
   // surfaces, so it is allowed to resolve a name — but the model comparisons
@@ -202,7 +315,7 @@ describe("the display surfaces use the name", () => {
     const source = fs.readFileSync(path.join(ROOT, "src/platform.ts"), "utf8");
     const getter = source.slice(source.indexOf("getVacuumModel(duid: string)"));
     const body = getter.slice(0, getter.indexOf("\n  }"));
-    expect(body).toMatch(/getModelMarketingName/);
+    expect(body).toMatch(/getModelNameWithoutBrand/);
   });
 
   test("the Matter accessory's metadata resolves the marketing name", () => {
@@ -214,6 +327,6 @@ describe("the display surfaces use the name", () => {
       source.indexOf("updateMetadata(device: RoborockDevice)")
     );
     const body = updateMetadata.slice(0, updateMetadata.indexOf("\n  }"));
-    expect(body).toMatch(/getVacuumModel|getModelMarketingName/);
+    expect(body).toMatch(/getVacuumModel|getModelNameWithoutBrand/);
   });
 });

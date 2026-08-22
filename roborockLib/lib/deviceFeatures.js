@@ -1505,10 +1505,49 @@ function getModelMarketingName(model) {
   return typeof name === "string" && name ? name : null;
 }
 
+/**
+ * The Model row as it should read beside a Manufacturer row that already says
+ * "Roborock": "Qrevo S", not "Roborock Qrevo S" (#10).
+ *
+ * The table above deliberately keeps the brand and must keep it — every entry
+ * is upstream's `VacuumProfile.name` verbatim, and the cross-check test that
+ * catches a name hung on the wrong robot compares against upstream in that
+ * form. So the de-branding happens here, at the display edge, not in the data.
+ *
+ * Why de-brand at all, when 3.15.0 argued the opposite ("a name that does not
+ * start with the brand reads as a bare SKU"): there is no surface where this
+ * string appears without the manufacturer beside it. Apple Home's accessory
+ * details, the Homebridge UI and the HAP sensors' Model characteristic are all
+ * fed from `accessory.manufacturer` and `accessory.model` together, and the
+ * first is unconditionally "Roborock". The reporter of #10 asked for exactly
+ * these two rows and read the result as a duplicate, which settles it.
+ *
+ * Returns null for an unknown model, exactly like getModelMarketingName, so
+ * the caller falls back to the raw reported code. That code must never be
+ * rewritten: `roborock.vacuum.sc05` is the robot's own string, not a name we
+ * composed, and shortening it would invent a model that does not exist.
+ *
+ * @param {unknown} model
+ * @returns {string|null}
+ */
+function getModelNameWithoutBrand(model) {
+  const name = getModelMarketingName(model);
+  if (!name) {
+    return null;
+  }
+
+  // Anchored and whitespace-delimited, so this only ever removes the brand as
+  // a whole word. If a name were ever nothing but the brand, keep it rather
+  // than return an empty Model row.
+  const unbranded = name.replace(/^Roborock\s+/, "").trim();
+  return unbranded || name;
+}
+
 module.exports = {
   deviceFeatures,
   errorCodes,
   supportsMaxPlusFanPower,
   getModelMarketingName,
+  getModelNameWithoutBrand,
   MODEL_MARKETING_NAMES,
 };

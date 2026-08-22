@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.15.4
+
+**Apple Home read "Roborock" and then "Roborock Qrevo S". The Model row no longer repeats the Manufacturer row.**
+
+n0rt0nthec4t opened [#10](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/10) asking for two rows: Manufacturer "Roborock" and Model "Q Revo S". Both halves have now landed — the Manufacturer row was Homebridge's, fixed upstream in [homebridge/homebridge#3996](https://github.com/homebridge/homebridge/pull/3996) and out in `2.4.1-beta.3`, and the Model row was ours, given a real name in 3.15.0. Put together, they read as a duplicate, which is what he came back to say.
+
+3.15.0 argued the opposite — that a name without the brand "reads as a bare SKU" — and that reasoning was wrong for a reason worth recording: there is no surface where this string appears without the manufacturer beside it. Apple Home's accessory details, the Homebridge UI and the HAP sensors' Model characteristic are all fed from `manufacturer` and `model` together, and the first is unconditionally "Roborock".
+
+- The Model row now reads **"Qrevo S"**, **"S8 Pro Ultra"**, **"Saros 10R"** and so on, on all 34 known models.
+- **The name table is unchanged and still carries the brand.** Every entry is upstream `copystring/ioBroker.roborock`'s own `VacuumProfile.name` verbatim, and the cross-check that catches a name hung on the wrong robot compares in that form. The de-branding happens at the display edge, not in the data.
+- **A model with no upstream name is still shown as its raw code, untouched.** `roborock.vacuum.sc05` is the robot's own string, not a name this plugin composed, and shortening it would invent a model that does not exist.
+- Still display-only. Every poll profile, feature lookup, capability branch and `isSupportedDevice` call keys on the raw code, and the test that reads the source and fails if a model _comparison_ is ever fed a display value is unchanged.
+- No re-pairing. `ProductName` is a Fixed-quality Matter attribute, so it is never persisted and the new value applies on the next restart.
+
+Also settled in #10, with no code change needed: the **Q Revo S offers Quiet, Balanced, Turbo and Max** and nothing above it, so `roborock.vacuum.a104` stays out of the Max+ suction list and no owner pays a re-pair for a level their robot does not have.
+
 ## 3.15.3
 
 **An empty water tank told Apple Home a vacuum-only run was blocked, and Apple said so every 2 minutes.**
