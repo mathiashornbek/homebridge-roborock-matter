@@ -19,6 +19,7 @@ function createPlatformHarness() {
       { notifyDeviceUpdater: jest.fn().mockResolvedValue(undefined) },
     ],
   ]);
+  platform.syncActionSwitches = jest.fn();
 
   return platform;
 }
@@ -66,5 +67,29 @@ describe("Roborock platform device update dispatch (Matter-only)", () => {
     expect(
       platform.matterVacuums.get("device-2").notifyDeviceUpdater
     ).toHaveBeenCalledWith("HomeData", message);
+  });
+
+  test("reconciles action switches after live dock capabilities are ready", () => {
+    const platform = createPlatformHarness();
+    const devices = platform.roborockAPI.getVacuumList();
+
+    platform.dispatchDeviceUpdate("DeviceCapabilities", {
+      duid: "device-1",
+    });
+
+    expect(platform.syncActionSwitches).toHaveBeenCalledWith(devices);
+    expect(
+      platform.matterVacuums.get("device-1").notifyDeviceUpdater
+    ).not.toHaveBeenCalled();
+  });
+
+  test("waits for the Matter vacuum before capability reconciliation", () => {
+    const platform = createPlatformHarness();
+
+    platform.dispatchDeviceUpdate("DeviceCapabilities", {
+      duid: "not-built-yet",
+    });
+
+    expect(platform.syncActionSwitches).not.toHaveBeenCalled();
   });
 });

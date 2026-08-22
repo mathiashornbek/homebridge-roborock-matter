@@ -732,7 +732,14 @@ class deviceFeatures {
     return {
       isWashThenChargeCmdSupported:
         ((this.features / Math.pow(2, 32)) >> 5) & 1,
-      isDustCollectionSettingSupported: !!(33554432 & this.features),
+      // Some classic robots (including the S7) omit the dock capability bit
+      // from HomeData and report the attached dock only in live get_status.
+      // processDockType() enables the dust-collection commands from that
+      // verified runtime value, so the public feature report must reflect the
+      // same per-robot command table rather than continuing to say "false".
+      isDustCollectionSettingSupported:
+        !!(33554432 & this.features) ||
+        Boolean(this.commands.app_start_collect_dust),
       isSupportedDrying: ((this.features / Math.pow(2, 32)) >> 15) & 1,
       isShakeMopSetSupported: !!(262144 & this.features),
       isVideoMonitorSupported: !!(8 & this.features), // I tested this for S7 MaxV, S8 MaxV

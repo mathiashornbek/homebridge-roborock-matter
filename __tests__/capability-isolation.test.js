@@ -130,6 +130,21 @@ function createHarness() {
 }
 
 describe("per-robot capability isolation", () => {
+  test("a live S7 auto-empty dock updates the public capability report", () => {
+    const harness = createHarness();
+    const s7 = harness.build(
+      "duid-s7",
+      "roborock.vacuum.a15",
+      NO_DOCK_FEATURE_SET
+    );
+
+    expect(s7.getFeatureList().isDustCollectionSettingSupported).toBe(false);
+
+    s7.processDockType(1);
+
+    expect(s7.getFeatureList().isDustCollectionSettingSupported).toBe(true);
+  });
+
   test("an S4 Max set up after an S8 Pro Ultra gets none of the dock capabilities", async () => {
     const harness = createHarness();
     await harness.setUp("duid-s8", S8_PRO_ULTRA, DOCK_FEATURE_SET);
