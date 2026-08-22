@@ -313,6 +313,107 @@ describe("the README does not blame fault reporting for the stuck tile", () => {
   });
 });
 
+// The Troubleshooting section used to answer the single most-reported symptom
+// in this project — a tile stuck on "Updating…" — by telling the user to
+// unpair the robot and pair it again. That is the right cure for exactly one
+// of the two causes on record, and it is the expensive one: it costs the user
+// their rooms, their tile name and every automation pointing at it.
+//
+// Two users have since measured the other cause, and both times the plugin was
+// provably innocent while the advice was still sending them to a teardown.
+// jawnlydon (#7) had the tile alive on a Mac and dead on an iPhone at the same
+// moment for nine days; iOS 26.6.1 fixed it with no change on this side.
+// noppie (#11) reported the same asymmetry on 22 Aug and a plain iPhone
+// restart cleared it — he had been offered the full teardown first, and it
+// would have cost him an evening and taught him nothing.
+//
+// So the discriminator is not Apple's choice of words, which varies between
+// "Updating…" and "No Response" for the same condition. It is whether a
+// SECOND controller in the same Home draws the tile correctly at that same
+// moment: if one does, the node is healthy and re-pairing cannot help.
+//
+// These rules encode the ladder rather than the prose. The section may be
+// rewritten freely as long as the cheap remedy still comes before the
+// destructive one and the destructive one still names the condition that makes
+// it the right answer.
+describe("the Updating tile is triaged controller-first", () => {
+  const troubleshooting = () => plain(section("Troubleshooting"));
+
+  /** "on every Apple device", however the sentence chooses to say it. */
+  const EVERY_CONTROLLER =
+    /\b(?:every|all|both|no)\b[^.]*\b(?:Apple\s+)?(?:device|controller|client|phone)s?\b/i;
+
+  test("the two Apple wordings are named as one symptom", () => {
+    // Keyed separately, a user whose tile says "Updating" reads only the
+    // teardown entry and never reaches the controller-side one — which is
+    // precisely what happened to noppie.
+    const together = sentences(troubleshooting()).filter(
+      (sentence) => /Updating/i.test(sentence) && /No Response/i.test(sentence)
+    );
+
+    expect(together.length).toBeGreaterThan(0);
+  });
+
+  test("a second controller is named as the thing that decides it", () => {
+    expect(troubleshooting()).toMatch(
+      /second Apple device|another controller|second controller/i
+    );
+  });
+
+  test("restarting the controller is offered as a remedy", () => {
+    const restart = sentences(troubleshooting()).filter(
+      (sentence) =>
+        /\brestart(?:ing)?\b/i.test(sentence) &&
+        /\b(?:Apple device|iPhone|iPad|controller)\b/i.test(sentence)
+    );
+
+    expect(restart.length).toBeGreaterThan(0);
+  });
+
+  test("the restart is offered before the teardown", () => {
+    // Order is the whole point of this block. A section that lists both but
+    // leads with the unpair is the section we already had.
+    const section_ = troubleshooting();
+    const restart = section_.search(/\brestart the Apple device\b/i);
+    const teardown = section_.search(/\bremove the robot from Apple Home\b/i);
+
+    expect(restart).toBeGreaterThanOrEqual(0);
+    expect(teardown).toBeGreaterThan(restart);
+  });
+
+  test("the teardown names the condition that makes it the right cure", () => {
+    // Not "is it mentioned" but "is it conditioned": an unqualified
+    // instruction to unpair is the defect, whatever else the section says.
+    const prescriptions = sentences(troubleshooting()).filter(
+      (sentence) =>
+        /\b(?:remove|unpair)\b[^.]*\bApple Home\b/i.test(sentence) ||
+        /\bApple Home\b[^.]*\b(?:remove|unpair)\b/i.test(sentence)
+    );
+
+    expect(prescriptions.length).toBeGreaterThan(0);
+    expect(
+      prescriptions.filter((sentence) => !EVERY_CONTROLLER.test(sentence))
+    ).toEqual([]);
+  });
+
+  test("the teardown keeps the order that made it work", () => {
+    // A re-pair on top of the existing install did not work for Wazza151. Drop
+    // the uninstall step and the remedy stops being the remedy.
+    expect(troubleshooting()).toMatch(/uninstall/i);
+  });
+
+  test("both controller-side findings are attributed", () => {
+    const section_ = section("Troubleshooting");
+
+    expect(section_).toMatch(/issues\/7\b/);
+    expect(section_).toMatch(/issues\/11\b/);
+  });
+
+  test("the iOS version that fixed it is still named", () => {
+    expect(troubleshooting()).toMatch(/26\.6\.1/);
+  });
+});
+
 describe("the fault section's evidence is stated, not implied", () => {
   test("it names the state the fault was published beside", () => {
     const faults = plain(section("Why the robot needs attention"));
