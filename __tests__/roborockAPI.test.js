@@ -36,6 +36,27 @@ describe("Roborock API model and diagnostics helpers", () => {
     expect(api.supportsDustCollection("device-1")).toBe(false);
   });
 
+  test("detects an S7 auto-empty dock from cached named status when the schema omits dock_type", async () => {
+    const api = createRoborock();
+    await api.setStateAsync("HomeData", {
+      val: JSON.stringify({
+        products: [{ id: "product-1", schema: [{ id: 121, code: "state" }] }],
+        devices: [
+          {
+            duid: "device-1",
+            productId: "product-1",
+            deviceStatus: { 121: 8, dock_type: 1 },
+          },
+        ],
+        receivedDevices: [],
+      }),
+      ack: true,
+    });
+
+    expect(api.getVacuumDeviceStatus("device-1", "dock_type")).toBe(1);
+    expect(api.supportsDustCollection("device-1")).toBe(true);
+  });
+
   test("forwards the auto-empty command through the normal vacuum command path", async () => {
     const api = createRoborock();
     api.bInited = true;

@@ -5085,10 +5085,6 @@ class Roborock {
   getVacuumDeviceStatus(duid, property) {
     const propertyID = this.getVacuumSchemaId(duid, property);
 
-    if (propertyID == null) {
-      return "";
-    }
-
     // The device can disappear from HomeData between the schema lookup above
     // and this read (account changes, first start before HomeData persists).
     // Status reads are used by hot Matter/HomeKit paths, so they must never
@@ -5096,6 +5092,15 @@ class Roborock {
     const device = this.getVacuumDeviceData(duid);
     if (!device) {
       return "";
+    }
+
+    // get_status can contain useful named fields that are absent from a
+    // product's cloud schema. The S7's auto-empty dock is one measured case:
+    // it reports dock_type=1, but its schema has no dock_type entry. Returning
+    // before checking the named snapshot made capability detection lose that
+    // dock on every child-bridge restart.
+    if (propertyID == null) {
+      return device.deviceStatus?.[property] ?? "";
     }
 
     // Q7/B01 robots report their native work-status codes in the cloud

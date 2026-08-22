@@ -304,6 +304,11 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       this.roborockAPI.recordRoborockDiagnosticMessage(id, homeData);
     }
 
+    if (id === "DeviceCapabilities") {
+      this.reconcileActionSwitchesAfterCapabilityUpdate(homeData);
+      return;
+    }
+
     const scopedDuid = this.getScopedLiveMessageDuid(id, homeData);
     if (scopedDuid) {
       this.notifyVacuumByDuid(scopedDuid, id, homeData);
@@ -323,6 +328,27 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     for (const vacuum of this.matterVacuums.values()) {
       this.notifyMatter(vacuum, id, homeData);
     }
+  }
+
+  /**
+   * Re-run the existing action-switch reconciliation after a live status poll
+   * has finished applying model capabilities such as an S7's auto-empty dock.
+   */
+  private reconcileActionSwitchesAfterCapabilityUpdate(data: unknown): void {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return;
+    }
+
+    const duid = String((data as Record<string, unknown>).duid ?? "");
+    if (!duid || !this.matterVacuums.has(duid)) {
+      return;
+    }
+
+    const devices =
+      typeof this.roborockAPI.getVacuumList === "function"
+        ? this.roborockAPI.getVacuumList()
+        : [];
+    this.syncActionSwitches(Array.isArray(devices) ? devices : []);
   }
 
   private notifyVacuumByDuid(

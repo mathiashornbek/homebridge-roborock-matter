@@ -559,11 +559,23 @@ class vacuum {
           // day to contact the dev about the same eight fields (#8).
           /** @type {string[]} */
           const newlyUnmappedAttributes = [];
+          let dockCapabilityUpdated = false;
 
           for (const attribute in deviceStatus[0]) {
             const isCleaning = this.adapter.isCleaning(
               deviceStatus[0]["state"]
             );
+
+            // Homebridge has no ioBroker object database, so getObjectAsync()
+            // below intentionally returns nothing and the inherited loop skips
+            // its state-writing path. Dock capability is runtime metadata, not
+            // an ioBroker state: apply it before that compatibility gate.
+            if (attribute === "dock_type") {
+              this.adapter.vacuums[duid].features.processDockType(
+                deviceStatus[0][attribute]
+              );
+              dockCapabilityUpdated = true;
+            }
 
             if (
               !(await this.adapter.getObjectAsync(
@@ -620,9 +632,7 @@ class vacuum {
 
             switch (attribute) {
               case "dock_type":
-                this.adapter.vacuums[duid].features.processDockType(
-                  deviceStatus[0][attribute]
-                );
+                // Applied above, before the ioBroker object-compatibility gate.
                 break;
               case "dss":
                 await this.adapter.createDockingStationObject(duid);
@@ -702,6 +712,16 @@ class vacuum {
             this.adapter.log.warn(
               `${describeDevice(this.adapter, duid)} (${this.robotModel}) sends ${newlyUnmappedAttributes.length} get_status field(s) this plugin has no mapping for: ${newlyUnmappedAttributes.join(", ")}. Control, battery, rooms and state come from a model-agnostic path and do not depend on them, so nothing is broken — but a model report issue on GitHub quoting this line is how they get added. Logged once per field per robot, so it will not repeat.`
             );
+          }
+
+          // Classic S7-family robots report their dock type in the first live
+          // get_status response, after HomeData discovery has already built
+          // the Matter accessory and run the initial HomeKit switch sync. Tell
+          // the platform only after processDockType() has applied the feature,
+          // so an opt-in Empty Bin switch can be reconciled from verified live
+          // capability instead of a timer or a model-name guess.
+          if (dockCapabilityUpdated && this.adapter.deviceNotify) {
+            this.adapter.deviceNotify("DeviceCapabilities", { duid });
           }
 
           this.adapter.manageDeviceIntervals(duid);

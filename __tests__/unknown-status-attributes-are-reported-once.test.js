@@ -74,6 +74,7 @@ function createAdapter(status, names = {}) {
     setStateChangedAsync: jest.fn(),
     isCleaning: () => false,
     manageDeviceIntervals: jest.fn(),
+    deviceNotify: jest.fn(),
     describeDevice: (duid) => names[duid] || String(duid),
     catchError: jest.fn((error) => {
       throw error;
@@ -98,6 +99,9 @@ function unmappedWarnings(adapter) {
 describe("unmapped get_status attributes are reported once per robot", () => {
   test("dock capability detection receives the dock type value", async () => {
     const adapter = createAdapter(() => ({ ...MAPPED_ATTRIBUTES }));
+    // The Homebridge adapter deliberately has no ioBroker object database.
+    // Capability detection must happen even when this lookup returns nothing.
+    adapter.getObjectAsync.mockResolvedValue(undefined);
     const robot = new vacuum(adapter, "roborock.vacuum.a08");
 
     await poll(robot, "s7-duid");
@@ -105,6 +109,13 @@ describe("unmapped get_status attributes are reported once per robot", () => {
     expect(
       adapter.vacuums["s7-duid"].features.processDockType
     ).toHaveBeenCalledWith(1);
+    expect(adapter.deviceNotify).toHaveBeenCalledWith("DeviceCapabilities", {
+      duid: "s7-duid",
+    });
+    expect(
+      adapter.vacuums["s7-duid"].features.processDockType.mock
+        .invocationCallOrder[0]
+    ).toBeLessThan(adapter.deviceNotify.mock.invocationCallOrder[0]);
   });
 
   test("the first poll reports the unmapped attributes, naming the robot", async () => {
