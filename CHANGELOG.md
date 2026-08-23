@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.17.1
+
+**Closing the plugin's settings page could print a Node crash dump into your Homebridge log.** Reported with the log to prove it by [@jcoz00](https://github.com/jcoz00) in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6). The Homebridge UI runs the settings-page server as a child process and closes its IPC channel the moment the page goes away; every reply that server sends is a `process.send()`, including the `ready()` handshake it fires before serving a single request. A send that loses the race against that close is reported asynchronously as an unhandled `'error'` event, which is fatal — so a closed settings page ended in `Error: write EPIPE`, a stack trace and a `Node.js v24.19.0` banner in the log. Nothing was broken and nothing in the log said so. A dead channel now ends that child process quietly; every other error stays exactly as loud as it was.
+
+**A robot's dock capability is announced when it changes, instead of on every poll.** `dock_type` rides along in nearly every `get_status`, and 3.17.0 told the platform about it each time, re-running the HomeKit action-switch sync roughly once a minute per robot. At default settings that sync returns immediately, but anyone who had switched the Empty Bin action on for a robot whose dock cannot auto-empty collected a `Not publishing the Empty Bin switch…` debug line every minute per robot — enough to shorten the useful reach of the debug log. Detection itself still runs on every poll; only the announcement is gated, and a dock type that genuinely changes is still announced.
+
 ## 3.17.0
 
 **Compatible auto-empty docks can now expose an optional Empty Bin action switch in Apple Home.** Contributed by [@jbyhb](https://github.com/jbyhb) in [#13](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/13). It uses the same opt-in HomeKit action-switch bridge as Start, Dock, Pause and Find, appears only when the robot reports dust-collection support, and sends the dock's native `app_start_collect_dust` command through the normal confirmed command path. A cached status that does not show the robot docked is advisory rather than a hard gate: the robot is the authoritative judge and its refusal follows the existing command-error path.

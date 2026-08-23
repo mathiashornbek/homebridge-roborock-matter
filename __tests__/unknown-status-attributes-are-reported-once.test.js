@@ -118,6 +118,92 @@ describe("unmapped get_status attributes are reported once per robot", () => {
     ).toBeLessThan(adapter.deviceNotify.mock.invocationCallOrder[0]);
   });
 
+  // The same rule as the unmapped-attribute warning above, applied to the
+  // other thing this loop emits per poll. `dock_type` rides along in nearly
+  // every `get_status`, so notifying the platform on each sighting re-ran
+  // `syncActionSwitches` about once a minute per robot. Harmless at default
+  // settings, because that sync returns early when no action switches are
+  // configured — but a user who had switched the Empty Bin action on for a
+  // robot whose dock cannot auto-empty got a debug line every minute per
+  // robot for it, which is the shape that once shrank the debug ring buffer
+  // to ninety minutes. Announce the dock type when it says something new.
+  describe("dock capability is announced on change, not on every poll", () => {
+    test("the first poll announces it", async () => {
+      const adapter = createAdapter(() => ({ ...MAPPED_ATTRIBUTES }));
+      adapter.getObjectAsync.mockResolvedValue(undefined);
+      const robot = new vacuum(adapter, "roborock.vacuum.a08");
+
+      await poll(robot, "s7-duid");
+
+      expect(adapter.deviceNotify).toHaveBeenCalledTimes(1);
+    });
+
+    test("twenty more polls of an unchanged dock announce nothing further", async () => {
+      const adapter = createAdapter(() => ({ ...MAPPED_ATTRIBUTES }));
+      adapter.getObjectAsync.mockResolvedValue(undefined);
+      const robot = new vacuum(adapter, "roborock.vacuum.a08");
+
+      for (let i = 0; i < 21; i++) {
+        await poll(robot, "s7-duid");
+      }
+
+      expect(adapter.deviceNotify).toHaveBeenCalledTimes(1);
+    });
+
+    test("detection itself still runs on every poll", async () => {
+      // Quietening the announcement must not quieten the detection behind it:
+      // `processDockType()` installs the robot's command table, and that has
+      // to survive whatever else re-derives features between polls.
+      const adapter = createAdapter(() => ({ ...MAPPED_ATTRIBUTES }));
+      adapter.getObjectAsync.mockResolvedValue(undefined);
+      const robot = new vacuum(adapter, "roborock.vacuum.a08");
+
+      for (let i = 0; i < 5; i++) {
+        await poll(robot, "s7-duid");
+      }
+
+      expect(
+        adapter.vacuums["s7-duid"].features.processDockType
+      ).toHaveBeenCalledTimes(5);
+    });
+
+    test("a dock that actually changes is announced again", async () => {
+      // Docking stations are swapped, and the S7 family reports the attached
+      // one from live status. A real change is the one thing the platform
+      // must never miss.
+      let dockType = 0;
+      const adapter = createAdapter(() => ({
+        ...MAPPED_ATTRIBUTES,
+        dock_type: dockType,
+      }));
+      adapter.getObjectAsync.mockResolvedValue(undefined);
+      const robot = new vacuum(adapter, "roborock.vacuum.a08");
+
+      await poll(robot, "s7-duid");
+      await poll(robot, "s7-duid");
+      expect(adapter.deviceNotify).toHaveBeenCalledTimes(1);
+
+      dockType = 1;
+      await poll(robot, "s7-duid");
+
+      expect(adapter.deviceNotify).toHaveBeenCalledTimes(2);
+    });
+
+    test("each robot is tracked separately", async () => {
+      const adapter = createAdapter(() => ({ ...MAPPED_ATTRIBUTES }));
+      adapter.getObjectAsync.mockResolvedValue(undefined);
+      const robot = new vacuum(adapter, "roborock.vacuum.a08");
+
+      await poll(robot, "robot-a");
+      await poll(robot, "robot-a");
+      await poll(robot, "robot-b");
+
+      expect(
+        adapter.deviceNotify.mock.calls.map((call) => call[1].duid)
+      ).toEqual(["robot-a", "robot-b"]);
+    });
+  });
+
   test("the first poll reports the unmapped attributes, naming the robot", async () => {
     const adapter = createAdapter(() => ({
       ...MAPPED_ATTRIBUTES,

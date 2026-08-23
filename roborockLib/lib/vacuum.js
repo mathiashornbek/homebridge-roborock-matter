@@ -137,6 +137,41 @@ class vacuum {
      * @type {Map<string, Set<string>>}
      */
     this.reportedUnmappedStatusAttributes = new Map();
+
+    /**
+     * The dock type last seen from a robot's live `get_status`, per duid.
+     *
+     * `processDockType()` is idempotent and cheap, so it keeps running on
+     * every poll. Telling the platform about it does not: the notification
+     * re-runs the HomeKit action-switch sync behind it. A robot that reports
+     * `dock_type` in every `get_status` — which is most of them — therefore
+     * re-announced unchanged capabilities roughly once a minute per robot,
+     * and a user who had opted the Empty Bin switch on for a robot without an
+     * auto-empty dock collected the "Not publishing the Empty Bin switch"
+     * debug line at that same rate. A dock type is worth announcing when it
+     * is new or has actually changed; a repeat of the same value cannot tell
+     * the platform anything it did not already act on.
+     *
+     * @type {Map<string, unknown>}
+     */
+    this.lastSeenDockType = new Map();
+  }
+
+  /**
+   * Record the dock type a robot just reported, and say whether it is news.
+   *
+   * @param {string} duid
+   * @param {unknown} dockType
+   * @returns {boolean} true on the first sighting, and on every real change
+   */
+  rememberDockType(duid, dockType) {
+    const isNews =
+      !this.lastSeenDockType.has(duid) ||
+      this.lastSeenDockType.get(duid) !== dockType;
+
+    this.lastSeenDockType.set(duid, dockType);
+
+    return isNews;
   }
 
   /**
@@ -574,7 +609,10 @@ class vacuum {
               this.adapter.vacuums[duid].features.processDockType(
                 deviceStatus[0][attribute]
               );
-              dockCapabilityUpdated = true;
+              dockCapabilityUpdated = this.rememberDockType(
+                duid,
+                deviceStatus[0][attribute]
+              );
             }
 
             if (
