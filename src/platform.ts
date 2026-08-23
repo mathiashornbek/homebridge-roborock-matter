@@ -24,6 +24,9 @@ import RoborockStateSensorAccessory, {
   isStateSensorAccessory,
   stateSensorUuidSeed,
 } from "./state_sensor_accessory";
+import RoborockHapScheduleAccessory, {
+  isHapScheduleAccessory,
+} from "./hap_schedule_accessory";
 
 import RoborockPlatformLogger from "./logger";
 import {
@@ -109,6 +112,11 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   /** Optional read-only HAP state sensors, keyed `<duid>:<sensor>`. */
   private readonly stateSensors: Map<string, RoborockStateSensorAccessory> =
     new Map();
+  /** Optional HAP schedule accessories, keyed by vacuum duid. */
+  private readonly hapScheduleAccessories: Map<
+    string,
+    RoborockHapScheduleAccessory
+  > = new Map();
   private matterUnavailableLogged = false;
   private hapPairingHintLogged = false;
 
@@ -205,6 +213,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
 
       for (const stateSensor of this.stateSensors.values()) {
         stateSensor.dispose();
+      }
+
+      for (const schedule of this.hapScheduleAccessories.values()) {
+        schedule.dispose();
       }
 
       if (this.roborockAPI) {
@@ -470,8 +482,18 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       const self = this;
       let devices: any[] = [];
 
+      this.log.debug(
+        `Discovery state: roborockAPI.isInited()=${self.roborockAPI.isInited()}`
+      );
+
       if (self.roborockAPI.isInited()) {
         devices = self.roborockAPI.getVacuumList();
+
+        this.log.debug(
+          `Discovery retrieved ${
+            Array.isArray(devices) ? devices.length : "non-array"
+          } device(s) from getVacuumList().`
+        );
 
         // Every robot is published as a native Matter vacuum. The only HAP
         // accessories this plugin registers are the opt-in action switches
@@ -479,6 +501,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         for (const device of devices) {
           await self.discoverMatterVacuum(device);
         }
+      } else {
+        this.log.warn(
+          "Discovery skipped Matter/schedule setup because Roborock API is not initialized."
+        );
       }
 
       // At this point, we set up all devices from Roborock App, but we did not unregister
@@ -489,6 +515,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       this.removeLegacyHomeKitAccessories();
 
       const knownDevices = Array.isArray(devices) ? devices : [];
+      this.syncHapSchedules(knownDevices);
       this.syncActionSwitches(knownDevices);
       this.syncStateSensors(knownDevices);
       // After both syncs, so the count is the total a user has to find in
@@ -502,6 +529,288 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
           "Turn on debug mode for more information."
       );
       this.log.debug(error);
+    }
+  }
+
+  /**
+   * Bring the HAP schedule accessories in line with the current Roborock
+   * account. Schedule accessories are intentionally kept separate from
+   * Mathias's Matter implementation and from the HAP action switches.
+   *
+   * An empty device list is treated as untrustworthy because it can result
+   * from a temporary Roborock/cloud failure. Never remove schedule
+   * accessories merely because discovery returned no devices.
+   */
+  /**
+   * Schedule groups are controlled by the same Home app switch master as the
+   * other optional HAP switches. "schedules" is intentionally not part of
+   * HomeKitActionKey because it does not represent a Roborock command.
+   */
+  private shouldExposeHapSchedules(): boolean {
+    return (
+      this.platformConfig.enableHomeKitActionSwitches === true &&
+      this.platformConfig.enableHomeKitScheduleSwitches === true
+    );
+  }
+
+  private removeHapScheduleAccessories(): void {
+    const scheduleAccessories = this.accessories.filter((accessory) =>
+      isHapScheduleAccessory(accessory)
+    );
+
+    for (const schedule of this.hapScheduleAccessories.values()) {
+      schedule.dispose();
+    }
+
+    this.hapScheduleAccessories.clear();
+
+    for (const accessory of scheduleAccessories) {
+      const index = this.accessories.indexOf(accessory);
+      if (index >= 0) {
+        this.accessories.splice(index, 1);
+      }
+    }
+
+    if (scheduleAccessories.length > 0) {
+      this.api.unregisterPlatformAccessories(
+        HAP_PLUGIN_IDENTIFIER,
+        PLATFORM_NAME,
+        scheduleAccessories
+      );
+    }
+  }
+
+  private syncHapSchedules(devices: any[]): void {
+    const exposeSchedules = this.shouldExposeHapSchedules();
+
+    // The master HAP-switch setting owns the entire HAP switch surface.
+    // If it is disabled, schedule accessories must be completely removed
+    // rather than merely having their dynamic services disposed.
+    if (!this.platformConfig.enableHomeKitActionSwitches) {
+      this.removeHapScheduleAccessories();
+      return;
+    }
+
+    // The schedules sub-setting only controls schedule exposure. Keep the
+    // coordinator cached so schedules can be rebuilt when re-enabled.
+    if (!exposeSchedules) {
+      for (const schedule of this.hapScheduleAccessories.values()) {
+        schedule.dispose();
+      }
+
+      return;
+    }
+
+    // An empty device list is normally a temporary Roborock/cloud failure.
+    // Never remove schedule accessories because discovery temporarily
+    // returned no devices.
+    if (devices.length === 0) {
+      return;
+    }
+
+    const wanted = new Map<string, { duid: string; vacuumName: string }>();
+
+    for (const device of devices) {
+      const duid = String(device?.duid ?? "");
+      if (!duid) {
+        continue;
+      }
+
+      wanted.set(duid, {
+        duid,
+        vacuumName: this.getVacuumDisplayName(duid, device),
+      });
+    }
+
+    // Remove schedule groups only when we have a trustworthy non-empty
+    // account result and the robot genuinely disappeared.
+    const obsolete = this.accessories.filter((accessory) => {
+      if (!isHapScheduleAccessory(accessory)) {
+        return false;
+      }
+
+      const context = accessory.context as { duid?: string };
+      return !context.duid || !wanted.has(context.duid);
+    });
+
+    if (obsolete.length > 0) {
+      for (const accessory of obsolete) {
+        const duid = (accessory.context as { duid?: string }).duid;
+
+        if (duid) {
+          this.hapScheduleAccessories.get(duid)?.dispose();
+          this.hapScheduleAccessories.delete(duid);
+        }
+
+        const index = this.accessories.indexOf(accessory);
+        if (index >= 0) {
+          this.accessories.splice(index, 1);
+        }
+      }
+
+      this.api.unregisterPlatformAccessories(
+        HAP_PLUGIN_IDENTIFIER,
+        PLATFORM_NAME,
+        obsolete
+      );
+    }
+
+    for (const [duid, target] of wanted) {
+      let schedule = this.hapScheduleAccessories.get(duid);
+
+      if (schedule) {
+        void schedule
+          .initialize(target.vacuumName)
+          .then((result) => {
+            if (result.success && result.hasSchedules) {
+              return;
+            }
+
+            if (!result.success) {
+              this.log.info(
+                `Schedule restoration attempt for ${target.vacuumName}: refresh failed; invoking restoreScheduleHandlersFromAccessory().`
+              );
+
+              const restored = schedule!.restoreScheduleHandlersFromAccessory();
+
+              this.log.info(
+                `Schedule restoration result for ${target.vacuumName}: restored=${restored}.`
+              );
+
+              this.log.debug(
+                `Unable to refresh Roborock schedules for ${target.vacuumName}; preserving restored schedule accessories.`
+              );
+              return;
+            }
+
+            const accessory = this.accessories.find(
+              (candidate) =>
+                candidate.UUID ===
+                  this.api.hap.uuid.generate(
+                    `hap:roborock:schedules:${duid}`
+                  ) && isHapScheduleAccessory(candidate)
+            );
+
+            this.removeHapScheduleAccessory(duid, accessory);
+          })
+          .catch((error: unknown) => {
+            const restored = schedule!.restoreScheduleHandlersFromAccessory();
+
+            if (!restored) {
+              const accessory = this.accessories.find(
+                (candidate) =>
+                  candidate.UUID ===
+                    this.api.hap.uuid.generate(
+                      `hap:roborock:schedules:${duid}`
+                    ) && isHapScheduleAccessory(candidate)
+              );
+
+              this.removeHapScheduleAccessory(duid, accessory);
+            }
+
+            this.log.debug(
+              `Unable to refresh Roborock schedules for ${target.vacuumName}: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          });
+        continue;
+      }
+
+      const uuid = this.api.hap.uuid.generate(`hap:roborock:schedules:${duid}`);
+
+      let accessory = this.accessories.find(
+        (cached) => cached.UUID === uuid && isHapScheduleAccessory(cached)
+      );
+
+      const isNew = !accessory;
+
+      if (!accessory) {
+        accessory = new this.api.platformAccessory(
+          `${target.vacuumName} schedules`,
+          uuid
+        );
+      }
+
+      schedule = new RoborockHapScheduleAccessory(this, accessory, duid);
+
+      this.hapScheduleAccessories.set(duid, schedule);
+
+      void schedule
+        .initialize(target.vacuumName)
+        .then((result) => {
+          if (!result.success) {
+            this.log.info(
+              `Schedule startup restoration attempt for ${target.vacuumName}: refresh failed; invoking restoreScheduleHandlersFromAccessory().`
+            );
+
+            const restored = schedule!.restoreScheduleHandlersFromAccessory();
+
+            this.log.info(
+              `Schedule startup restoration result for ${target.vacuumName}: restored=${restored}.`
+            );
+
+            if (!restored) {
+              this.hapScheduleAccessories.delete(duid);
+            }
+
+            return;
+          }
+
+          if (!result.hasSchedules) {
+            this.hapScheduleAccessories.delete(duid);
+            return;
+          }
+
+          if (!this.accessories.includes(accessory!)) {
+            this.accessories.push(accessory!);
+          }
+
+          if (isNew) {
+            this.log.info(
+              `Adding HAP schedule accessory '${target.vacuumName} schedules'.`
+            );
+
+            this.api.registerPlatformAccessories(
+              HAP_PLUGIN_IDENTIFIER,
+              PLATFORM_NAME,
+              [accessory!]
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          // A first-time offline/error response must not create a broken
+          // "Not Supported" schedule tile.
+          this.removeHapScheduleAccessory(duid, accessory);
+
+          this.log.error(
+            `Unable to initialize Roborock schedules for ${target.vacuumName}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        });
+    }
+  }
+
+  private removeHapScheduleAccessory(
+    duid: string,
+    accessory?: PlatformAccessory
+  ): void {
+    this.hapScheduleAccessories.get(duid)?.dispose();
+    this.hapScheduleAccessories.delete(duid);
+
+    if (!accessory) {
+      return;
+    }
+
+    const index = this.accessories.indexOf(accessory);
+    if (index >= 0) {
+      this.accessories.splice(index, 1);
+      this.api.unregisterPlatformAccessories(
+        HAP_PLUGIN_IDENTIFIER,
+        PLATFORM_NAME,
+        [accessory]
+      );
     }
   }
 
@@ -557,7 +866,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    */
   private isOwnHapAccessory(accessory: { context?: unknown }): boolean {
     return (
-      isActionSwitchAccessory(accessory) || isStateSensorAccessory(accessory)
+      isActionSwitchAccessory(accessory) ||
+      isStateSensorAccessory(accessory) ||
+      isHapScheduleAccessory(accessory)
     );
   }
 

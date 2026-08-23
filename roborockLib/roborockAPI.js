@@ -4191,24 +4191,29 @@ class Roborock {
     await this.startCommand(duid, "load_multi_map", mapId, options);
   }
 
-  async getServerTimers(duid) {
+  async getServerTimers(duid, options = {}) {
     if (!this.vacuums[duid]) {
       throw new Error(
         `Vacuum ${this.describeDevice(duid)} is not initialized.`
       );
     }
 
-    return await this.vacuums[duid].getServerTimers(duid);
+    return await this.vacuums[duid].getServerTimers(duid, options);
   }
 
-  async updateServerTimer(duid, timerId, enabled) {
+  async updateServerTimer(duid, timerId, enabled, options = {}) {
     if (!this.vacuums[duid]) {
       throw new Error(
         `Vacuum ${this.describeDevice(duid)} is not initialized.`
       );
     }
 
-    return await this.vacuums[duid].updateServerTimer(duid, timerId, enabled);
+    return await this.vacuums[duid].updateServerTimer(
+      duid,
+      timerId,
+      enabled,
+      options
+    );
   }
 
   async getStatus(duid, options = {}) {

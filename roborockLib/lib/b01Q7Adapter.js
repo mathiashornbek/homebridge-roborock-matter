@@ -1076,6 +1076,9 @@ const NEUTRAL_RESPONSES = new Map([
   ["get_network_info", () => ({})],
   ["get_consumable", () => [{}]],
   ["get_room_mapping", () => []],
+  // Q7/B01 has no v1 server-timer implementation. The neutral empty
+  // response keeps the shared polling path structurally valid; it means
+  // this model exposes no HAP schedule snapshot rather than a transport error.
   ["get_server_timer", () => []],
   ["get_multi_maps_list", () => [{ max_multi_map: 0, map_info: [] }]],
   ["get_clean_summary", () => [0, 0, 0, []]],

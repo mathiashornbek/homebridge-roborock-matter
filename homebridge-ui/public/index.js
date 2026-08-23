@@ -31,6 +31,7 @@ const elements = {
   homeKitStateWaterTankEmpty: document.getElementById(
     "homekit-state-water-tank-empty"
   ),
+  homeKitActionSchedules: document.getElementById("homekit-action-schedules"),
   matterChargedBatteryThreshold: document.getElementById(
     "matter-charged-battery-threshold"
   ),
@@ -190,6 +191,11 @@ async function loadConfig() {
     }
     applyActionSwitchSelection(readActionSwitchSelection(config));
     applyStateSensorSelection(readStateSensorSelection(config));
+    if (elements.homeKitActionSchedules) {
+      elements.homeKitActionSchedules.checked = Boolean(
+        config.enableHomeKitScheduleSwitches
+      );
+    }
     syncActionSwitchAvailability();
     syncFeatureDependencies();
     if (elements.matterChargedBatteryThreshold) {
@@ -374,6 +380,10 @@ function hasUnsavedMatterFeatureEdits(config) {
       elements.enableHomeKitStateSensors,
       config.enableHomeKitStateSensors === true,
     ],
+    [
+      elements.homeKitActionSchedules,
+      config.enableHomeKitScheduleSwitches === true,
+    ],
   ];
 
   if (
@@ -538,6 +548,10 @@ function syncActionSwitchAvailability() {
       element.disabled = !sensorsOn;
     }
   });
+
+  if (elements.homeKitActionSchedules) {
+    elements.homeKitActionSchedules.disabled = !on;
+  }
 }
 
 /**
@@ -645,6 +659,9 @@ function getFormValues() {
       elements.enableHomeKitStateSensors?.checked
     ),
     homeKitStateSensors: getSavedStateSensorSelection(),
+    enableHomeKitScheduleSwitches: Boolean(
+      elements.homeKitActionSchedules?.checked
+    ),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
     cloudOnlyMode: getCloudOnlyMode(),
