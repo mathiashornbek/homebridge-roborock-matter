@@ -1898,10 +1898,13 @@ export default class RoborockMatterVacuumAccessory {
 
   private async emptyDustBin(surface: string): Promise<void> {
     if (!this.isDockedOrChargingNow()) {
-      this.platform.log.warn(
-        `Not emptying ${this.getVacuumName()} from ${surfacePhrase(surface)} because the robot is not docked.`
+      this.platform.log.info(
+        `Emptying ${this.getVacuumName()}'s dust bin from ${surfacePhrase(surface)} despite a snapshot that does not show it docked; the cached state may be stale.`
       );
-      return;
+    } else {
+      this.platform.log.info(
+        `Emptying ${this.getVacuumName()}'s dust bin from ${surfacePhrase(surface)}.`
+      );
     }
 
     const startDustCollection = this.api.app_start_collect_dust;
@@ -1912,9 +1915,6 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
 
-    this.platform.log.info(
-      `Emptying ${this.getVacuumName()}'s dust bin from ${surfacePhrase(surface)}.`
-    );
     this.dispatchRoborockMatterCommand(
       "empty dust bin",
       () =>

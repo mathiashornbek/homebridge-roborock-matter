@@ -5094,15 +5094,6 @@ class Roborock {
       return "";
     }
 
-    // get_status can contain useful named fields that are absent from a
-    // product's cloud schema. The S7's auto-empty dock is one measured case:
-    // it reports dock_type=1, but its schema has no dock_type entry. Returning
-    // before checking the named snapshot made capability detection lose that
-    // dock on every child-bridge restart.
-    if (propertyID == null) {
-      return device.deviceStatus?.[property] ?? "";
-    }
-
     // Q7/B01 robots report their native work-status codes in the cloud
     // deviceStatus snapshot (charging = 4, cleaning = 5/6/7, ...). Reading
     // them as v1 codes makes a charging robot look like "remote control
@@ -5124,6 +5115,10 @@ class Roborock {
         return device.deviceStatus[propertyID];
       }
 
+      // get_status can contain useful named fields that are absent from a
+      // product's cloud schema. The S7's auto-empty dock is one measured case:
+      // it reports dock_type=1, but its schema has no dock_type entry. Let a
+      // missing schema ID fall through to this existing named-key lookup.
       if (device.deviceStatus[property] != undefined) {
         return device.deviceStatus[property];
       }

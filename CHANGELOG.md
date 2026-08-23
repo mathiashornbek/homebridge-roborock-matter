@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+**Compatible auto-empty docks can now expose an optional Empty Bin action switch in Apple Home.** It uses the same opt-in HomeKit action-switch bridge as Start, Dock, Pause and Find, appears only when the robot reports dust-collection support, and sends the dock's native `app_start_collect_dust` command through the normal confirmed command path. A cached status that does not show the robot docked is advisory rather than a hard gate: the robot is the authoritative judge and its refusal follows the existing command-error path.
+
+**Live dock-type capability detection is fixed.** The inherited status handler passed the literal field name `"dock_type"` to `processDockType()` instead of the numeric value reported by the robot, so that path never enabled any dock capability. The live value now reaches the feature detector before the Homebridge compatibility gate, allowing classic robots such as the S7 to expose capabilities their HomeData feature bits omit. A cross-layer test pins the auto-empty dock types so the API's early-discovery list and the command table cannot drift apart.
+
 ## 3.16.0
 
 **The schedules you built in the Roborock app are now switches in Apple Home — the project's first feature from an outside contributor.** Contributed by [@pponce](https://github.com/pponce) over four review rounds, requested in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3).
