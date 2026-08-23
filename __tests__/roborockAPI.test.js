@@ -2,6 +2,7 @@ const { Roborock } = require("../roborockLib/roborockAPI");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { deviceFeatures } = require("../roborockLib/lib/deviceFeatures");
 
 function createLog() {
   return {
@@ -34,6 +35,35 @@ describe("Roborock API model and diagnostics helpers", () => {
 
     api.hasVacuumFeature.mockReturnValue(false);
     expect(api.supportsDustCollection("device-1")).toBe(false);
+  });
+
+  test("the API dock list matches the dock types that install dust collection commands", () => {
+    const api = createRoborock();
+    api.hasVacuumFeature = jest.fn(() => false);
+    const adapter = {
+      config: { hostname_ip: "127.0.0.1" },
+      translations: {},
+      log: createLog(),
+      getVacuumDeviceInfo: jest.fn(() => "1.0"),
+      getProductAttribute: jest.fn(() => "roborock.vacuum.a15"),
+    };
+    const commandDockTypes = [];
+    const apiDockTypes = [];
+
+    for (let dockType = 0; dockType <= 9; dockType += 1) {
+      const features = new deviceFeatures(adapter, 0, "0", `dock-${dockType}`);
+      features.processDockType(dockType);
+      if (typeof features.commands.app_start_collect_dust !== "undefined") {
+        commandDockTypes.push(dockType);
+      }
+
+      api.getVacuumDeviceStatus = jest.fn(() => dockType);
+      if (api.supportsDustCollection("device-1")) {
+        apiDockTypes.push(dockType);
+      }
+    }
+
+    expect(apiDockTypes).toEqual(commandDockTypes);
   });
 
   test("detects an S7 auto-empty dock from cached named status when the schema omits dock_type", async () => {

@@ -243,14 +243,17 @@ describe("pressing the switch reaches the robot the way the tile does", () => {
     );
   });
 
-  test("Empty Bin is rejected while the robot is away from its dock", async () => {
+  test("Empty Bin reaches the robot when the cached dock snapshot is stale", async () => {
     const harness = createHarness({ action: "empty", status: { state: 5 } });
 
     await harness.press();
 
-    expect(harness.appStartCollectDust).not.toHaveBeenCalled();
-    expect(harness.platform.log.warn).toHaveBeenCalledWith(
-      expect.stringContaining("robot is not docked")
+    expect(harness.appStartCollectDust).toHaveBeenCalledWith(
+      "device-1",
+      expect.objectContaining({ waitForResult: true, throwOnError: true })
+    );
+    expect(harness.platform.log.info).toHaveBeenCalledWith(
+      expect.stringContaining("cached state may be stale")
     );
   });
 
