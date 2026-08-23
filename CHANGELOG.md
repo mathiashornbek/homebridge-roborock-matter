@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 3.17.0
 
-**Compatible auto-empty docks can now expose an optional Empty Bin action switch in Apple Home.** It uses the same opt-in HomeKit action-switch bridge as Start, Dock, Pause and Find, appears only when the robot reports dust-collection support, and sends the dock's native `app_start_collect_dust` command through the normal confirmed command path. A cached status that does not show the robot docked is advisory rather than a hard gate: the robot is the authoritative judge and its refusal follows the existing command-error path.
+**Compatible auto-empty docks can now expose an optional Empty Bin action switch in Apple Home.** Contributed by [@jbyhb](https://github.com/jbyhb) in [#13](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/13). It uses the same opt-in HomeKit action-switch bridge as Start, Dock, Pause and Find, appears only when the robot reports dust-collection support, and sends the dock's native `app_start_collect_dust` command through the normal confirmed command path. A cached status that does not show the robot docked is advisory rather than a hard gate: the robot is the authoritative judge and its refusal follows the existing command-error path.
 
-**Live dock-type capability detection is fixed.** The inherited status handler passed the literal field name `"dock_type"` to `processDockType()` instead of the numeric value reported by the robot, so that path never enabled any dock capability. The live value now reaches the feature detector before the Homebridge compatibility gate, allowing classic robots such as the S7 to expose capabilities their HomeData feature bits omit. A cross-layer test pins the auto-empty dock types so the API's early-discovery list and the command table cannot drift apart.
+**Live dock-type capability detection is fixed.** Found and fixed by [@jbyhb](https://github.com/jbyhb). The inherited status handler passed the literal field name `"dock_type"` to `processDockType()` instead of the numeric value reported by the robot, so that path never enabled any dock capability. Worse, under Homebridge the surrounding loop never reached the call at all: the branch sits behind an ioBroker object-database check that can only fail here, so it was dead code on top of a wrong argument. The live value now reaches the feature detector before that compatibility gate, allowing classic robots such as the S7 to expose capabilities their HomeData feature bits omit. A cross-layer test pins the auto-empty dock types so the API's early-discovery list and the command table cannot drift apart.
 
 ## 3.16.0
 
