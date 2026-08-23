@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.16.0
+
+**The schedules you built in the Roborock app are now switches in Apple Home — the project's first feature from an outside contributor.** Contributed by [@pponce](https://github.com/pponce) over four review rounds, requested in [#3](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/3).
+
+A Roborock schedule has always been invisible to Apple Home. You could build a weekday morning clean in the Roborock app, but nothing in the Home app could see it, so no automation could suspend it while you were away — the only way to pause a schedule was to open the Roborock app and do it by hand.
+
+Turn on **Add Home app schedule switches** and each robot gains a grouped `<robot> Schedules` accessory holding one switch per schedule on your account. Off disables that schedule on the Roborock side; on enables it again. Unlike the action switches these are not momentary — each one reports whether its schedule is currently active, so "is the weekday clean on?" is answerable from the Home app.
+
+- **They enable and disable; they do not author.** Days, times, rooms and clean modes stay in the Roborock app, because that is where those settings live. A schedule deleted there takes its switch with it on the next refresh, and a new one gains a switch the same way.
+- **Switches are named positionally** — `<robot> Schedule 1`, `Schedule 2` — because the Roborock cloud does not give schedules names to borrow. Rename them in the Home app if the order is not enough.
+- **Off by default,** because turning it on adds accessories to your Home app. Like the action switches, these are HomeKit accessories on the plugin's child bridge and need their own pairing — not the robot's Matter code.
+
+**A failed schedule refresh no longer deletes the tiles.** This is the part worth reading even if you never turn the feature on, because it is the failure mode the review rounds were spent on. An earlier revision unregistered the schedule accessory whenever the cloud request failed, and a transient Roborock timeout is not evidence that your schedules are gone. An accessory that disappears takes its room assignment, its name and every automation pointing at it with it, and none of that comes back when the next refresh succeeds. Three outcomes are now told apart:
+
+- **The cloud answered and reported schedules** — sync them, nothing else.
+- **The cloud answered and reported no schedules** — the account genuinely has none, so removing the accessory is correct.
+- **The request failed** — keep the switches Homebridge restored from its cache and reattach their handlers, so they heal themselves on the next successful read instead of being torn down.
+
+**A verification read can no longer join a refresh that started before the write it is verifying.** Writes are coalesced against in-flight refreshes, and a `verify()` that attached to an older request could observe pre-write state and roll a successful write back. The refresh now records when it started, and a verification only joins one started at or after its own write.
+
+**Also in this release:** the plugin's own settings schema documented every one of its 26 options except the new one; that description now exists, and the feature is documented in the README alongside the action switches and sensors rather than only in the changelog.
+
 ## 3.15.5
 
 **B01 is two protocol families, and this plugin treated them as one.**
