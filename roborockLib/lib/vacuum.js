@@ -420,12 +420,17 @@ class vacuum {
       });
   }
 
-  async getServerTimers(duid) {
+  async getServerTimers(duid, options = {}) {
     try {
+      const requestOptions = buildForwardedRequestOptions(options);
+
       return await this.adapter.messageQueueHandler.sendRequest(
         duid,
         "get_server_timer",
-        []
+        [],
+        false,
+        false,
+        requestOptions
       );
     } catch (error) {
       this.adapter.catchError(error, "get_server_timer", duid, this.robotModel);
@@ -433,12 +438,17 @@ class vacuum {
     }
   }
 
-  async updateServerTimer(duid, timerId, enabled) {
+  async updateServerTimer(duid, timerId, enabled, options = {}) {
     try {
+      const requestOptions = buildForwardedRequestOptions(options);
+
       return await this.adapter.messageQueueHandler.sendRequest(
         duid,
         "upd_server_timer",
-        [timerId, enabled ? "on" : "off"]
+        [timerId, enabled ? "on" : "off"],
+        false,
+        false,
+        requestOptions
       );
     } catch (error) {
       this.adapter.catchError(error, "upd_server_timer", duid, this.robotModel);
