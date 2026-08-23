@@ -2456,7 +2456,13 @@ class Roborock {
 
   supportsDustCollection(duid) {
     const dockType = Number(this.getVacuumDeviceStatus(duid, "dock_type"));
-    const autoEmptyDockTypes = new Set([1, 3, 5, 6, 7, 8, 9]);
+    // 20 (upstream `k1s_dock`, the a185 Qrevo CurvX) is here because its owner
+    // confirmed the auto-empty in issue #6, not because upstream names the
+    // code. Upstream also names 10, 11, 13-19, 21-24 and 26; none of those has
+    // an owner report, so none of them is here. Keep this set and
+    // `processDockType()` in step — a code in one but not the other is a dock
+    // that either offers a switch it cannot drive or hides one it can.
+    const autoEmptyDockTypes = new Set([1, 3, 5, 6, 7, 8, 9, 20]);
 
     return (
       autoEmptyDockTypes.has(dockType) ||

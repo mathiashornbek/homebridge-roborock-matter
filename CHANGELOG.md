@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.17.2
+
+**The Qrevo CurvX's dock can now offer the Empty Bin switch.** Reported with a diagnostics export, and then settled by hand, by [@jcoz00](https://github.com/jcoz00) in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6). His a185 reports `dock_type: 20`, and the dock table this plugin inherited stops at 9 — so the CurvX fell through to "unknown dock" and was treated as having no auto-empty capability, which kept the optional Empty Bin switch added in 3.17.0 from ever being offered for it. Dock type 20 is now a named, recognised auto-empty dock.
+
+The switch is still opt-in and still off by default, so nothing changes for anyone who has not asked for it.
+
+**Only the auto-empty is granted, and only because its owner confirmed it.** Upstream also names a dozen dock codes above 9 that this project has had no report for, and none of those was added — a capability granted on a table alone is what cost a Q Revo S owner a suction level its robot does not have in [#10](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/10). Wash and dry are unconfirmed on this dock and stay unclaimed. A test now pins both halves: dock type 20 is in the set because an owner said so, and the codes nobody has reported stay out until one does.
+
 ## 3.17.1
 
 **Closing the plugin's settings page could print a Node crash dump into your Homebridge log.** Reported with the log to prove it by [@jcoz00](https://github.com/jcoz00) in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6). The Homebridge UI runs the settings-page server as a child process and closes its IPC channel the moment the page goes away; every reply that server sends is a `process.send()`, including the `ready()` handshake it fires before serving a single request. A send that loses the race against that close is reported asynchronously as an unhandled `'error'` event, which is fatal — so a closed settings page ended in `Error: write EPIPE`, a stack trace and a `Node.js v24.19.0` banner in the log. Nothing was broken and nothing in the log said so. A dead channel now ends that child process quietly; every other error stays exactly as loud as it was.

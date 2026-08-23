@@ -68,6 +68,12 @@ const dockTypes = {
   7: "Empty Wash Fill Dry Dock (S8 Pro Ultra)",
   8: "Empty Wash Fill Dry Dock (Q Revo)",
   9: "Empty Wash Fill Dry Dock (Q Revo Pro)",
+  // Upstream python-roborock calls 20 `k1s_dock`. It reached this project as a
+  // diagnostics export from an a185 (Qrevo CurvX) owner in issue #6 — the
+  // first dock code ever seen here above 9 — and he confirmed the auto-empty
+  // by hand. Named for the capability he reported, not for the ones upstream's
+  // codename might imply: nobody has confirmed wash or dry on this dock.
+  20: "Auto-Empty Dock (K1S — Qrevo CurvX)",
 };
 
 const firmwareFeatures = {
@@ -1392,6 +1398,15 @@ class deviceFeatures {
         this.isDustCollectionSettingSupported();
         this.isWashThenChargeCmdSupported();
         this.isSupportedDrying();
+        break;
+      // K1S: a185 Qrevo CurvX. Auto-empty only, and deliberately so — its
+      // owner confirmed the dock empties the robot's bin (issue #6, 23 Aug
+      // 2026), which is the whole of what was asked and the whole of what is
+      // granted. Wash and dry are unconfirmed on this dock, and the a104
+      // suction level in issue #10 is what a capability granted on a table
+      // alone costs. Add them here on an owner's word, not on a codename's.
+      case 20:
+        this.isDustCollectionSettingSupported();
         break;
       default:
         break;
