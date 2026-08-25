@@ -87,7 +87,7 @@ describe("HomeKit schedule settings contract", () => {
     );
 
     expect(disabledBlock).not.toBeNull();
-    expect(disabledBlock[1]).toContain("schedule.dispose()");
+    expect(disabledBlock[1]).toContain("schedule.removeScheduleServices()");
     expect(disabledBlock[1]).not.toContain("hapScheduleAccessories.clear()");
   });
 
@@ -199,15 +199,18 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain("configuredName.setValue(displayName);");
   });
 
-  test("schedule refresh preserves a HomeKit ConfiguredName", () => {
+  test("schedule refresh preserves a custom HomeKit ConfiguredName", () => {
     expect(scheduleSource).toContain(
-      "const previousAccessoryName = this.accessory.displayName;"
+      "const previousServiceName = switchService.getCharacteristic("
     );
     expect(scheduleSource).toContain(
       "const currentConfiguredName = configuredName.value;"
     );
     expect(scheduleSource).toContain(
-      "String(currentConfiguredName) === previousAccessoryName"
+      "String(currentConfiguredName) === String(previousServiceName)"
+    );
+    expect(scheduleSource).not.toContain(
+      "this.accessory.displayName = displayName;"
     );
   });
 
@@ -342,22 +345,47 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain("this.updateService(current.enabled);");
   });
 
-  test("disposed schedule coordinators cannot sync an in-flight refresh", () => {
+  test("stopped schedule coordinators cannot sync an in-flight refresh", () => {
     expect(scheduleSource).toContain("private disposed = false;");
     expect(scheduleSource).toContain("if (this.disposed) {");
     expect(scheduleSource).toContain("this.disposed = true;");
   });
 
-  test("schedule dispose removes dynamic services but preserves manager", () => {
+  test("normal shutdown preserves schedule services", () => {
+    const platformShutdownStart = platformSource.indexOf(
+      "this.api.on(APIEvent.SHUTDOWN"
+    );
+    const platformShutdownEnd = platformSource.indexOf(
+      "if (this.roborockAPI)",
+      platformShutdownStart
+    );
+    const platformShutdownBlock = platformSource.slice(
+      platformShutdownStart,
+      platformShutdownEnd
+    );
+
+    expect(platformShutdownStart).toBeGreaterThanOrEqual(0);
+    expect(platformShutdownEnd).toBeGreaterThan(platformShutdownStart);
+    expect(platformShutdownBlock).toContain("schedule.shutdown()");
+    expect(platformShutdownBlock).not.toContain(
+      "schedule.removeScheduleServices()"
+    );
+
     expect(scheduleSource).toMatch(
-      /dispose\(\): void \{[\s\S]*?removeService\(service\)[\s\S]*?updatePlatformAccessories/
+      /shutdown\(\): void \{[\s\S]*?this\.stopRuntime\(\);[\s\S]*?\}/
+    );
+  });
+
+  test("intentional schedule removal preserves only the manager", () => {
+    expect(scheduleSource).toMatch(
+      /removeScheduleServices\(\): void \{[\s\S]*?removeService\(service\)[\s\S]*?updatePlatformAccessories/
     );
 
-    const disposeBlock = scheduleSource.match(
-      /dispose\(\): void \{([\s\S]*?)\n\s*\}/
+    const removalBlock = scheduleSource.match(
+      /removeScheduleServices\(\): void \{([\s\S]*?)\n\s*\}/
     );
 
-    expect(disposeBlock).not.toBeNull();
-    expect(disposeBlock[1]).not.toContain("unregisterPlatformAccessories");
+    expect(removalBlock).not.toBeNull();
+    expect(removalBlock[1]).not.toContain("unregisterPlatformAccessories");
   });
 });
