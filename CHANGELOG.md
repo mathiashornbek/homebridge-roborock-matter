@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.17.4
+
+**The "no mapping for these fields" warning no longer asks you to report fields this plugin already maps.** Raised by the log [@jcoz00](https://github.com/jcoz00) posted in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6), whose Qrevo CurvX was told the plugin has no mapping for **eighteen** `get_status` fields and that a GitHub model report quoting the line is how they get added. Fifteen of those eighteen are named in `deviceFeatures.js` already. There was nothing for a report to add, and the three fields that genuinely were news sat buried in a list of fifteen that were not.
+
+The message was asking the wrong question. A robot's status table starts as a copy of the plugin's baseline and capability detection adds to it, so "this field is not switched on for **this robot**" and "this plugin has never heard of this field" are different questions — and only the second one is worth a user's time. The warning asked the first and reported the answer as the second.
+
+Each case now says what it means. A field no table anywhere names is still warned about once, by name and value, and still worth a model report; for the CurvX that is three fields rather than eighteen. A field the plugin maps but this robot's capability gate did not switch on is a debug line that says so, once per field per robot, and does not point anyone at GitHub. The repeat line that followed it on every subsequent poll is gone for that case — fifteen lines a minute saying nothing the first one did not.
+
+**This quietens [#8](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/8) entirely as a side effect.** All nine fields [@skmzwanke](https://github.com/skmzwanke)'s Saros 10 was warned about have since been added, so that warning had been asking for work that was already done. It now says nothing at all.
+
+Nothing about which fields are read, published or acted on changed — this release changes only what the log claims. The declared set of capability-installable fields is derived from the source by a test that scans for every writer, so a new capability cannot reintroduce the wrong warning without the suite failing.
+
 ## 3.17.3
 
 **Q7- and Q10-series robots no longer spend a cloud request per poll on an answer the plugin cannot read.** Reported with a diagnostics export by [@niclasreich](https://github.com/niclasreich) in [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14), whose Q10 S5 (`roborock.vacuum.ss07`) logged `Failed to execute get_room_mapping … method prop.get timed out after 10 seconds` while the MQTT connection was reported as up.

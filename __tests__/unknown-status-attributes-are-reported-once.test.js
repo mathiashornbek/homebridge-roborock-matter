@@ -3,7 +3,7 @@
 // A robot with no per-model profile in `deviceFeatures.js` runs on the
 // capability-derived path, which works — but every `get_status` attribute the
 // profile does not name was warned about on *every* poll, one `log.warn` per
-// attribute. skmzwanke's Saros 10 (#8) produces eight of them, so at one poll
+// attribute. skmzwanke's Saros 10 (#8) produced eight of them, so at one poll
 // a minute that is ~11,500 warnings a day telling him to contact the dev about
 // the same eight fields. Both #6 and #8 were promised this would be quietened.
 //
@@ -16,17 +16,17 @@
 
 const { vacuum } = require("../roborockLib/lib/vacuum");
 
-// The fields the Saros 10 in #8 reports that no profile names, with the values
-// from the log in that issue.
+// The eight fields the Saros 10 in #8 reported have since all been added to
+// `deviceStates`, so they no longer answer the question this suite asks — a
+// mapped field is not warned about at all any more, which is the point of
+// `a-known-field-is-not-called-unmapped.test.js` and asserted there. What is
+// pinned here is the once-per-(robot, attribute) rule, so the fixture needs
+// fields that really are unknown to every table. These three are: they are the
+// genuine remainder of jcoz00's eighteen in #6, with his values.
 const UNMAPPED_SAROS_ATTRIBUTES = {
-  home_sec_status: 0,
-  home_sec_enable_password: 1,
-  extra_time: 286,
-  sterilize_status: 0,
-  rst: 0,
-  cleaning_info: { total: 1 },
-  exit_dock: 0,
-  seq_type: 0,
+  dtof_status: 0,
+  pet_reminding: 0,
+  sub_error_code: 0,
 };
 
 const MAPPED_ATTRIBUTES = {

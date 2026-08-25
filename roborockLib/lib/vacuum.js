@@ -5,6 +5,7 @@ const RRMapParser = require("./RRMapParser");
 const fs = require("fs");
 const zlib = require("zlib");
 const { describeDevice } = require("./describeDevice");
+const { isKnownStatusAttribute } = require("./deviceFeatures");
 
 // Minimum spacing between periodic (non-forced) get_status polls per robot.
 // MQTT push remains the primary live channel; this is the safety net that
@@ -620,7 +621,12 @@ class vacuum {
                 `Devices.${duid}.deviceStatus.${attribute}`
               ))
             ) {
-              const isKnownStatusAttribute =
+              // Renamed from `isKnownStatusAttribute` on purpose: it is not
+              // what it used to be called. The feature profile answers "is
+              // this field switched on for THIS robot", which is a narrower
+              // question than "does this plugin know the field", and the old
+              // name invited the loop below to confuse the two.
+              const isEnabledForThisRobot =
                 typeof this.adapter.vacuums[duid].features
                   .hasDeviceStatusAttribute === "function" &&
                 this.adapter.vacuums[duid].features.hasDeviceStatusAttribute(
@@ -636,20 +642,45 @@ class vacuum {
               // on: fifty lines a minute, and the log ring — the thing you
               // need when something real goes wrong — held ninety minutes.
               //
-              // The distinction below is the part that carries information
-              // and it is untouched: an attribute nobody has mapped yet is
-              // still reported once, by name and value.
-              if (
-                !isKnownStatusAttribute &&
-                this.rememberUnmappedStatusAttribute(duid, attribute)
-              ) {
-                newlyUnmappedAttributes.push(
-                  `${attribute}=${describeStatusValue(deviceStatus[0][attribute])}`
+              // The distinction below is the part that carries information,
+              // and it now has three cases rather than two. Asking only the
+              // per-robot question is what sent jcoz00 (#6) after a model
+              // report for fifteen fields that were already mapped: his Qrevo
+              // CurvX sends them, his robot's capability detection never
+              // switched them on, and the warning read that as "this plugin
+              // has no mapping for them". A warning that says "no mapping"
+              // and points at GitHub is only true of a field no table
+              // anywhere names — which for his robot was three of eighteen.
+              const isKnownToPlugin = isKnownStatusAttribute(attribute);
+
+              if (!isEnabledForThisRobot) {
+                const isFirstSighting = this.rememberUnmappedStatusAttribute(
+                  duid,
+                  attribute
                 );
-              } else if (!isKnownStatusAttribute) {
-                this.adapter.log.debug(
-                  `Unmapped get_status attribute ${attribute}=${describeStatusValue(deviceStatus[0][attribute])} for ${describeDevice(this.adapter, duid)}; already reported, not repeating.`
-                );
+
+                if (isKnownToPlugin) {
+                  // Worth seeing once when we go looking — a gate that did not
+                  // fire for a field the robot demonstrably sends is a lead —
+                  // but not worth waking a user for, and nothing they can act
+                  // on. Repeats are silent rather than a debug line: the field
+                  // is mapped and the gate is not going to change mid-run, so
+                  // a per-poll line would be fifteen of them a minute on a
+                  // Qrevo CurvX saying nothing the first one did not.
+                  if (isFirstSighting) {
+                    this.adapter.log.debug(
+                      `get_status attribute ${attribute}=${describeStatusValue(deviceStatus[0][attribute])} arrived from ${describeDevice(this.adapter, duid)}, but this robot's capability detection did not switch it on. This plugin maps the field, so there is nothing to report.`
+                    );
+                  }
+                } else if (isFirstSighting) {
+                  newlyUnmappedAttributes.push(
+                    `${attribute}=${describeStatusValue(deviceStatus[0][attribute])}`
+                  );
+                } else {
+                  this.adapter.log.debug(
+                    `Unmapped get_status attribute ${attribute}=${describeStatusValue(deviceStatus[0][attribute])} for ${describeDevice(this.adapter, duid)}; already reported, not repeating.`
+                  );
+                }
               }
               continue; // skip unsupported attributes
             }
