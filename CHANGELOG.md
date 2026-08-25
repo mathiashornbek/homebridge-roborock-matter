@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.17.5
+
+**A network outage no longer takes the Roborock account offline until Homebridge is restarted.** Found on the maintainer's own server, which lost DNS for about 75 minutes on 25 August 2026. Every other plugin on that bridge recovered by itself — the Tado platform was making successful API calls again 35 minutes after its last name-resolution error. This one did not. It logged `B01 status has failed 1070 times in a row … the Roborock cloud connection is not available` continuously for **1 hour and 44 minutes after the network was healthy again**, through three scheduled hourly reconnects, and came back only when a plugin update restarted the child bridge — instantly, on the very same saved session, which is what ruled out the credentials and pointed at the reconnect itself.
+
+The reconnect tore the client down without forcing it. An unforced teardown waits for the MQTT client's outgoing queue to drain first, and a link that has just died still holds messages nobody will ever acknowledge, so that wait never ends. The teardown therefore never completed, the client stayed permanently marked as disconnecting, and a reconnect declines to act on a client in that state. The latch also fed itself: each later teardown returned early on the same flag, so every hourly retry after the first was a silent no-op. That is why three hours of log carried no MQTT error, no close and no connect — nothing was happening at all.
+
+Reconnects are now forced, which is the only correct behaviour on the single path that calls them: there is no reason to wait for a queue to drain over a connection already concluded to be dead. The upstream detail the fix depends on is pinned by a test, so if the MQTT library ever changes that contract the suite reports it rather than the field doing so.
+
 ## 3.17.4
 
 **The "no mapping for these fields" warning no longer asks you to report fields this plugin already maps.** Raised by the log [@jcoz00](https://github.com/jcoz00) posted in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6), whose Qrevo CurvX was told the plugin has no mapping for **eighteen** `get_status` fields and that a GitHub model report quoting the line is how they get added. Fifteen of those eighteen are named in `deviceFeatures.js` already. There was nothing for a report to add, and the three fields that genuinely were news sat buried in a list of fifteen that were not.

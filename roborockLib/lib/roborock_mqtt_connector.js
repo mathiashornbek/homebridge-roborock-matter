@@ -625,7 +625,20 @@ class roborock_mqtt_connector {
         }
 
         this.adapter.log.info("Reconnecting mqtt client!");
-        await client.end();
+        // Force the teardown. An unforced `end()` waits for mqtt.js to emit
+        // `outgoingEmpty` before it will finish, and a link that has just
+        // died still holds unacknowledged messages — so on the only path
+        // this function is ever called from, that event never arrives.
+        // `end()` then never completes, `disconnecting` stays true, and
+        // `reconnect()` declines to act in that state. The latch is
+        // self-sustaining, because every later `end()` short-circuits on the
+        // same flag: the hourly retry becomes a silent no-op and the account
+        // stays offline until the process restarts. Measured in the field on
+        // 25 Aug 2026 — 1070 consecutive status failures, 1 h 44 min of them
+        // after the network was healthy, three retries that did nothing, and
+        // an instant recovery on the same session once the child bridge was
+        // restarted.
+        await client.endAsync(true);
         client.reconnect();
         return true;
       } catch (error) {
