@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.17.3
+
+**Q7- and Q10-series robots no longer spend a cloud request per poll on an answer the plugin cannot read.** Reported with a diagnostics export by [@niclasreich](https://github.com/niclasreich) in [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14), whose Q10 S5 (`roborock.vacuum.ss07`) logged `Failed to execute get_room_mapping … method prop.get timed out after 10 seconds` while the MQTT connection was reported as up.
+
+The two method names in that line disagree, and that was the clue. `get_room_mapping` is the caller's label; `prop.get` is what actually went on the wire. The classic room-mapping routine opens by fetching `get_status` in order to read `map_status` and derive a floor number — and on these robots `get_status` translates to a real `prop.get`. `map_status` is a v1-only field that a Q7/Q10 status dictionary has never carried, so the reply could not have been used whatever it said. The request itself was already answered locally from the dialect's neutral table without touching the network, which is exactly why the existing skip did not catch this: the harmless call was making a second, expensive one.
+
+The classic flow is now skipped outright for these robots, which is where their room data was never coming from in the first place — it arrives over the protobuf map channel. That removes one cloud round-trip per poll cycle per robot, along with the `No room mappings returned` notice and the empty room-list announcement that repeated at the same rate. Robots on the classic protocol are unaffected and still read `map_status` exactly as before.
+
+**This does not by itself explain a robot that ignores commands from Apple Home**, which is the other half of that report; it removes a wasted request and the misleading error line it produced.
+
 ## 3.17.2
 
 **The Qrevo CurvX's dock can now offer the Empty Bin switch.** Reported with a diagnostics export, and then settled by hand, by [@jcoz00](https://github.com/jcoz00) in [#6](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/6). His a185 reports `dock_type: 20`, and the dock table this plugin inherited stops at 9 — so the CurvX fell through to "unknown dock" and was treated as having no auto-empty capability, which kept the optional Empty Bin switch added in 3.17.0 from ever being offered for it. Dock type 20 is now a named, recognised auto-empty dock.

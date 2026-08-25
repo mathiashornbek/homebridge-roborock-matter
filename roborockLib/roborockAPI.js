@@ -982,9 +982,7 @@ class Roborock {
   }
 
   getRoomMappingsForDevice(duid) {
-    if (
-      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
-    ) {
+    if (this.isB01Device(duid)) {
       return this.getB01RoomCache(duid).map((room) => ({
         segmentId: room.roomId,
         mapId: 0,
@@ -1025,9 +1023,7 @@ class Roborock {
     // the canonical mapId 0. Reporting 0 here keeps the Matter room-clean
     // flow from attempting a map switch (load_multi_map has no Q7
     // equivalent) before sending the segment command.
-    if (
-      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
-    ) {
+    if (this.isB01Device(duid)) {
       return 0;
     }
 
@@ -2308,10 +2304,7 @@ class Roborock {
       this.vacuums[duid].getStatusIntervall = () => {
         // B01/Q7 status is owned by the dedicated 15s loop; the per-device
         // tick would only burn cycles hitting the attempt throttle.
-        if (
-          this.getVacuumDeviceInfo(duid, "pv") ===
-          b01Q7Adapter.B01_PROTOCOL_VERSION
-        ) {
+        if (this.isB01Device(duid)) {
           return null;
         }
         this.clearInterval(this.vacuums[duid].getStatusIntervalHandle);
@@ -2396,9 +2389,7 @@ class Roborock {
     // with no electronic mop/water control, so Matter must never expose mop
     // modes for them regardless of what the generic cloud schema claims.
     // Suction (Q7 "wind") is controllable via the B01 adapter.
-    if (
-      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
-    ) {
+    if (this.isB01Device(duid)) {
       return {
         // Q7 robots mop with a manually filled tank: expose the mop/vacuum
         // mode switch, but never water-level status or control.
@@ -5068,6 +5059,22 @@ class Roborock {
     } else {
       return "";
     }
+  }
+
+  /**
+   * True when this robot speaks the B01/Q7 dialect rather than classic v1.
+   *
+   * Four places wrote this comparison out by hand before it had a name, and
+   * `vacuum.js` was about to need a fifth. It decides which wire protocol a
+   * robot speaks, so it gets one spelling.
+   *
+   * @param {string} duid
+   * @returns {boolean}
+   */
+  isB01Device(duid) {
+    return (
+      this.getVacuumDeviceInfo(duid, "pv") === b01Q7Adapter.B01_PROTOCOL_VERSION
+    );
   }
 
   /**

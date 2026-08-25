@@ -765,6 +765,19 @@ class vacuum {
           this.adapter.manageDeviceIntervals(duid);
         }
       } else if (parameter == "get_room_mapping") {
+        // Room data on B01/Q7 robots travels over the protobuf map channel,
+        // and `get_room_mapping` itself is answered from the dialect's neutral
+        // table without touching the network — so this branch looked free.
+        // It is not: it opens by fetching `get_status` to read `map_status`,
+        // a v1-only field that Q7 status dictionaries have never carried, and
+        // on B01 `get_status` translates to a real `prop.get`. That is one
+        // cloud round-trip per poll cycle per robot spent on an answer this
+        // code cannot read — reported under the caller's label, which is why
+        // #14's log line names `get_room_mapping` but times out on `prop.get`.
+        if (this.adapter.isB01Device?.(duid)) {
+          return;
+        }
+
         const deviceStatus = await sendParameterRequest("get_status", []);
         const mapStatus = Array.isArray(deviceStatus)
           ? deviceStatus[0]?.["map_status"]
