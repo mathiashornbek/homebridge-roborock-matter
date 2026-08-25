@@ -216,7 +216,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       }
 
       for (const schedule of this.hapScheduleAccessories.values()) {
-        schedule.dispose();
+        schedule.shutdown();
       }
 
       if (this.roborockAPI) {
@@ -585,7 +585,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     );
 
     for (const schedule of this.hapScheduleAccessories.values()) {
-      schedule.dispose();
+      schedule.removeScheduleServices();
     }
 
     this.hapScheduleAccessories.clear();
@@ -621,7 +621,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     // coordinator cached so schedules can be rebuilt when re-enabled.
     if (!exposeSchedules) {
       for (const schedule of this.hapScheduleAccessories.values()) {
-        schedule.dispose();
+        schedule.removeScheduleServices();
       }
 
       return;
@@ -664,7 +664,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         const duid = (accessory.context as { duid?: string }).duid;
 
         if (duid) {
-          this.hapScheduleAccessories.get(duid)?.dispose();
+          this.hapScheduleAccessories.get(duid)?.removeScheduleServices();
           this.hapScheduleAccessories.delete(duid);
         }
 
@@ -822,7 +822,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     duid: string,
     accessory?: PlatformAccessory
   ): void {
-    this.hapScheduleAccessories.get(duid)?.dispose();
+    this.hapScheduleAccessories.get(duid)?.removeScheduleServices();
     this.hapScheduleAccessories.delete(duid);
 
     if (!accessory) {

@@ -60,4 +60,32 @@ describe("HAP schedule API", () => {
 
     expect(startCommand).not.toHaveBeenCalled();
   });
+  test("drops server timer metadata from the write payload", async () => {
+    const command = jest.fn().mockResolvedValue("ok");
+    const api = {
+      vacuums: {
+        "device-1": { command },
+      },
+      getServerTimers: jest.fn(),
+    };
+    const timer = ["timer-complex", "off", 1];
+
+    await updateServerTimer(api, "device-1", timer, true, {
+      requestTimeoutMs: 10000,
+    });
+
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith(
+      "device-1",
+      "upd_server_timer",
+      [["timer-complex", "on"]],
+      {
+        requestTimeoutMs: 10000,
+        preferCloud: true,
+        waitForResult: true,
+        throwOnError: true,
+      }
+    );
+    expect(timer).toEqual(["timer-complex", "off", 1]);
+  });
 });

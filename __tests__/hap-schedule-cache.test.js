@@ -375,7 +375,7 @@ describe("HAP schedule coordinator cache", () => {
     expect(coordinator.lastFailedRefreshAt).toBe(0);
   });
 
-  test("disposed coordinator does not sync when an in-flight refresh completes", async () => {
+  test("stopped coordinator does not sync when an in-flight refresh completes", async () => {
     const coordinator = makeCoordinator();
 
     let resolveRequest;
@@ -389,8 +389,10 @@ describe("HAP schedule coordinator cache", () => {
 
     expect(getServerTimers).toHaveBeenCalledTimes(1);
 
-    coordinator.dispose =
-      RoborockHapScheduleAccessory.prototype.dispose.bind(coordinator);
+    coordinator.stopRuntime =
+      RoborockHapScheduleAccessory.prototype.stopRuntime.bind(coordinator);
+    coordinator.shutdown =
+      RoborockHapScheduleAccessory.prototype.shutdown.bind(coordinator);
 
     coordinator.platform.api = {
       updatePlatformAccessories: jest.fn(),
@@ -399,7 +401,7 @@ describe("HAP schedule coordinator cache", () => {
       services: [],
     };
 
-    coordinator.dispose();
+    coordinator.shutdown();
 
     resolveRequest([["timer-1", "on"]]);
 

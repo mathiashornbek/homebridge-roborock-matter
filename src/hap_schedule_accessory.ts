@@ -21,7 +21,6 @@ export interface HapScheduleContext {
   kind: typeof HAP_EXTENSION_KIND;
   extension: typeof HAP_SCHEDULE_EXTENSION;
   duid: string;
-  scheduleId?: string;
 }
 
 export interface RoborockSchedule {
@@ -75,9 +74,10 @@ export function isHapScheduleAccessory(accessory: {
 
 /**
  * The platform owns one schedule coordinator per vacuum.
- * Each Roborock timer is exposed as its own HAP switch accessory.
+ * Each vacuum has one cached HAP PlatformAccessory, and each Roborock timer
+ * is exposed as a Switch service within that shared accessory.
  *
- * Schedule accessories are intentionally named from the vacuum name so the
+ * Schedule services are intentionally named from the vacuum name so the
  * Home app presents the schedules together under the vacuum's schedule
  * grouping:
  *
@@ -85,8 +85,9 @@ export function isHapScheduleAccessory(accessory: {
  *   <vacuum> Schedule 2
  *   ...
  *
- * The schedule ID remains part of the accessory UUID/context and is therefore
- * stable even if the displayed name changes.
+ * The manager UUID/context is derived from the vacuum duid. Each Switch
+ * service subtype is derived from the schedule ID. Display names are not
+ * identity and must never overwrite the shared manager accessory identity.
  */
 export default class RoborockHapScheduleAccessory {
   private readonly scheduleAccessories = new Map<
@@ -119,6 +120,7 @@ export default class RoborockHapScheduleAccessory {
 
   async initialize(vacuumName: string): Promise<RoborockScheduleRefreshResult> {
     this.vacuumName = vacuumName;
+    this.disposed = false;
 
     const displayName = `${vacuumName} Schedules`;
     this.managerAccessory.displayName = displayName;
@@ -478,7 +480,34 @@ export default class RoborockHapScheduleAccessory {
     this.lastScheduleRefreshAt = Date.now();
   }
 
-  dispose(): void {
+  /**
+   * Stop in-memory work without changing the cached HAP service topology.
+   * Normal Homebridge shutdown must preserve the same service instances so
+   * Home custom names, room placement, scenes, and automations survive.
+   */
+  shutdown(): void {
+    this.stopRuntime();
+  }
+
+  /**
+   * Intentionally remove every schedule service while preserving the manager.
+   * This is used only when schedule exposure is disabled or the manager is
+   * about to be unregistered. Individual schedules deleted from Roborock are
+   * removed separately by a successful authoritative sync.
+   */
+  removeScheduleServices(): void {
+    this.stopRuntime();
+
+    for (const service of [...this.managerAccessory.services]) {
+      if (service.UUID === this.platform.Service.Switch.UUID) {
+        this.managerAccessory.removeService(service);
+      }
+    }
+
+    this.platform.api.updatePlatformAccessories([this.managerAccessory]);
+  }
+
+  private stopRuntime(): void {
     this.disposed = true;
     this.refreshGeneration++;
     this.refreshInProgress = undefined;
@@ -491,16 +520,6 @@ export default class RoborockHapScheduleAccessory {
     }
 
     this.scheduleAccessories.clear();
-
-    // Keep the manager accessory registered so it can be rebuilt
-    // when schedules are enabled again.
-    for (const service of [...this.managerAccessory.services]) {
-      if (service.UUID === this.platform.Service.Switch.UUID) {
-        this.managerAccessory.removeService(service);
-      }
-    }
-
-    this.platform.api.updatePlatformAccessories([this.managerAccessory]);
   }
 
   private sync(schedules: RoborockSchedule[]): void {
@@ -598,13 +617,6 @@ class RoborockHapScheduleSwitchAccessory {
       enabled: false,
       timer: [scheduleId, "off"],
     };
-
-    accessory.context = {
-      kind: HAP_EXTENSION_KIND,
-      extension: HAP_SCHEDULE_EXTENSION,
-      duid,
-      scheduleId,
-    } satisfies HapScheduleContext;
   }
 
   initialize(displayName: string, schedule: RoborockSchedule): void {
@@ -624,6 +636,7 @@ class RoborockHapScheduleSwitchAccessory {
       );
     }
 
+    service.displayName = displayName;
     service.setCharacteristic(this.platform.Characteristic.Name, displayName);
     service.addOptionalCharacteristic(
       this.platform.Characteristic.ConfiguredName
@@ -636,6 +649,7 @@ class RoborockHapScheduleSwitchAccessory {
 
     if (
       currentConfiguredName == null ||
+      String(currentConfiguredName).trim().length === 0 ||
       String(currentConfiguredName) === displayName
     ) {
       configuredName.setValue(displayName);
@@ -655,15 +669,19 @@ class RoborockHapScheduleSwitchAccessory {
   }
 
   updateIdentity(displayName: string, schedule: RoborockSchedule): void {
-    const previousAccessoryName = this.accessory.displayName;
     this.schedule = { ...schedule, timer: [...schedule.timer] };
-    this.accessory.displayName = displayName;
 
     const switchService = this.accessory.getServiceById(
       this.platform.Service.Switch,
       `${SERVICE_PREFIX}${encodeURIComponent(this.scheduleId)}`
     );
     if (switchService) {
+      const previousServiceName = switchService.getCharacteristic(
+        this.platform.Characteristic.Name
+      ).value;
+
+      switchService.displayName = displayName;
+
       switchService.setCharacteristic(
         this.platform.Characteristic.Name,
         displayName
@@ -677,7 +695,8 @@ class RoborockHapScheduleSwitchAccessory {
       const currentConfiguredName = configuredName.value;
       if (
         currentConfiguredName == null ||
-        String(currentConfiguredName) === previousAccessoryName
+        String(currentConfiguredName).trim().length === 0 ||
+        String(currentConfiguredName) === String(previousServiceName)
       ) {
         configuredName.setValue(displayName);
       }
