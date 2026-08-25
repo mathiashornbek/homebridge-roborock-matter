@@ -16,13 +16,16 @@
 
 const { vacuum } = require("../roborockLib/lib/vacuum");
 
-// The eight fields the Saros 10 in #8 reported have since all been added to
-// `deviceStates`, so they no longer answer the question this suite asks — a
-// mapped field is not warned about at all any more, which is the point of
-// `a-known-field-is-not-called-unmapped.test.js` and asserted there. What is
-// pinned here is the once-per-(robot, attribute) rule, so the fixture needs
-// fields that really are unknown to every table. These three are: they are the
-// genuine remainder of jcoz00's eighteen in #6, with his values.
+// The fields the Saros 10 in #8 reported went into the baseline `deviceStates`
+// in 3.4.4, so this fixture had been a fiction ever since: it mocked
+// `hasDeviceStatusAttribute` as false for fields the real plugin maps for every
+// robot. Nothing detected that until the warning learned to ask whether the
+// plugin knows a field at all, at which point the fiction became visible — and
+// it is worth noticing that a fixture can outlive the thing it describes.
+//
+// What is pinned here is the once-per-(robot, attribute) rule, so the fixture
+// needs fields that really are unknown to every table. These three are: they
+// are the genuine remainder of jcoz00's eighteen in #6, with his values.
 const UNMAPPED_SAROS_ATTRIBUTES = {
   dtof_status: 0,
   pet_reminding: 0,

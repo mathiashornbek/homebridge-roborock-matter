@@ -268,12 +268,19 @@ describe("every field a capability path can install counts as known", () => {
     expect(isKnownStatusAttribute(attribute)).toBe(true);
   });
 
-  // The second user-visible consequence of the fix, and it belongs to a
-  // different reporter. skmzwanke's Saros 10 (#8) was warned about nine fields;
-  // every one of them has since been added to `deviceStates`, so his warning
-  // was still asking for a model report for work that was already done. It goes
-  // quiet on its own, which is worth pinning so a future edit cannot bring it
-  // back without saying so.
+  // The baseline table, not just the capability writers. These nine are the
+  // fields skmzwanke's Saros 10 reported in #8; they went into the baseline in
+  // 3.4.4, so `hasDeviceStatusAttribute()` has answered true for every robot
+  // ever since and that warning has been quiet for months. Nothing about them
+  // changes here — they are pinned because a union that covered only the
+  // capability writers would look correct against #6 and be wrong for anyone
+  // whose robot reports a baseline field its own table somehow lacks.
+  //
+  // Worth recording plainly: the first draft of this release claimed it
+  // silenced #8. It did not. What looked outstanding was the fixture in
+  // `unknown-status-attributes-are-reported-once.test.js`, which mocked these
+  // nine as unmapped — a fiction the old code could not detect and this change
+  // can.
   test.each([
     "home_sec_status",
     "voice_chat_status",
@@ -284,7 +291,7 @@ describe("every field a capability path can install counts as known", () => {
     "cleaning_info",
     "exit_dock",
     "seq_type",
-  ])("#8's %s is mapped and no longer worth a warning", (attribute) => {
+  ])("baseline field %s is recognised as known", (attribute) => {
     expect(isKnownStatusAttribute(attribute)).toBe(true);
   });
 
