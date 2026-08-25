@@ -217,10 +217,61 @@ describe("the action switches are off until they are asked for", () => {
     platform.platformConfig.homeKitActionSwitches = ["empty", "dock"];
     platform.matterVacuums.get("device-1").supportsHomeKitAction = (action) =>
       action !== "empty";
-    platform.syncActionSwitches(DEVICES);
+    platform.syncActionSwitches(DEVICES, "device-1");
 
     expect(platform.unregistered).toContain("Robot device-1 Empty Bin");
     expect(platform.registered).toContain("Robot device-1 Return to Dock");
+  });
+
+  test("a cached S7 Empty Bin switch survives until live dock discovery", () => {
+    let supportsEmpty = true;
+    const platform = createPlatform({
+      config: {
+        enableHomeKitActionSwitches: true,
+        homeKitActionSwitches: ["empty"],
+      },
+      vacuums: new Map([
+        [
+          "device-1",
+          {
+            supportsHomeKitAction: (action) =>
+              action !== "empty" || supportsEmpty,
+            getDisplayName: () => "Robot device-1",
+          },
+        ],
+      ]),
+    });
+
+    platform.syncActionSwitches(DEVICES);
+    const cached = platform.accessories[0];
+
+    // Homebridge restores the accessory before the first live status poll.
+    // The S7 briefly answers from HomeData alone, where its dock is absent.
+    platform.actionSwitches.clear();
+    platform.registered.length = 0;
+    platform.unregistered.length = 0;
+    platform.api.registerPlatformAccessories.mockClear();
+    platform.api.unregisterPlatformAccessories.mockClear();
+    supportsEmpty = false;
+
+    platform.syncActionSwitches(DEVICES);
+
+    expect(platform.api.unregisterPlatformAccessories).not.toHaveBeenCalled();
+    expect(platform.api.registerPlatformAccessories).not.toHaveBeenCalled();
+    expect(platform.accessories).toEqual([cached]);
+    expect(platform.actionSwitches.has("device-1:empty")).toBe(true);
+    expect(platform.log.debug).toHaveBeenCalledWith(
+      expect.stringContaining("until live dock capability is known")
+    );
+
+    // The first live get_status supplies dock_type=1. Reconciliation is now
+    // authoritative, but it keeps the same UUID and cached accessory object.
+    supportsEmpty = true;
+    platform.syncActionSwitches(DEVICES, "device-1");
+
+    expect(platform.api.unregisterPlatformAccessories).not.toHaveBeenCalled();
+    expect(platform.api.registerPlatformAccessories).not.toHaveBeenCalled();
+    expect(platform.accessories).toEqual([cached]);
   });
 
   test("one switch per robot per action", () => {
