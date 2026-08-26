@@ -778,6 +778,7 @@ export default class RoborockMatterVacuumAccessory {
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
+  private selectedCleanModeAwaitingLiveConfirmation = false;
   /**
    * Whether `selectedCleanMode` holds a choice or merely its initial value.
    *
@@ -1164,14 +1165,11 @@ export default class RoborockMatterVacuumAccessory {
    * the sort.
    *
    * WHERE THIS DELIBERATELY DIFFERS FROM getCurrentCleanMode(), because the
-   * difference looks like an oversight and is not: there, a Matter selection
-   * that has not been applied yet outranks the robot's live report, so the
-   * mode picker keeps showing what the user just asked for instead of
-   * flickering back. Here it does not. A selection made mid-run is not applied
-   * mid-run — the prep only runs before a start — so the robot carries on with
-   * the water it already had, and a robot physically mopping with an empty
-   * tank is blocked no matter what the picker shows. The picker reports
-   * intent; this reports what is happening to the floor.
+   * difference looks like an oversight and is not: there, an acknowledged
+   * Matter selection stays visible while the robot's status catches up. Here
+   * the applied-type pin below is the authority during that same window, so a
+   * stale water report cannot invent a tank warning for water the robot has
+   * already acknowledged turning off.
    *
    * The derived type goes through acceptLiveCleanType() like every other
    * consumer of it, and that gate is right here for the same reason it is
@@ -1798,6 +1796,8 @@ export default class RoborockMatterVacuumAccessory {
     const previousSelection = {
       selectedCleanMode: this.selectedCleanMode,
       selectedCleanModeNeedsApply: this.selectedCleanModeNeedsApply,
+      selectedCleanModeAwaitingLiveConfirmation:
+        this.selectedCleanModeAwaitingLiveConfirmation,
       userSelectedCleanMode: this.userSelectedCleanMode,
       lastResolvedFanPowerCleanMode: this.lastResolvedFanPowerCleanMode,
       appliedCleanTypePin: this.appliedCleanTypePin,
@@ -1806,6 +1806,7 @@ export default class RoborockMatterVacuumAccessory {
     this.rememberCurrentRoborockCleanModeSettings();
     this.selectedCleanMode = newMode;
     this.selectedCleanModeNeedsApply = true;
+    this.selectedCleanModeAwaitingLiveConfirmation = false;
     this.userSelectedCleanMode = true;
     // Discard the level remembered from the robot: from here on the user has
     // said what they want, and an unreadable fan power must fall back to their
@@ -1826,6 +1827,8 @@ export default class RoborockMatterVacuumAccessory {
       this.selectedCleanMode = previousSelection.selectedCleanMode;
       this.selectedCleanModeNeedsApply =
         previousSelection.selectedCleanModeNeedsApply;
+      this.selectedCleanModeAwaitingLiveConfirmation =
+        previousSelection.selectedCleanModeAwaitingLiveConfirmation;
       this.userSelectedCleanMode = previousSelection.userSelectedCleanMode;
       this.lastResolvedFanPowerCleanMode =
         previousSelection.lastResolvedFanPowerCleanMode;
@@ -2605,6 +2608,31 @@ export default class RoborockMatterVacuumAccessory {
     );
   }
 
+  private doesLiveCleanModeMatch(cleanMode: number): boolean {
+    const expectedBaseType = this.getBaseCleanType(cleanMode);
+    const liveType = this.getLiveCleanType();
+    if (
+      liveType !== null &&
+      this.getBaseCleanType(liveType) !== expectedBaseType
+    ) {
+      return false;
+    }
+
+    const fanPowerMode = this.getFanPowerCleanMode(cleanMode);
+    if (fanPowerMode) {
+      return (
+        this.getNumberStatus("fan_power") === fanPowerMode.fanPower &&
+        (liveType === null ||
+          this.getBaseCleanType(liveType) === expectedBaseType)
+      );
+    }
+
+    return (
+      liveType !== null &&
+      this.getBaseCleanType(liveType) === expectedBaseType
+    );
+  }
+
   private getCurrentCleanMode(): number {
     let selected = this.isSupportedCleanMode(this.selectedCleanMode)
       ? this.selectedCleanMode
@@ -2619,6 +2647,17 @@ export default class RoborockMatterVacuumAccessory {
     // selection wins until it has been applied, and outside an active run
     // the (sticky) robot-side setting must not shadow the user's selection.
     const inCleaningRun = this.isInCleaningRunMode(this.getOperationalState());
+
+    if (this.selectedCleanModeAwaitingLiveConfirmation) {
+      if (!inCleaningRun) {
+        this.selectedCleanModeAwaitingLiveConfirmation = false;
+      } else if (this.doesLiveCleanModeMatch(this.selectedCleanMode)) {
+        this.selectedCleanModeAwaitingLiveConfirmation = false;
+      } else {
+        return selected;
+      }
+    }
+
     this.trackAppliedCleanTypeRun(inCleaningRun);
 
     // The wind-down is not a mode change, and on a classic robot it looks
@@ -2921,7 +2960,12 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     this.selectedCleanModeNeedsApply = false;
-    this.appliedCleanTypePin = null;
+    this.selectedCleanModeAwaitingLiveConfirmation = true;
+    this.appliedCleanTypePin = {
+      cleanType: this.getBaseCleanType(cleanMode),
+      runObserved: true,
+      reported: false,
+    };
   }
 
   private async applyCleanModeBeforeStarting(): Promise<void> {
