@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.19.0-beta.1
+
+**Beta channel only — `npm install homebridge-roborock-matter@beta`. This does not go to `latest` and no existing installation will pick it up.** It contains the first implementation of the B01 Q10 command dialect, and there is no Q10 robot available to this project to verify it on. Every datapoint code in it is read from python-roborock, where the docstrings mark them verified live against `ss07` hardware, but none of it has been measured here. Shipping that to everyone on `latest` on the strength of someone else's docstrings would be the same mistake [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14) already cost three rounds of wrong diagnosis.
+
+3.18.0 stopped this plugin sending Q7 frames to a Q10, which the robot discards, and refused instead. That made the plugin honest on a Q10; it did not make one work. This is the command half of [#19](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/19).
+
+A Q10 command is now published in the dialect the robot speaks — a direct write to a numbered datapoint, `{"dps":{"201":1}}`, with no method name, no `msgId` and no datapoint 10000. Start, stop, pause, return to dock, empty the dustbin, room clean, suction level and clean mode are covered.
+
+**The dialect is fire-and-forget, and that shapes the rest of the change.** A Q10 sends no RPC reply at all, so a Q10 request no longer registers a pending request or arms a timeout. Arming one would guarantee expiry on a perfectly healthy link, and reporting that expiry is exactly the false "the Roborock cloud has gone silent" that sent #14's reporter chasing a fault at Roborock. A command resolves when the write leaves the plugin, which means published and not acknowledged; the state Apple Home shows still comes from the optimistic-state machinery, which corrects itself against what the robot reports.
+
+**Reads stay refused on a Q10, and that is the dialect rather than unfinished work.** `get_status`, `get_map_list` and `get_prop` exist to return a value, and a protocol that never answers cannot return one. Serving them would hand the caller something the robot never sent and publish that non-answer to Apple Home as the robot's state. A Q10's status continues to come from home data over HTTPS, a separate transport measured working in #14. Reading state from the datapoint updates the robot pushes is the remaining half of #19.
+
+Two known limitations, stated rather than papered over. Resume restarts a whole-home clean instead of resuming, because the plugin has no distinct resume method to map onto the dialect's dedicated `205`. And `find_me` is refused: upstream has a datapoint number for it but no verified payload, and guessing one on hardware nobody here owns is how #14 happened.
+
+The two clean-type tables are not interchangeable and neither are the two suction scales — Q7 is vacuum=0, vac+mop=1, mop=2 while Q10 is vac+mop=1, vacuum=2, mop=3, and Max+ is 5 on a Q7 and 8 on a Q10. The numbers overlap, so the wrong table does not fail loudly; it mops when it was asked to vacuum. Both directions are pinned by tests.
+
+Q7 is unchanged. Three `sc*` robots run on the maintainer's own bridge, and the regression cover asserts that a Q7 still builds the RPC envelope on datapoint 10000, still arms its timeout, still registers its pending request, and that nothing addressed to a Q10 can ever carry the Q7 form — checked against the whole B01 method surface rather than a list of today's commands, with a guard that fails if that check ever becomes vacuous.
+
 ## 3.18.0
 
 **`B01` is two wire protocols, this plugin only implements one of them, and it has been sending the wrong one to Q10 robots.** This is the root cause behind [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14), where [@niclasreich](https://github.com/niclasreich)'s Q10 S5 (`roborock.vacuum.ss07`) could not run a single command. The two diagnostic releases before this one, 3.17.7 and 3.17.8, both measured the symptom correctly and both pointed at Roborock's cloud. The cause was here.

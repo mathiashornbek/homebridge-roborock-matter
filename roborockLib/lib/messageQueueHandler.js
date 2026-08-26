@@ -2,6 +2,7 @@
 "use strict";
 
 const b01Q7Adapter = require("./b01Q7Adapter");
+const b01Q10Adapter = require("./b01Q10Adapter");
 const { describeDevice } = require("./describeDevice");
 
 /**
@@ -142,7 +143,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} MessageBuilder
- * @property {(duid: string, protocol: number, messageID: number, method: string, params: unknown[], secure: boolean, photo: boolean) => Promise<unknown>} buildPayload
+ * @property {(duid: string, protocol: number, messageID: number, method: string, params: unknown[], secure: boolean, photo: boolean, options?: {b01Q10Dps?: Record<string, unknown>}) => Promise<unknown>} buildPayload
  * @property {(duid: string, protocol: number, timestamp: number, payload: unknown) => Promise<Buffer | null | undefined>} buildRoborockMessage
  */
 
@@ -265,8 +266,14 @@ class messageQueueHandler {
       localConnectionState = this.adapter.localConnector.isConnected(duid);
     }
 
-    // B01 (Q7-series) devices are cloud/MQTT-only and speak a different RPC
-    // dialect. Translate the v1-shaped method to the Q7 equivalent here so a
+    // The Q10 datapoint write, when this request is bound for a Q10. Non-null
+    // is what makes the send below fire-and-forget, because that is the only
+    // family whose dialect never replies.
+    /** @type {Record<string, any> | null} */
+    let b01Q10Dps = null;
+
+    // B01 devices are cloud/MQTT-only and speak a different RPC dialect.
+    // Translate the v1-shaped method to the family's equivalent here so a
     // single choke point covers every caller (Matter, polling, UI).
     if (b01Q7Adapter.isB01Protocol(version)) {
       const model = this.adapter?.getProductAttribute?.(duid, "model");
@@ -291,21 +298,43 @@ class messageQueueHandler {
       // That is what #14 spent three rounds on: the timeout diagnostics
       // correctly reported total MQTT silence and thereby sent the reporter
       // after a Roborock-side fault, when the cause was this plugin speaking
-      // the wrong language into a working link. Refusing here says so at the
-      // one place that knows, and keeps the wire clean until #19 implements
-      // the dialect. Methods answered from NEUTRAL_RESPONSES never touch the
-      // wire, so they are left alone — refusing those would regress the
+      // the wrong language into a working link.
+      //
+      // Since 3.19.0 the Q10 dialect is spoken for COMMANDS: the datapoint
+      // write is built here and travels to the encoder in the options bag.
+      // READS stay refused, and that is a property of the dialect rather than
+      // unfinished work — a Q10 sends no RPC reply at all, so a read has
+      // nothing to resolve with. Serving one would hand the caller a value the
+      // robot never sent, and `mapStatusToV1` would publish that non-answer to
+      // Apple Home as the robot's state. A Q10's status comes from home data
+      // over HTTPS instead, a separate transport measured working in #14;
+      // reading it off pushed datapoint updates is the remaining half of #19.
+      //
+      // Methods answered from NEUTRAL_RESPONSES never touch the wire, so they
+      // are left alone either way — refusing those would regress the
       // room-mapping fix from 3.17.3, opened by this same reporter.
       if (family === b01Q7Adapter.B01_FAMILY.Q10 && !neutral) {
-        throw refusal(
-          "b01 q10 dialect unimplemented",
-          `${describeDevice(this.adapter, duid)} speaks the B01 Q10 dialect, which this plugin does not implement yet (see issue #19), so ${method} was not sent. Q10 models (${model || "ss*"}) use direct datapoint writes rather than the Q7 RPC envelope; sending the Q7 form would be discarded by the robot without reply.`
-        );
+        const q10 = b01Q10Adapter.translateOutgoing(method, params);
+
+        if (!q10) {
+          throw refusal(
+            "b01 q10 method unsupported",
+            `${describeDevice(this.adapter, duid)} speaks the B01 Q10 dialect, which has no equivalent for ${method}, so it was not sent. The Q10 dialect (${model || "ss*"}) writes numbered datapoints and sends no reply, so a request that exists to read a value cannot be answered over it; see issue #19.`
+          );
+        }
+
+        b01Q10Dps = b01Q10Adapter.buildDps(q10.dp, q10.params);
       }
 
-      const translated = b01Q7Adapter.translateOutgoing(method, params, family);
+      // A Q10 request is already fully encoded; running it through the Q7
+      // translation as well would overwrite `method` and `params` with the
+      // wrong dialect's names, and `set_custom_mode` would then be refused
+      // outright because the Q10 wind codes are not in the Q7 table.
+      const translated = b01Q10Dps
+        ? null
+        : b01Q7Adapter.translateOutgoing(method, params, family);
 
-      if (!translated) {
+      if (!b01Q10Dps && !translated) {
         if (neutral) {
           this.adapter.log.debug(
             `Method ${method} has no B01/Q7 equivalent for ${duid}; returning a neutral response.`
@@ -322,8 +351,10 @@ class messageQueueHandler {
         throw unsupported;
       }
 
-      method = translated.method;
-      params = /** @type {any} */ (translated.params);
+      if (translated) {
+        method = translated.method;
+        params = /** @type {any} */ (translated.params);
+      }
     }
 
     let useCloudConnection =
@@ -380,7 +411,8 @@ class messageQueueHandler {
       method,
       params,
       secure,
-      photo
+      photo,
+      b01Q10Dps ? { b01Q10Dps } : {}
     );
     const roborockMessage = await this.adapter.message.buildRoborockMessage(
       duid,
@@ -443,6 +475,29 @@ class messageQueueHandler {
               `No local connection to ${describeDevice(this.adapter, duid)}, so the ${method} request was not sent.`
             )
           );
+        } else if (b01Q10Dps) {
+          // THE Q10 DIALECT IS FIRE-AND-FORGET. It defines no RPC reply, so
+          // there is no acknowledgement to wait for and nothing to correlate
+          // against — upstream's own channel returns None. Registering a
+          // pending request here would arm a timeout that is guaranteed to
+          // expire on a perfectly healthy link, and reporting that expiry is
+          // exactly the false "the cloud has gone silent" diagnosis that cost
+          // #14 three rounds.
+          //
+          // Resolving means "the write left this plugin", not "the robot did
+          // it". Nothing downstream may treat it as confirmation: the state
+          // the tile shows still comes from the optimistic-state machinery,
+          // which self-corrects against what the robot actually reports.
+          this.adapter.rr_mqtt_connector.sendMessage(duid, roborockMessage);
+          this.adapter.updateTransportDiagnostics(duid, {
+            lastTransport: "cloud",
+            lastTransportReason: "b01-q10-fire-and-forget",
+            lastCommandMethod: method,
+          });
+          this.adapter.log.debug(
+            `Published B01 Q10 datapoint write for ${duid} with ${payload}. The Q10 dialect is fire-and-forget, so this is a publish confirmation and not a robot acknowledgement; no reply is expected.`
+          );
+          resolve(["ok"]);
         } else {
           // setup Timeout
           const requestTimeout = getRequestTimeout(

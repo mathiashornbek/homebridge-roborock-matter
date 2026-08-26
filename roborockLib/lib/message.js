@@ -47,6 +47,18 @@ class message {
     return this._keys;
   }
 
+  /**
+   * @param {string} duid
+   * @param {number} protocol
+   * @param {any} messageID
+   * @param {string} method
+   * @param {any} params
+   * @param {boolean} [secure]
+   * @param {boolean} [photo]
+   * @param {{b01Q10Dps?: Record<string, any>}} [options] `b01Q10Dps` carries a
+   *   pre-built Q10 datapoint map from the send choke point, which is the only
+   *   place that knows the device family. Absent for every other device.
+   */
   async buildPayload(
     duid,
     protocol,
@@ -54,7 +66,8 @@ class message {
     method,
     params,
     secure = false,
-    photo = false
+    photo = false,
+    options = {}
   ) {
     const timestamp = Math.floor(Date.now() / 1000);
     const endpoint = this.adapter.rr_mqtt_connector.getEndpoint();
@@ -84,7 +97,15 @@ class message {
     }
 
     let payload;
-    if (version == "B01" || version == "\x81S\x19") {
+    if (options && options.b01Q10Dps) {
+      // B01 Q10 (`ss*`) wire format: the datapoint is written directly. No
+      // RPC envelope, no `method`, no `msgId`, no top-level `t`, and no
+      // datapoint 10000 — that datapoint does not exist on this family, which
+      // is why the Q7 form below was discarded by the robot without reply
+      // (#14). The dps map is built in b01Q10Adapter and passed through here
+      // rather than rebuilt, so the family test lives in exactly one place.
+      payload = JSON.stringify({ dps: options.b01Q10Dps });
+    } else if (version == "B01" || version == "\x81S\x19") {
       // Q7/B01 wire format (verified against the python-roborock reference
       // fixtures): a single object on dps 10000 carrying method/msgId/params
       // only. No top-level "t", no numeric "id", no security block; method
