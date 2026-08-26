@@ -269,14 +269,41 @@ class messageQueueHandler {
     // dialect. Translate the v1-shaped method to the Q7 equivalent here so a
     // single choke point covers every caller (Matter, polling, UI).
     if (b01Q7Adapter.isB01Protocol(version)) {
+      const model = this.adapter?.getProductAttribute?.(duid, "model");
+      const family = b01Q7Adapter.b01FamilyForModel(model);
       const neutral = b01Q7Adapter.neutralResponse(method);
-      const translated = b01Q7Adapter.translateOutgoing(
-        method,
-        params,
-        b01Q7Adapter.b01FamilyForModel(
-          this.adapter?.getProductAttribute?.(duid, "model")
-        )
-      );
+
+      // `pv === "B01"` IS TWO WIRE PROTOCOLS AND ONLY Q7 IS IMPLEMENTED.
+      //
+      // Q7 (`sc*`) carries a request as an RPC envelope on datapoint 10000:
+      //   {"dps":{"10000":{"method":"prop.set","msgId":"…","params":…}}}
+      // Q10 (`ss*`) writes the datapoint directly, with no method and no
+      // msgId at all:
+      //   {"dps":{"201":1}}
+      //
+      // Datapoint 10000 is not in the Q10 datapoint set, so publishing the Q7
+      // envelope to a Q10 sends it a correctly framed, correctly encrypted
+      // frame addressed to a datapoint it does not have, which it discards.
+      // Q10 commands are also fire-and-forget — the dialect sends no RPC
+      // reply — so the request then waits out its full timeout for an answer
+      // that could not arrive even on a healthy link.
+      //
+      // That is what #14 spent three rounds on: the timeout diagnostics
+      // correctly reported total MQTT silence and thereby sent the reporter
+      // after a Roborock-side fault, when the cause was this plugin speaking
+      // the wrong language into a working link. Refusing here says so at the
+      // one place that knows, and keeps the wire clean until #19 implements
+      // the dialect. Methods answered from NEUTRAL_RESPONSES never touch the
+      // wire, so they are left alone — refusing those would regress the
+      // room-mapping fix from 3.17.3, opened by this same reporter.
+      if (family === b01Q7Adapter.B01_FAMILY.Q10 && !neutral) {
+        throw refusal(
+          "b01 q10 dialect unimplemented",
+          `${describeDevice(this.adapter, duid)} speaks the B01 Q10 dialect, which this plugin does not implement yet (see issue #19), so ${method} was not sent. Q10 models (${model || "ss*"}) use direct datapoint writes rather than the Q7 RPC envelope; sending the Q7 form would be discarded by the robot without reply.`
+        );
+      }
+
+      const translated = b01Q7Adapter.translateOutgoing(method, params, family);
 
       if (!translated) {
         if (neutral) {

@@ -6,10 +6,21 @@ const zlib = require("zlib");
 /**
  * B01/Q7 protocol adapter.
  *
- * Roborock's 2025 Q-series (Q7 M5 `roborock.vacuum.sc05`, Q7 M5+ `ss07`, ...)
- * speak the "B01" protocol dialect: same 23-byte Roborock framing and
- * AES-128-CBC payload encryption, but a completely different RPC surface.
- * Requests carry a single JSON object on dps 10000:
+ * Roborock's 2025 Q7 series (`roborock.vacuum.sc01`, `sc05`) speaks the "B01"
+ * protocol dialect: same 23-byte Roborock framing and AES-128-CBC payload
+ * encryption, but a completely different RPC surface.
+ *
+ * IMPORTANT: `pv === "B01"` is NOT one protocol. The Q10 series (`ss*`, e.g.
+ * `roborock.vacuum.ss07`) reports the same protocol version and the same
+ * framing, but its RPC surface is different again — direct writes to numbered
+ * datapoints, with no method name, no msgId and no dps 10000. This module is
+ * the Q7 dialect only. `b01FamilyForModel` tells the two apart, and the send
+ * choke point in messageQueueHandler refuses Q10 rather than publishing the Q7
+ * form, which a Q10 discards without reply. See issue #19; this file listed
+ * `ss07` as a Q7 model until 3.18.0, which is what made #14 take three rounds
+ * to diagnose.
+ *
+ * Q7 requests carry a single JSON object on dps 10000:
  *
  *   {"dps":{"10000":{"method":"prop.get","msgId":"200000000001","params":{...}}}}
  *
@@ -81,8 +92,17 @@ const CLEAN_TASK = { ALL: 0, ROOM: 1 };
 // are separate too — upstream documents the collision explicitly for 500,
 // 501, 503, 569 and 570.
 //
-// No Q10 has been seen in the field yet. This is a correctness fix ahead of
-// the first one, not a repair.
+// The suction and fault tables below were split ahead of the first field Q10.
+// That much was right — but it treated the split as a matter of enum values,
+// when the two families do not even share a request envelope. The first Q10 in
+// the field (#14, `ss07`, 26 Aug 2026) could not run a single command, because
+// the family flag reached these tables and nothing else. Getting the enums
+// right for a dialect that is never spoken correctly buys nothing: the split
+// has to reach the wire format too, which is #19.
+//
+// Clean type is the other table that is still Q7-only: Q7 is vacuum=0,
+// vac+mop=1, mop=2, while Q10 (`YXCleanType`) is vac+mop=1, vacuum=2, mop=3.
+// MATTER_TO_Q7_CLEAN_TYPE below must not be reused for Q10.
 const B01_FAMILY = { Q7: "Q7", Q10: "Q10" };
 
 /**

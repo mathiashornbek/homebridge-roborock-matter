@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.18.0
+
+**`B01` is two wire protocols, this plugin only implements one of them, and it has been sending the wrong one to Q10 robots.** This is the root cause behind [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14), where [@niclasreich](https://github.com/niclasreich)'s Q10 S5 (`roborock.vacuum.ss07`) could not run a single command. The two diagnostic releases before this one, 3.17.7 and 3.17.8, both measured the symptom correctly and both pointed at Roborock's cloud. The cause was here.
+
+Robots reporting `pv === "B01"` fall into two families that share the 23-byte framing and the AES-128-CBC payload encryption but not the request format. The Q7 series (`sc*`) carries an RPC envelope on datapoint 10000, with a method name and a `msgId` to correlate the reply against. The Q10 series (`ss*`) writes numbered datapoints directly — no method, no `msgId`, no datapoint 10000 — and does not reply at all, because the dialect is fire-and-forget.
+
+This plugin built the Q7 envelope for every B01 device. On a Q10 that means every command ever sent was a well-formed, correctly encrypted frame addressed to a datapoint the robot does not have, which it discards, followed by the plugin waiting out a full timeout for an acknowledgement the protocol never sends. `b01FamilyForModel()` has classified `ss*` as Q10 since 3.15.5, but that flag only ever reached the suction scale and the fault tables — never the wire format. Getting the enums right for a dialect that is never spoken correctly bought nothing.
+
+Q10 commands are now refused at the send choke point, immediately and by name, instead of being published in a form the robot cannot read. The refusal is classified as transient, so it is throttled like any other and does not arrive as a plugin error with a stack. Methods that are answered without touching the wire are unaffected, which keeps the room-mapping fix from 3.17.3 intact — the timeout the same reporter originally opened #14 about.
+
+This makes the plugin honest on a Q10 rather than functional on one. It is a smaller change than it sounds and deliberately so: Q7 and Q10 share this code path, Q7 devices work, and implementing an unverifiable Q10 dialect in the same change that could regress them is a bad trade. Real Q10 support — the dialect encoder, the datapoint tables, a fire-and-forget command path, and status from pushed datapoint updates — is tracked in [#19](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/19).
+
+Q7 behaviour is unchanged and covered by regression tests asserting that `sc*` models, and any unrecognised B01 model, still publish exactly as before. Two comments in `b01Q7Adapter.js` that listed `ss07` as a Q7 model have been corrected; that claim is what made #14 take three rounds to diagnose.
+
 ## 3.17.8
 
 **The cloud-timeout diagnostic added in 3.17.7 drew a conclusion it could not support, and this corrects it.** Found by [@niclasreich](https://github.com/niclasreich) acting on it in [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14): he updated, read the new sentence, and reported the answer it gave — that no reply had ever arrived from his Q10 S5.
