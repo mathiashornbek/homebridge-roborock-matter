@@ -2657,6 +2657,7 @@ export default class RoborockMatterVacuumAccessory {
       } else if (this.doesLiveCleanModeMatch(this.selectedCleanMode)) {
         this.selectedCleanModeLiveConfirmationExpiresAt = 0;
         this.appliedCleanTypePin = null;
+        this.clearOptimisticCluster("rvcCleanMode");
       } else if (Date.now() < this.selectedCleanModeLiveConfirmationExpiresAt) {
         return selected;
       } else {
@@ -4819,6 +4820,24 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     return this.optimisticClusters;
+  }
+
+  private clearOptimisticCluster(cluster: string): void {
+    const optimistic = this.getActiveOptimisticState();
+    if (!optimistic || !(cluster in optimistic)) {
+      return;
+    }
+
+    const remaining = { ...optimistic };
+    delete remaining[cluster];
+
+    if (Object.keys(remaining).length === 0) {
+      this.clearOptimisticState();
+      return;
+    }
+
+    this.optimisticClusters = remaining;
+    this.optimisticGeneration += 1;
   }
 
   private clearOptimisticState(): void {
