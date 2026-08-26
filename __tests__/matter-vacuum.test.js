@@ -1144,6 +1144,71 @@ describe("Matter operational state", () => {
     }
   );
 
+  test("falls back to the robot report when a live change never converges", async () => {
+    jest.useFakeTimers();
+    const status = {
+      state: 5,
+      fan_power: 104,
+      water_box_mode: 202,
+    };
+    const platform = createPlatform({
+      capabilities: {
+        canVacuum: true,
+        canMop: true,
+        canControlFanPower: true,
+        canControlWater: true,
+      },
+      status,
+      applyMatterCleanModeSettings: jest.fn().mockResolvedValue({
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      }),
+    });
+    const { accessory } = createAccessory(platform, true);
+
+    await accessory.handlers.rvcCleanMode.changeToMode({ newMode: 5 });
+
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(5);
+
+    await jest.advanceTimersByTimeAsync(150001);
+
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(2);
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("did not converge within 150 seconds")
+    );
+  });
+
+  test("accepts fan power as live confirmation when clean type is absent", async () => {
+    const status = {
+      state: 5,
+      fan_power: 104,
+    };
+    const platform = createPlatform({
+      capabilities: {
+        canVacuum: true,
+        canMop: false,
+        canControlFanPower: true,
+        canControlWater: false,
+      },
+      status,
+      applyMatterCleanModeSettings: jest.fn().mockResolvedValue({
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      }),
+    });
+    const { accessory } = createAccessory(platform, true);
+
+    await accessory.handlers.rvcCleanMode.changeToMode({ newMode: 5 });
+
+    status.fan_power = 103;
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(5);
+
+    // Confirmation releases the optimistic selection. A later robot-side
+    // intensity change is authoritative again.
+    status.fan_power = 104;
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(6);
+  });
+
   test("rejects an unconfirmed live clean mode change", async () => {
     const matterUpdates = [];
     const platform = createPlatform({
