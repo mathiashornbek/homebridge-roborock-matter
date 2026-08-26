@@ -1100,49 +1100,49 @@ describe("Matter operational state", () => {
         waterBoxMode: 200,
       },
     },
-  ])("applies a live $label change while the robot is running", async ({
-    newMode,
-    expectedSettings,
-  }) => {
-    const applyMatterCleanModeSettings = jest.fn().mockResolvedValue({
-      unconfirmedSettings: [],
-      cleanTypeConfirmed: true,
-    });
-    const appStart = jest.fn().mockResolvedValue(undefined);
-    const platform = createPlatform({
-      capabilities: {
-        canVacuum: true,
-        canMop: true,
-        canControlFanPower: true,
-        canControlWater: true,
-      },
-      status: {
-        state: 5,
-        fan_power: 104,
-        water_box_mode: 202,
-      },
-      appStart,
-      applyMatterCleanModeSettings,
-    });
-    const { accessory } = createAccessory(platform, true);
+  ])(
+    "applies a live $label change while the robot is running",
+    async ({ newMode, expectedSettings }) => {
+      const applyMatterCleanModeSettings = jest.fn().mockResolvedValue({
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      });
+      const appStart = jest.fn().mockResolvedValue(undefined);
+      const platform = createPlatform({
+        capabilities: {
+          canVacuum: true,
+          canMop: true,
+          canControlFanPower: true,
+          canControlWater: true,
+        },
+        status: {
+          state: 5,
+          fan_power: 104,
+          water_box_mode: 202,
+        },
+        appStart,
+        applyMatterCleanModeSettings,
+      });
+      const { accessory } = createAccessory(platform, true);
 
-    await accessory.handlers.rvcCleanMode.changeToMode({ newMode });
+      await accessory.handlers.rvcCleanMode.changeToMode({ newMode });
 
-    expect(applyMatterCleanModeSettings).toHaveBeenCalledWith(
-      "device-1",
-      expectedSettings,
-      {
-        waitForResult: true,
-        throwOnError: true,
-        preferLocal: true,
-        allowOfflineCloudSend: true,
-        requestTimeoutMs: 2000,
-        prepWindowMs: 2500,
-        context: "during cleaning",
-      }
-    );
-    expect(appStart).not.toHaveBeenCalled();
-  });
+      expect(applyMatterCleanModeSettings).toHaveBeenCalledWith(
+        "device-1",
+        expectedSettings,
+        {
+          waitForResult: true,
+          throwOnError: true,
+          preferLocal: true,
+          allowOfflineCloudSend: true,
+          requestTimeoutMs: 2000,
+          prepWindowMs: 2500,
+          context: "during cleaning",
+        }
+      );
+      expect(appStart).not.toHaveBeenCalled();
+    }
+  );
 
   test("rejects an unconfirmed live clean mode change", async () => {
     const matterUpdates = [];
