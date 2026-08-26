@@ -208,10 +208,27 @@ describe("an empty tank blocks nothing on a vacuum-only run", () => {
     expect(await test.fault()).toEqual({ errorStateId: RVC_ERROR_NONE });
   });
 
-  test("the robot's own report is what counts during a run, not the last pick", async () => {
+  test("the robot's own report counts during a run with no live mode command", async () => {
     // A run started in the Roborock app carries its own clean type. Fan power
-    // off is the mop-only signature, so this robot is mopping with no water
-    // whatever the tile's picker last showed.
+    // off is the mop-only signature, so this robot is mopping with no water.
+    const test = harness({
+      initialStatus: {
+        ...TANK_EMPTY,
+        state: ROBOROCK_STATE_CLEANING,
+        fan_power: FAN_POWER_OFF,
+        water_box_mode: WATER_BOX_ON,
+      },
+    });
+
+    expect(await test.fault()).toEqual({
+      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
+    });
+  });
+
+  test("an acknowledged live Vacuum change outranks a lagging mop report", async () => {
+    // The robot has accepted the live change, but its cached status can still
+    // describe the mode that was running immediately before it. During that
+    // confirmation window the acknowledged command is the stronger evidence.
     const test = harness({
       initialStatus: {
         ...TANK_EMPTY,
@@ -223,9 +240,7 @@ describe("an empty tank blocks nothing on a vacuum-only run", () => {
 
     await select(test, CLEAN_MODE_VACUUM);
 
-    expect(await test.fault()).toEqual({
-      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
-    });
+    expect(await test.fault()).toEqual({ errorStateId: RVC_ERROR_NONE });
   });
 
   test("a robot cleaning with its water off gets no tank fault", async () => {
