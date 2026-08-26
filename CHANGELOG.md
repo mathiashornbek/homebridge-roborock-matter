@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.17.8
+
+**The cloud-timeout diagnostic added in 3.17.7 drew a conclusion it could not support, and this corrects it.** Found by [@niclasreich](https://github.com/niclasreich) acting on it in [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14): he updated, read the new sentence, and reported the answer it gave — that no reply had ever arrived from his Q10 S5.
+
+When no message had been attributed to a robot, 3.17.7 stated that "the reply never arrived rather than arriving unrecognised". That only follows if every inbound frame is either counted or logged where a user can see it, and one path is neither. The MQTT receiver drops a message before the counter whenever its topic matches no known robot, and that path logs at debug. A reply arriving on a topic the plugin cannot attribute is precisely "arriving unrecognised" — the one possibility the sentence ruled out. The other two ways a frame can be discarded are already visible, so they were never the gap: an undecodable message logs at error, and a missing local key warns once.
+
+Frames that match no known robot are now counted account-wide — attribution is what failed, so there is no robot to file them under — and a cloud timeout reports total silence only when nothing arrived on any topic. If unattributed frames did arrive, the timeout now says so and names it as a fault on this side, because that is the difference between a robot that never answers and one whose answers this plugin is throwing away. An adapter that cannot supply the count states the observation and draws no conclusion at all.
+
+Diagnostics only, as in 3.17.7. No change to when requests are sent, how long they wait, or what is retried, and a local timeout remains untouched.
+
 ## 3.17.7
 
 **A cloud request that times out now says whether the robot answered at all.** Raised by the log [@niclasreich](https://github.com/niclasreich) posted in [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14), where every single Roborock request to a Q10 S5 timed out — status polls, the clean-type write, the start command — while the MQTT connection state read `true` throughout.

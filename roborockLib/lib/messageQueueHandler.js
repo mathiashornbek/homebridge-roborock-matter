@@ -89,7 +89,27 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
   const total = adapter.getCloudMessageReceiptCount(duid);
 
   if (total === 0) {
-    return " No Roborock message has reached the plugin from this robot since startup, so the reply never arrived rather than arriving unrecognised.";
+    // 3.17.7 concluded "the reply never arrived rather than arriving
+    // unrecognised" here, and that does not follow. The receiver drops a frame
+    // before the counter whenever its topic matches no known robot, and that
+    // path logs at debug — so an unattributed reply is invisible to both the
+    // counter and the user. Unattributed traffic is the difference between a
+    // robot that is silent (Roborock-side) and one whose answers we are
+    // throwing away (ours), so say which was observed and claim nothing more.
+    const unattributed =
+      typeof adapter.getUnattributedCloudMessageCount === "function"
+        ? adapter.getUnattributedCloudMessageCount()
+        : null;
+
+    if (unattributed === null) {
+      return " No Roborock message has reached the plugin from this robot since startup.";
+    }
+
+    if (unattributed > 0) {
+      return ` No Roborock message has reached the plugin from this robot since startup, but ${unattributed} message(s) arrived on a topic matching no known robot — the link is delivering and the plugin is failing to attribute it, which is a fault on this side.`;
+    }
+
+    return " No Roborock message has reached the plugin from this robot since startup, and none arrived on an unrecognised topic either, so nothing is coming back over MQTT at all.";
   }
 
   const duringRequest = total - receiptsAtSend;
@@ -171,6 +191,10 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @property {(duid: string) => number} [getCloudMessageReceiptCount] How many
  *   decoded MQTT messages have been attributed to this robot since startup.
  *   Optional so an adapter that cannot count them keeps the old timeout text.
+ * @property {() => number} [getUnattributedCloudMessageCount] How many inbound
+ *   MQTT frames matched no known robot since startup. Account-wide, since
+ *   attribution is what failed. Optional: without it the timeout reports the
+ *   observation and draws no conclusion about why the robot is silent.
  * @property {(message: string, location: string, duid?: string) => void} catchError
  * @property {(duid: string) => string} [describeDevice]
  * @property {(duid: string, attribute: string) => string} [getProductAttribute]

@@ -1325,6 +1325,30 @@ class Roborock {
     return this._cloudMessageReceipts.get(duid) || 0;
   }
 
+  /**
+   * Count an inbound MQTT frame that matched no known robot.
+   *
+   * Account-wide on purpose: attribution is what failed, so there is no robot
+   * to file it under. The reader is the cloud timeout text, which needs this
+   * to avoid concluding "the robot never answered" when the truth may be "the
+   * robot answered on a topic we did not recognise" (#14).
+   *
+   * @param {string} [topic] The unmatched topic, accepted for callers that
+   *   have it; deliberately not retained, as it can carry account identifiers.
+   */
+  noteUnattributedCloudMessage(topic) {
+    this._unattributedCloudMessages =
+      (this._unattributedCloudMessages || 0) + 1;
+  }
+
+  /**
+   * @returns {number} Inbound MQTT frames since startup that matched no known
+   *   robot.
+   */
+  getUnattributedCloudMessageCount() {
+    return this._unattributedCloudMessages || 0;
+  }
+
   async updateTransportDiagnostics(duid, patch) {
     if (!duid || !patch || typeof patch !== "object") {
       return;

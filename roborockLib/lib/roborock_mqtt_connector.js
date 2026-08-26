@@ -309,6 +309,14 @@ class roborock_mqtt_connector {
       try {
         const duid = this.resolveDuidFromTopic(topic);
         if (!duid) {
+          // Counted, not just logged: this is the one inbound path that drops
+          // a frame silently as far as a user is concerned (decode failures
+          // log at error, a missing localKey warns once). Without a count, a
+          // cloud timeout cannot tell a robot that never answers from one
+          // whose answers we fail to attribute — see #14.
+          if (typeof this.adapter.noteUnattributedCloudMessage === "function") {
+            this.adapter.noteUnattributedCloudMessage(topic);
+          }
           this.adapter.log.debug(
             `Skipping MQTT message with unmatched topic '${topic}'.`
           );
