@@ -348,7 +348,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       typeof this.roborockAPI.getVacuumList === "function"
         ? this.roborockAPI.getVacuumList()
         : [];
-    this.syncActionSwitches(Array.isArray(devices) ? devices : []);
+    this.syncActionSwitches(Array.isArray(devices) ? devices : [], duid);
   }
 
   private notifyVacuumByDuid(
@@ -923,7 +923,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    * Bring the registered action switches in line with the config and the
    * account, adding what is missing and removing what is no longer wanted.
    */
-  private syncActionSwitches(devices: any[]): void {
+  private syncActionSwitches(
+    devices: any[],
+    capabilityConfirmedForDuid?: string
+  ): void {
     const enabled = this.getEnabledActionSwitchKeys();
 
     // Only this kind. The shared this.accessories list also carries the state
@@ -937,6 +940,18 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     if (enabled.length === 0 && mine.length === 0) {
       return;
     }
+
+    // A cached switch has already acquired HomeKit identity outside this
+    // process: its custom name, room, Home View choice and automations all
+    // belong to that accessory UUID. Some S7 HomeData payloads omit dock
+    // capability until the first live status poll, so absence here is not yet
+    // proof that an existing Empty Bin switch is obsolete.
+    const cachedKeys = new Set(
+      mine.map((accessory) => {
+        const context = accessory.context as Partial<ActionSwitchContext>;
+        return `${context?.duid}:${context?.action}`;
+      })
+    );
 
     const wanted = new Map<
       string,
@@ -958,14 +973,26 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
           continue;
         }
 
+        const key = `${duid}:${action}`;
         if (vacuum && !vacuum.supportsHomeKitAction(action)) {
+          const preservePendingEmptyBin =
+            action === "empty" &&
+            capabilityConfirmedForDuid !== duid &&
+            cachedKeys.has(key);
+
+          if (!preservePendingEmptyBin) {
+            this.log.debug(
+              `Not publishing the ${definition.nameSuffix} switch for ${vacuumName}: the robot does not support that command.`
+            );
+            continue;
+          }
+
           this.log.debug(
-            `Not publishing the ${definition.nameSuffix} switch for ${vacuumName}: the robot does not support that command.`
+            `Preserving the cached ${definition.nameSuffix} switch for ${vacuumName} until live dock capability is known.`
           );
-          continue;
         }
 
-        wanted.set(`${duid}:${action}`, { duid, action, vacuumName });
+        wanted.set(key, { duid, action, vacuumName });
       }
     }
 
