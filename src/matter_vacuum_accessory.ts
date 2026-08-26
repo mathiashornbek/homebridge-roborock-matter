@@ -2611,6 +2611,9 @@ export default class RoborockMatterVacuumAccessory {
   private doesLiveCleanModeMatch(cleanMode: number): boolean {
     const expectedBaseType = this.getBaseCleanType(cleanMode);
     const liveType = this.getLiveCleanType();
+    if (liveType !== null && !this.acceptLiveCleanType(liveType)) {
+      return false;
+    }
     if (
       liveType !== null &&
       this.getBaseCleanType(liveType) !== expectedBaseType
@@ -2628,8 +2631,7 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     return (
-      liveType !== null &&
-      this.getBaseCleanType(liveType) === expectedBaseType
+      liveType !== null && this.getBaseCleanType(liveType) === expectedBaseType
     );
   }
 
