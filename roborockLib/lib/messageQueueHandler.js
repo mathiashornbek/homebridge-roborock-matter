@@ -53,6 +53,57 @@ function getRequestTimeout(method, requestTimeoutMs) {
 }
 
 /**
+ * What the MQTT link did while a cloud request was pending, as a sentence to
+ * append to the timeout error.
+ *
+ * A cloud timeout says only that nothing came back, and the two causes behind
+ * it need opposite responses: a reply that never arrived is a robot or account
+ * that is not answering, while a reply that arrived and was not matched is a
+ * correlation bug on this side. The plugin already knows which — the MQTT
+ * receiver attributes every decoded message to a device — but the three paths
+ * that could say so all log at debug, so the fact never reaches the warn line
+ * a user actually reports.
+ *
+ * Measured in #14 (niclasreich, Q10 S5 `roborock.vacuum.ss07`, 26 Aug 2026):
+ * every `prop.get`, `prop.set` and `service.set_room_clean` timed out with the
+ * MQTT state reported as `true`, and neither of us could tell silence from an
+ * unrecognised answer. It cost two round trips with the reporter.
+ *
+ * Deliberately cloud-only. A local request dies on its own socket, and MQTT
+ * receipts would say nothing about it.
+ *
+ * @param {MessageQueueAdapter} adapter
+ * @param {string} duid
+ * @param {number | null} receiptsAtSend Receipts counted as the request went
+ *   out, or `null` when this adapter cannot count them.
+ * @returns {string} A sentence starting with a space, or `""`.
+ */
+function describeCloudSilence(adapter, duid, receiptsAtSend) {
+  if (
+    receiptsAtSend === null ||
+    typeof adapter.getCloudMessageReceiptCount !== "function"
+  ) {
+    return "";
+  }
+
+  const total = adapter.getCloudMessageReceiptCount(duid);
+
+  if (total === 0) {
+    return " No Roborock message has reached the plugin from this robot since startup, so the reply never arrived rather than arriving unrecognised.";
+  }
+
+  const duringRequest = total - receiptsAtSend;
+  if (duringRequest > 0) {
+    // Arrived-but-unmatched is not proof the reply was sent: an unsolicited
+    // robot push counts here too. It does prove the link delivers, which is
+    // the half that a bare timeout leaves open.
+    return ` ${duringRequest} Roborock message(s) reached the plugin from this robot while the request was pending, so the link is delivering; the reply was either never sent or not recognised.`;
+  }
+
+  return ` No Roborock message reached the plugin from this robot while the request was pending (${total} since startup).`;
+}
+
+/**
  * @typedef {Object} PendingRequest
  * @property {(value: unknown) => void} resolve
  * @property {(reason?: unknown) => void} reject
@@ -117,6 +168,9 @@ function getRequestTimeout(method, requestTimeoutMs) {
  * @property {(duid: string, update: TransportDiagnosticsUpdate) => Promise<void>} updateTransportDiagnostics
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
+ * @property {(duid: string) => number} [getCloudMessageReceiptCount] How many
+ *   decoded MQTT messages have been attributed to this robot since startup.
+ *   Optional so an adapter that cannot count them keeps the old timeout text.
  * @property {(message: string, location: string, duid?: string) => void} catchError
  * @property {(duid: string) => string} [describeDevice]
  * @property {(duid: string, attribute: string) => string} [getProductAttribute]
@@ -345,13 +399,19 @@ class messageQueueHandler {
             options.requestTimeoutMs
           );
           const timeoutSeconds = Math.round(requestTimeout / 1000);
+          // Read BEFORE the send, so the timeout can subtract and report what
+          // arrived while this particular request was outstanding.
+          const receiptsAtSend =
+            typeof this.adapter.getCloudMessageReceiptCount === "function"
+              ? this.adapter.getCloudMessageReceiptCount(duid)
+              : null;
           const timeout = this.adapter.setTimeout(() => {
             this.adapter.pendingRequests.delete(messageID);
             this.adapter.localConnector.clearChunkBuffer(duid);
             if (useCloudConnection) {
               reject(
                 new Error(
-                  `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${mqttConnectionState}`
+                  `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${mqttConnectionState}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}`
                 )
               );
             } else {

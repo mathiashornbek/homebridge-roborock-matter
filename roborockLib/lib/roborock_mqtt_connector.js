@@ -319,6 +319,15 @@ class roborock_mqtt_connector {
         if (!data) {
           return;
         }
+
+        // Counted here and nowhere else: past the topic match AND past
+        // decryption, so the count means the link delivered something real
+        // from this robot. A cloud timeout reads it to tell "nothing came
+        // back" from "something came back that we could not match" — two
+        // causes that a bare timeout leaves indistinguishable (#14).
+        if (typeof this.adapter.noteCloudMessageReceived === "function") {
+          this.adapter.noteCloudMessageReceived(duid);
+        }
         // this.adapter.log.debug(`MESSAGE RECEIVED for duid ${duid} with key: ${this.adapter.localKeys.get(duid)} data: ${JSON.stringify(data)} raw: ${JSON.stringify(mqttMessageParser.parse(message))} message: ${message}`);
         // this.adapter.log.debug(`MESSAGE RECEIVED for duid ${duid} with key: ${this.adapter.localKeys.get(duid)} data: ${JSON.stringify(data.toString("hex"))} message: ${message}`);
         // this.adapter.log.debug(`MESSAGE RECEIVED for duid ${duid} with key: ${this.adapter.localKeys.get(duid)} data: ${JSON.stringify(data)}`);

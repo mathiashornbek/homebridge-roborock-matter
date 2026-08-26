@@ -1284,6 +1284,47 @@ class Roborock {
     );
   }
 
+  /**
+   * Count a decoded MQTT message against the robot it came from.
+   *
+   * Called for every message the receiver could attribute AND decrypt, so the
+   * counter means "the link delivered something real from this robot" — not
+   * "a packet arrived". Undecodable messages log at error on their own and are
+   * deliberately not counted: they would make a broken link look alive.
+   *
+   * The only reader is the cloud timeout text, which needs to tell silence
+   * from an answer it could not match (#14). Keep it that cheap.
+   *
+   * @param {string} duid
+   */
+  noteCloudMessageReceived(duid) {
+    if (!duid) {
+      return;
+    }
+
+    if (!this._cloudMessageReceipts) {
+      /** @type {Map<string, number>} */
+      this._cloudMessageReceipts = new Map();
+    }
+
+    this._cloudMessageReceipts.set(
+      duid,
+      (this._cloudMessageReceipts.get(duid) || 0) + 1
+    );
+  }
+
+  /**
+   * @param {string} duid
+   * @returns {number} Decoded MQTT messages seen from this robot since startup.
+   */
+  getCloudMessageReceiptCount(duid) {
+    if (!duid || !this._cloudMessageReceipts) {
+      return 0;
+    }
+
+    return this._cloudMessageReceipts.get(duid) || 0;
+  }
+
   async updateTransportDiagnostics(duid, patch) {
     if (!duid || !patch || typeof patch !== "object") {
       return;

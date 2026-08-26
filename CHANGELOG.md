@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.17.7
+
+**A cloud request that times out now says whether the robot answered at all.** Raised by the log [@niclasreich](https://github.com/niclasreich) posted in [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14), where every single Roborock request to a Q10 S5 timed out — status polls, the clean-type write, the start command — while the MQTT connection state read `true` throughout.
+
+That combination has two causes needing opposite responses. Either no reply ever arrived, which points at the robot or the account, or a reply did arrive and could not be matched to its request, which points at a correlation bug in this plugin. The plugin already knew which: the MQTT receiver attributes every message it decodes to a device. But the three paths that could have said so — an unmatched topic, an unsolicited message, an ordinary cloud reply — all log at debug, so the fact never reached the warning a user reports. Two rounds of questions went by without it.
+
+A cloud timeout now names what the link did while the request was outstanding: nothing at all since startup, some messages while this request was pending, or messages earlier but none during it. The counter is incremented only after a message has been attributed to a robot _and_ decrypted, so a link delivering only garbage cannot read as alive — an undecodable message already logs its own error and is deliberately not counted.
+
+Diagnostics only. No change to when requests are sent, how long they wait, or what is retried; a local timeout is untouched, because MQTT receipts say nothing about a local socket.
+
 ## 3.17.6
 
 **Optional HomeKit switches keep the name and the place in Home you gave them across a Homebridge restart.** Two independent reports of the same class of fault, from the two people using these switches most, and both are fixed here by their own pull requests.
