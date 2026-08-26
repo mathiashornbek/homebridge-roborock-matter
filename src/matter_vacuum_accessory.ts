@@ -12,6 +12,7 @@ const { getModelNameWithoutBrand } =
 
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
 const MATTER_CLEAN_MODE_PREP_TIMEOUT_MS = 2500;
+const MATTER_CLEAN_MODE_LIVE_CONFIRMATION_TIMEOUT_MS = 150 * 1000;
 
 type MatterAccessory = {
   UUID: string;
@@ -778,7 +779,7 @@ export default class RoborockMatterVacuumAccessory {
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
-  private selectedCleanModeAwaitingLiveConfirmation = false;
+  private selectedCleanModeLiveConfirmationExpiresAt = 0;
   /**
    * Whether `selectedCleanMode` holds a choice or merely its initial value.
    *
@@ -1796,17 +1797,20 @@ export default class RoborockMatterVacuumAccessory {
     const previousSelection = {
       selectedCleanMode: this.selectedCleanMode,
       selectedCleanModeNeedsApply: this.selectedCleanModeNeedsApply,
-      selectedCleanModeAwaitingLiveConfirmation:
-        this.selectedCleanModeAwaitingLiveConfirmation,
+      selectedCleanModeLiveConfirmationExpiresAt:
+        this.selectedCleanModeLiveConfirmationExpiresAt,
       userSelectedCleanMode: this.userSelectedCleanMode,
       lastResolvedFanPowerCleanMode: this.lastResolvedFanPowerCleanMode,
       appliedCleanTypePin: this.appliedCleanTypePin,
     };
 
+    // These are robot-reported preferences, not speculative selection
+    // bookkeeping. If the command fails they remain valid pre-command truth,
+    // so the rollback below intentionally does not restore them.
     this.rememberCurrentRoborockCleanModeSettings();
     this.selectedCleanMode = newMode;
     this.selectedCleanModeNeedsApply = true;
-    this.selectedCleanModeAwaitingLiveConfirmation = false;
+    this.selectedCleanModeLiveConfirmationExpiresAt = 0;
     this.userSelectedCleanMode = true;
     // Discard the level remembered from the robot: from here on the user has
     // said what they want, and an unreadable fan power must fall back to their
@@ -1827,8 +1831,8 @@ export default class RoborockMatterVacuumAccessory {
       this.selectedCleanMode = previousSelection.selectedCleanMode;
       this.selectedCleanModeNeedsApply =
         previousSelection.selectedCleanModeNeedsApply;
-      this.selectedCleanModeAwaitingLiveConfirmation =
-        previousSelection.selectedCleanModeAwaitingLiveConfirmation;
+      this.selectedCleanModeLiveConfirmationExpiresAt =
+        previousSelection.selectedCleanModeLiveConfirmationExpiresAt;
       this.userSelectedCleanMode = previousSelection.userSelectedCleanMode;
       this.lastResolvedFanPowerCleanMode =
         previousSelection.lastResolvedFanPowerCleanMode;
@@ -2623,16 +2627,13 @@ export default class RoborockMatterVacuumAccessory {
 
     const fanPowerMode = this.getFanPowerCleanMode(cleanMode);
     if (fanPowerMode) {
-      return (
-        this.getNumberStatus("fan_power") === fanPowerMode.fanPower &&
-        (liveType === null ||
-          this.getBaseCleanType(liveType) === expectedBaseType)
-      );
+      // Some robots omit a live clean type, but fan power independently
+      // confirms a suction variant. Base clean-type changes have no equivalent
+      // independent signal and still require the robot to report a live type.
+      return this.getNumberStatus("fan_power") === fanPowerMode.fanPower;
     }
 
-    return (
-      liveType !== null && this.getBaseCleanType(liveType) === expectedBaseType
-    );
+    return liveType !== null;
   }
 
   private getCurrentCleanMode(): number {
@@ -2650,13 +2651,20 @@ export default class RoborockMatterVacuumAccessory {
     // the (sticky) robot-side setting must not shadow the user's selection.
     const inCleaningRun = this.isInCleaningRunMode(this.getOperationalState());
 
-    if (this.selectedCleanModeAwaitingLiveConfirmation) {
+    if (this.selectedCleanModeLiveConfirmationExpiresAt > 0) {
       if (!inCleaningRun) {
-        this.selectedCleanModeAwaitingLiveConfirmation = false;
+        this.selectedCleanModeLiveConfirmationExpiresAt = 0;
       } else if (this.doesLiveCleanModeMatch(this.selectedCleanMode)) {
-        this.selectedCleanModeAwaitingLiveConfirmation = false;
-      } else {
+        this.selectedCleanModeLiveConfirmationExpiresAt = 0;
+        this.appliedCleanTypePin = null;
+      } else if (Date.now() < this.selectedCleanModeLiveConfirmationExpiresAt) {
         return selected;
+      } else {
+        this.selectedCleanModeLiveConfirmationExpiresAt = 0;
+        this.appliedCleanTypePin = null;
+        this.platform.log.warn(
+          `Roborock acknowledged the live ${this.getCleanModeLabel(this.selectedCleanMode)} change for ${this.getVacuumName()}, but its status did not converge within ${MATTER_CLEAN_MODE_LIVE_CONFIRMATION_TIMEOUT_MS / 1000} seconds; Apple Home will now follow the robot's live report.`
+        );
       }
     }
 
@@ -2962,7 +2970,8 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     this.selectedCleanModeNeedsApply = false;
-    this.selectedCleanModeAwaitingLiveConfirmation = true;
+    this.selectedCleanModeLiveConfirmationExpiresAt =
+      Date.now() + MATTER_CLEAN_MODE_LIVE_CONFIRMATION_TIMEOUT_MS;
     this.appliedCleanTypePin = {
       cleanType: this.getBaseCleanType(cleanMode),
       runObserved: true,
