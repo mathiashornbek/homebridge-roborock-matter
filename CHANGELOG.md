@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.17.6
+
+**Optional HomeKit switches keep the name and the place in Home you gave them across a Homebridge restart.** Two independent reports of the same class of fault, from the two people using these switches most, and both are fixed here by their own pull requests.
+
+**The Empty Bin switch.** Reported by [@pponce](https://github.com/pponce) in [#16](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/16) and fixed by [@jbyhb](https://github.com/jbyhb) in [#17](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/17), who had independently hit it on an S7. A renamed switch reverted to its generated name on restart, and one removed from Home View came back — the second symptom being the useful one, because it says HomeKit watched the accessory leave and return rather than merely redraw.
+
+The cause is a question asked one poll too early. Whether a robot can auto-empty is read from its dock type, and some classic robots — the S7 among them — omit that capability from the account data and report the attached dock only in the first live status poll. Startup reconciliation ran before that poll arrived, read the absence as "this robot has no auto-empty dock", and unregistered the cached switch; the first `get_status` then supplied `dock_type: 1` and the capability update built it again. That unregister/register pair is a new accessory as far as HomeKit is concerned, and a custom name, a room and a Home View placement all belong to the old one. The reporter's second robot never showed the fault because its dock capability _is_ in the account data, so its switch was never in doubt.
+
+An already-cached Empty Bin switch is now preserved through that short window where the dock is not yet known, and only through it. Nothing new is published for a robot whose dock is genuinely unsupported, and once a live capability update does arrive for a robot it is authoritative — a supported dock keeps the same accessory identity, an unsupported one still removes the switch. Both halves of that rule are pinned by a test.
+
+**The schedule switches.** Reported and fixed by [@pponce](https://github.com/pponce) in [#15](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/15), found in live use of the schedule support he contributed in 3.16.0. A custom schedule name did not survive a restart and the schedule group tile was recreated.
+
+One teardown path was serving two unrelated purposes. Stopping schedule work at a normal Homebridge shutdown and deliberately withdrawing the switches — because the feature was turned off, or the robot removed — ran the same code, and that code removed the Switch services and rewrote the cached accessory topology. For the shutdown case that discarded HomeKit's side of every schedule switch on the way out, every time. The two are now separate: a normal shutdown stops in-memory work and leaves the services exactly as they are, while intentional withdrawal still clears them.
+
+Names and identity are also now kept apart. A schedule service's identity stays its schedule-ID-derived subtype, its generated display name is derived from the vacuum, and a name you set in Home is preserved across refreshes, schedule renumbering and restarts — while a blank or whitespace-only name is repaired to the generated one. A schedule service is removed only when a refresh that is known to have succeeded no longer lists its ID; a failed or untrusted refresh changes nothing, and a schedule merely switched off stays present and off.
+
+No change to cloud request behaviour: no new polling, and the existing cache, coalescing, backoff and post-write verification are untouched. Verified in the field by the reporter across 15 schedule services on two vacuums, including a custom Home name surviving a restart and enable/disable round-tripping to the Roborock app both ways.
+
 ## 3.17.5
 
 **A network outage no longer takes the Roborock account offline until Homebridge is restarted.** Found on the maintainer's own server, which lost DNS for about 75 minutes on 25 August 2026. Every other plugin on that bridge recovered by itself — the Tado platform was making successful API calls again 35 minutes after its last name-resolution error. This one did not. It logged `B01 status has failed 1070 times in a row … the Roborock cloud connection is not available` continuously for **1 hour and 44 minutes after the network was healthy again**, through three scheduled hourly reconnects, and came back only when a plugin update restarted the child bridge — instantly, on the very same saved session, which is what ruled out the credentials and pointed at the reconnect itself.
