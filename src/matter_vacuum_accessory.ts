@@ -83,6 +83,7 @@ type RoborockCleanModePrepOptions = RoborockCommandOptions & {
   // inside a 2.5 second window, so the command carrying the user's clean mode
   // could still be in flight when the start command overtook it (#8).
   prepWindowMs: number;
+  context?: "before starting" | "during cleaning";
 };
 
 // What the prep sequence resolved with. It resolves rather than rejecting on a
@@ -887,6 +888,13 @@ export default class RoborockMatterVacuumAccessory {
       // cannot drift apart: whatever window this class enforces is the window
       // the protocol layer budgets its commands inside.
       prepWindowMs: MATTER_CLEAN_MODE_PREP_TIMEOUT_MS,
+    };
+  }
+
+  private getMatterCleanModeLiveCommandOptions(): RoborockCleanModePrepOptions {
+    return {
+      ...this.getMatterCleanModePrepCommandOptions(),
+      context: "during cleaning",
     };
   }
 
@@ -1780,27 +1788,54 @@ export default class RoborockMatterVacuumAccessory {
       `Matter clean mode request for ${name}: ${newMode ?? "unknown"}.`
     );
 
-    if (this.isSupportedCleanMode(newMode)) {
-      this.rememberCurrentRoborockCleanModeSettings();
-      this.selectedCleanMode = newMode;
-      this.selectedCleanModeNeedsApply = true;
-      this.userSelectedCleanMode = true;
-      // Discard the level remembered from the robot: from here on the user
-      // has said what they want, and an unreadable fan power must fall back
-      // to their choice rather than to what the robot said before it. The
-      // applied-type pin goes for the same reason — it records an older
-      // intent, and this selection supersedes it.
-      this.lastResolvedFanPowerCleanMode = null;
-      this.appliedCleanTypePin = null;
-      const state = {
-        rvcCleanMode: { currentMode: newMode },
-      };
-      this.setAndScheduleOptimisticState(state, "clean mode change");
+    if (!this.isSupportedCleanMode(newMode)) {
+      this.platform.log.warn(
+        `Ignoring unsupported Matter clean mode '${newMode}' for ${name}.`
+      );
       return;
     }
 
-    this.platform.log.warn(
-      `Ignoring unsupported Matter clean mode '${newMode}' for ${name}.`
+    const previousSelection = {
+      selectedCleanMode: this.selectedCleanMode,
+      selectedCleanModeNeedsApply: this.selectedCleanModeNeedsApply,
+      userSelectedCleanMode: this.userSelectedCleanMode,
+      lastResolvedFanPowerCleanMode: this.lastResolvedFanPowerCleanMode,
+      appliedCleanTypePin: this.appliedCleanTypePin,
+    };
+
+    this.rememberCurrentRoborockCleanModeSettings();
+    this.selectedCleanMode = newMode;
+    this.selectedCleanModeNeedsApply = true;
+    this.userSelectedCleanMode = true;
+    // Discard the level remembered from the robot: from here on the user has
+    // said what they want, and an unreadable fan power must fall back to their
+    // choice rather than to what the robot said before it.
+    this.lastResolvedFanPowerCleanMode = null;
+    this.appliedCleanTypePin = null;
+
+    const operationalState = this.getOperationalState();
+    const canApplyLive =
+      operationalState === RVC_OPERATIONAL_STATE.RUNNING ||
+      operationalState === RVC_OPERATIONAL_STATE.PAUSED;
+
+    try {
+      if (canApplyLive) {
+        await this.applyCleanModeDuringRun(newMode);
+      }
+    } catch (error) {
+      this.selectedCleanMode = previousSelection.selectedCleanMode;
+      this.selectedCleanModeNeedsApply =
+        previousSelection.selectedCleanModeNeedsApply;
+      this.userSelectedCleanMode = previousSelection.userSelectedCleanMode;
+      this.lastResolvedFanPowerCleanMode =
+        previousSelection.lastResolvedFanPowerCleanMode;
+      this.appliedCleanTypePin = previousSelection.appliedCleanTypePin;
+      throw error;
+    }
+
+    this.setAndScheduleOptimisticState(
+      { rvcCleanMode: { currentMode: newMode } },
+      "clean mode change"
     );
   }
 
@@ -2851,6 +2886,44 @@ export default class RoborockMatterVacuumAccessory {
    * vacuum-family mode keeps the robot's current suction, a mop-family mode
    * its current water level), so applying pins the clean TYPE and nothing else.
    */
+  private async applyCleanModeDuringRun(cleanMode: number): Promise<void> {
+    const applySettings = this.api.applyMatterCleanModeSettings;
+    if (typeof applySettings !== "function") {
+      throw new Error("Roborock clean-mode control is unavailable.");
+    }
+
+    const settings = this.getRoborockCleanModeSettings(cleanMode);
+    if (!settings) {
+      throw new Error(
+        `No Roborock settings exist for ${this.getCleanModeLabel(cleanMode)}.`
+      );
+    }
+
+    this.platform.log.info(
+      `Applying ${this.getCleanModeLabel(cleanMode)} mode to ${this.getVacuumName()} during cleaning.`
+    );
+
+    const result = await this.withCleanModePrepTimeout(
+      applySettings.call(
+        this.api,
+        this.getDuid(),
+        settings,
+        this.getMatterCleanModeLiveCommandOptions()
+      )
+    );
+
+    if (result?.unconfirmedSettings?.length) {
+      throw new Error(
+        `Roborock did not confirm the ${result.unconfirmedSettings.join(
+          " and "
+        )} during the live clean-mode change.`
+      );
+    }
+
+    this.selectedCleanModeNeedsApply = false;
+    this.appliedCleanTypePin = null;
+  }
+
   private async applyCleanModeBeforeStarting(): Promise<void> {
     const applySettings = this.api.applyMatterCleanModeSettings;
     if (typeof applySettings !== "function") {
