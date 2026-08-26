@@ -77,7 +77,10 @@ describe("Roborock platform device update dispatch (Matter-only)", () => {
       duid: "device-1",
     });
 
-    expect(platform.syncActionSwitches).toHaveBeenCalledWith(devices);
+    expect(platform.syncActionSwitches).toHaveBeenCalledWith(
+      devices,
+      "device-1"
+    );
     expect(
       platform.matterVacuums.get("device-1").notifyDeviceUpdater
     ).not.toHaveBeenCalled();
