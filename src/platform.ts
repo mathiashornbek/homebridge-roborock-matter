@@ -348,10 +348,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       typeof this.roborockAPI.getVacuumList === "function"
         ? this.roborockAPI.getVacuumList()
         : [];
-    this.syncActionSwitches(
-      Array.isArray(devices) ? devices : [],
-      duid
-    );
+    this.syncActionSwitches(Array.isArray(devices) ? devices : [], duid);
   }
 
   private notifyVacuumByDuid(
