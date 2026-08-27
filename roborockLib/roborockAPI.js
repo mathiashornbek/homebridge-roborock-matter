@@ -4753,6 +4753,29 @@ class Roborock {
   }
 
   /**
+   * Say once per Q10 robot that its live room does not come from this loop.
+   *
+   * Once per robot for the same reason the status loop says it once: during a
+   * clean this is reached every ten seconds, and a line repeated that often
+   * stops being read.
+   *
+   * @param {string} duid
+   * @returns {void}
+   */
+  noteB01Q10LiveRoomNotAttempted(duid) {
+    if (!this._b01Q10LiveRoomNoticed) {
+      this._b01Q10LiveRoomNoticed = new Set();
+    }
+    if (this._b01Q10LiveRoomNoticed.has(duid)) {
+      return;
+    }
+    this._b01Q10LiveRoomNoticed.add(duid);
+    this.log.info(
+      `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which sends no reply to a map read, so its live-room position is not fetched and no room is reported during a clean. This is a property of the dialect and not a fault; reading state from the datapoint updates the robot pushes is tracked in issue #19.`
+    );
+  }
+
+  /**
    * Fetch the current SCMap and derive which room the robot is physically
    * inside (currentPose ray-cast against the per-room boundary chains).
    * Called from the B01 status loop while the robot is actively cleaning;
@@ -4772,6 +4795,37 @@ class Roborock {
     if (this.config.enableLiveRoomTracking === false) {
       return null;
     }
+
+    // A Q10 (`ss*`) IS NOT FETCHED AT ALL, for the same reason the status loop
+    // does not poll one — and this is the second loop with that shape, missed
+    // when the first was fixed in 3.19.0.
+    //
+    // `get_map_list` is not in NEUTRAL_RESPONSES and has no Q10 translation,
+    // so the send choke point refuses it by name and throws. The catch below
+    // then counts that refusal as a failure and warns "Live-room map fetch has
+    // failed N times in a row" every fifth one. The refusal is correct; the
+    // failure count is not, because a request whose refusal is certain before
+    // it is asked is not a diagnostic.
+    //
+    // It matters more here than the cadence alone suggests: the live-room loop
+    // runs only while the robot is actively cleaning, so the warning lands in
+    // the log precisely during the operation #14's reporter confirmed working
+    // on the only Q10 in the field.
+    //
+    // Gated at the entry rather than at the call sites because there are two
+    // of them, and the one in `refreshLiveRoomForDevice` gates on `pv ===
+    // "B01"` — which is BOTH dialects, the premise of #19. Returning null is
+    // what the disabled-tracking branch above already returns, so every caller
+    // handles it, and no state entry is allocated.
+    if (
+      b01Q7Adapter.b01FamilyForModel(
+        this.getProductAttribute(duid, "model")
+      ) === b01Q7Adapter.B01_FAMILY.Q10
+    ) {
+      this.noteB01Q10LiveRoomNotAttempted(duid);
+      return null;
+    }
+
     if (!this._b01LiveRoomState) {
       this._b01LiveRoomState = new Map();
     }

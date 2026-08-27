@@ -194,8 +194,17 @@ describe("a live-room channel that keeps failing is not hammered", () => {
   test("the backoff is capped, so the channel is still retried", async () => {
     const { after, cap } = constants();
     const hopeless = gapAfter(after + 40); // 2**40 would be geological
-    expect(await hopeless(cap - 1)).toBe(false);
-    expect(await hopeless(cap + 1)).toBe(true);
+    // Probed a second either side of the cap rather than a millisecond.
+    // `lastAttemptAt` is stamped from the real clock here and the throttle
+    // reads the real clock again inside the call, so the elapsed time the
+    // throttle sees is the requested figure PLUS however long the call takes
+    // to get there. At a 1 ms margin any work added ahead of the throttle —
+    // the Q10 family check now sits there — pushes `cap - 1` over the line and
+    // the assertion flips, which is a property of the test rig rather than of
+    // the backoff. A second still pins a 5-minute cap to within 0.3 %, and the
+    // doubling either side of it is pinned by the test above.
+    expect(await hopeless(cap - 1000)).toBe(false);
+    expect(await hopeless(cap + 1000)).toBe(true);
   });
 
   test("a successful fetch drops straight back to the live cadence", () => {

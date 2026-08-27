@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.19.1
+
+**The live-room loop was polling a Q10 for a map it cannot answer, and counting each refusal as a failure. Same defect 3.19.0 fixed in the status loop, one loop over.**
+
+3.19.0 stopped the dedicated B01 status loop asking a Q10 (`ss*`) for `get_status`. The live-room loop has the same shape and was missed. It sends `get_map_list`, which has no Q10 translation and is not answered neutrally, so the send choke point refuses it by name and throws — correctly. The catch then counted that refusal as a failure and logged `Live-room map fetch has failed N times in a row` at warn level every fifth one.
+
+It reached a Q10 because `refreshLiveRoomForDevice` gates on `pv === "B01"`, and `pv === "B01"` is both dialects — which is the entire premise of [#19](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/19). The Matter accessory drives it whenever the robot is in a cleaning run and `enableMatterServiceArea` is not false, and that setting defaults to on.
+
+**That timing is what makes it worth a release on its own: the live-room loop only runs while the robot is actively cleaning.** The first two attempts are 10 seconds apart before the backoff widens, so the first warning lands roughly two and a half minutes into a clean — during the exact operation [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14)'s reporter had just confirmed working on the only Q10 in the field. A fourth round of chasing this plugin's own designed refusal was one clean away.
+
+A Q10 is now skipped before the request is built, and says once per robot that the dialect sends no reply to a map read, so no room is reported during a clean. No state entry is allocated and `null` is returned — the same answer the disabled-tracking branch already gives, so every caller already handles it. The gate sits at the loop's entry rather than at its two call sites, because one of those call sites is the `pv === "B01"` test that caused this.
+
+A Q7 is unchanged and pinned as such: it is still fetched, an unrecognised B01 model is still treated as a Q7, and a Q7 that genuinely stops answering still raises the warning. The warning is kept off a robot that cannot answer by design, not removed.
+
+The 6-hourly room-name refresh also sends `get_map_list` and is also refused on a Q10, but it logs at debug and is left alone. It wastes a request; it does not tell anyone their robot is failing.
+
 ## 3.19.0
 
 **The B01 Q10 command dialect has now been run on a Q10, and it works. That measurement is the whole reason this goes to `latest`.**
