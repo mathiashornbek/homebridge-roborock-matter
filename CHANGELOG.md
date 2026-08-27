@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+A cloud request that times out without anything having arrived during it now says what its message total actually counts. It used to end with a bare `(8 since startup)`, and that figure is incremented in the MQTT receiver alone — a robot answering on the local socket never touches it, while the 180-second poll chain a reader would compare it against runs over whichever transport is up.
+
+Measured on an S8 Pro Ultra (`roborock.vacuum.a70`) on 27 August 2026: one transient cloud timeout reported `(8 since startup)` after eight and a half hours of polling. Read as a like-for-like ratio that says a link dropping about 95 % of replies; read correctly it says nothing is wrong, because the robot had been answering locally the whole time. The sentence now states that the total covers cloud traffic only and that a low number on a locally-answering robot is normal. A diagnostic that exists to stop wrong conclusions should not hand the reader a ratio that cannot be taken.
+
 ## 3.19.0-beta.1
 
 **Beta channel only — `npm install homebridge-roborock-matter@beta`. This does not go to `latest` and no existing installation will pick it up.** It contains the first implementation of the B01 Q10 command dialect, and there is no Q10 robot available to this project to verify it on. Every datapoint code in it is read from python-roborock, where the docstrings mark them verified live against `ss07` hardware, but none of it has been measured here. Shipping that to everyone on `latest` on the strength of someone else's docstrings would be the same mistake [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14) already cost three rounds of wrong diagnosis.

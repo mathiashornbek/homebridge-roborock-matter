@@ -105,8 +105,41 @@ describe("a cloud timeout says whether the reply ever arrived", () => {
     await expect(
       handler.sendRequest("device-1", "get_status", [])
     ).rejects.toThrow(
-      /No Roborock message reached the plugin from this robot while the request was pending \(7 since startup\)/
+      /No Roborock message reached the plugin from this robot while the request was pending \(7 cloud message\(s\) since startup\)/
     );
+  });
+
+  // The total above is only safe to print if the reader knows what it counts.
+  // It is incremented in the MQTT receiver alone, so replies that came back on
+  // the local socket never appear in it — while the 180 s poll chain a reader
+  // would compare it against runs over whichever transport happens to be up.
+  //
+  // Measured on Mathias' own S8 Pro Ultra (`roborock.vacuum.a70`, 27 Aug 2026
+  // 03:18): a single transient cloud timeout reported "(8 since startup)" after
+  // 8.5 hours of polling. Compared with the poll rate that reads as a link
+  // dropping ~95 % of replies; in fact the robot had been answering locally the
+  // whole time and nothing was wrong. A diagnostic that exists to stop wrong
+  // conclusions must not hand the reader a ratio that cannot be taken.
+  test("says the total counts cloud traffic only, so a locally-answering robot does not read as a dead link", async () => {
+    const adapter = createCloudAdapter({
+      getCloudMessageReceiptCount: jest.fn().mockReturnValue(8),
+    });
+
+    const handler = new messageQueueHandler(adapter);
+
+    const error = await handler.sendRequest("device-1", "get_status", []).then(
+      () => null,
+      (thrown) => thrown
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/8 cloud message\(s\) since startup/);
+    expect(error.message).toMatch(/counts cloud traffic only/);
+    expect(error.message).toMatch(/local socket/);
+    // The point is the absence of an unqualified figure, not the presence of a
+    // caveat next to one: a reader who stops at the parenthesis must not be
+    // able to read the old bare total out of it.
+    expect(error.message).not.toMatch(/\(8 since startup\)/);
   });
 
   test("leaves the timeout unchanged when the adapter cannot count receipts", async () => {

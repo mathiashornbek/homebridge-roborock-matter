@@ -121,7 +121,17 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
     return ` ${duringRequest} Roborock message(s) reached the plugin from this robot while the request was pending, so the link is delivering; the reply was either never sent or not recognised.`;
   }
 
-  return ` No Roborock message reached the plugin from this robot while the request was pending (${total} since startup).`;
+  // The bare total was uninterpretable, and it misleads in the one direction
+  // that matters. This counter is incremented in the MQTT receiver only, so a
+  // robot that answers on the local socket never touches it — yet the poll
+  // chain a reader would compare it against runs over whichever transport is
+  // up. Measured on Mathias' own S8 Pro Ultra (a70, 27 Aug 2026): one cloud
+  // timeout reported "(8 since startup)" after 8.5 hours in which the 180 s
+  // poll had issued hundreds of requests, all answered locally. Read as a
+  // like-for-like ratio that says a 95 % dead link; read correctly it says
+  // nothing is wrong. Say what the number counts so the comparison is not
+  // available to make.
+  return ` No Roborock message reached the plugin from this robot while the request was pending (${total} cloud message(s) since startup). That total counts cloud traffic only — replies over the local socket are never counted here — so a low number on a robot that usually answers locally is normal and is not evidence the link is failing.`;
 }
 
 /**
