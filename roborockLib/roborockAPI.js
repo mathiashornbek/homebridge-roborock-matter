@@ -4353,7 +4353,56 @@ class Roborock {
     return this._b01StatusState?.get(duid)?.lastV1Status || null;
   }
 
+  /**
+   * Say once per Q10 robot that its status does not come from this loop.
+   *
+   * Once per robot rather than once per poll: at the idle cadence the loop
+   * reaches this 144 times an hour, and a line repeated that often stops
+   * being read. The reader's question is not "was a request skipped" but
+   * "why is my tile not updating and where does its state come from" — so the
+   * notice answers that and points at the issue tracking the remaining half.
+   *
+   * @param {string} duid
+   * @returns {void}
+   */
+  noteB01Q10StatusPollNotAttempted(duid) {
+    if (!this._b01Q10StatusNoticed) {
+      this._b01Q10StatusNoticed = new Set();
+    }
+    if (this._b01Q10StatusNoticed.has(duid)) {
+      return;
+    }
+    this._b01Q10StatusNoticed.add(duid);
+    this.log.info(
+      `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which sends no reply to a status read, so the dedicated B01 status loop does not poll it. Its state comes from the home data snapshot over HTTPS instead. This is a property of the dialect and not a fault; reading state from the datapoint updates the robot pushes is tracked in issue #19.`
+    );
+  }
+
   async refreshB01Status(duid, options = {}) {
+    // A Q10 (`ss*`) IS NOT POLLED AT ALL, and that gate belongs here rather
+    // than at the send choke point. The choke point already refuses
+    // `get_status` for a Q10 by name — correctly, since a fire-and-forget
+    // dialect cannot answer a read — but a request refused is still a request
+    // counted: the catch below incremented `consecutiveFailures` on every one
+    // and warned "B01 status has failed N times in a row" every tenth. At the
+    // 25-second idle cadence that is a warning every four minutes about a
+    // robot that is working exactly as designed, which is the same false alarm
+    // #14 spent three rounds chasing. Asking a question whose refusal is
+    // certain before it is asked is not a diagnostic.
+    //
+    // Returning null is what the throttle below already returns, so every
+    // caller handles it; no state entry is allocated either, and
+    // `getLastKnownLiveStatus` answers null for a Q10 as it does for a classic
+    // robot — "nothing known", never a value.
+    if (
+      b01Q7Adapter.b01FamilyForModel(
+        this.getProductAttribute(duid, "model")
+      ) === b01Q7Adapter.B01_FAMILY.Q10
+    ) {
+      this.noteB01Q10StatusPollNotAttempted(duid);
+      return null;
+    }
+
     // Q7/B01 status snapshot via prop.get, mapped to v1-shaped fields and
     // dispatched on the existing live-message path so the Matter accessory
     // updates exactly like it does for classic robots.

@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 3.19.0
+
+**The B01 Q10 command dialect has now been run on a Q10, and it works. That measurement is the whole reason this goes to `latest`.**
+
+[@niclasreich](https://github.com/niclasreich) installed `3.19.0-beta.1` on his Q10 S5 (`roborock.vacuum.ss07`) and reported on 27 August 2026 that the robot starts cleaning from both the Homebridge interface and the Home app, and that commands are accepted. Every datapoint code in the dialect was read from python-roborock's docstrings rather than measured here, and the beta shipped saying so; his robot is the first `ss*` device this project has ever had a result from. Commands, return to dock and the state the tile shows while returning all behave as the dialect predicts.
+
+Nothing in the command path changed between the beta and this release. It is the same code with a field result behind it, which is the only thing the beta was waiting for. Details of what the dialect covers are in the `3.19.0-beta.1` notes below.
+
+**A Q10 is no longer polled for status, and no longer reports its own by-design refusal as a failure.** The dedicated B01 status loop asked every Q10 for `get_status` every 25 seconds. The send choke point refused each one correctly — a fire-and-forget dialect cannot answer a read — but a refused request was still a counted one: each refusal incremented the consecutive-failure tally and every tenth logged `B01 status has failed N times in a row` at warn level. On a healthy Q10 that is a warning every four minutes about a robot doing exactly what its protocol says. It was the first thing the beta put in the one field log this project has, and a diagnostic that fires on a working robot is worse than none — it is the same false alarm that made [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14) take three rounds to diagnose. The loop now skips a Q10 before the request is built and states once, per robot, that the dialect sends no reply, that state comes from home data over HTTPS instead, and where the remaining work is tracked. Asking a question whose refusal is certain before it is asked was never a diagnostic.
+
+A Q7 is unchanged and pinned as such: it is still polled, its answer is still mapped and dispatched, an unrecognised B01 model is still treated as a Q7, and a Q7 that genuinely stops answering still raises the warning. The warning is kept off a robot that cannot answer by design, not removed.
+
+**Known and not fixed by this release: a Q10's tile does not follow the robot into a clean.** State on a Q10 still comes from the home data snapshot, so docked and charging read correctly while a run in progress does not. Reading state from the datapoint updates the robot pushes is the remaining half of [#19](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/19). It is deliberately not in this release: it is the one change that has to touch the incoming MQTT path that Q7 and Q10 share, and bundling it with the promotion of a command path that has exactly one field measurement behind it would risk three working Q7 robots to save a release.
 
 A cloud request that times out without anything having arrived during it now says what its message total actually counts. It used to end with a bare `(8 since startup)`, and that figure is incremented in the MQTT receiver alone — a robot answering on the local socket never touches it, while the 180-second poll chain a reader would compare it against runs over whichever transport is up.
 
