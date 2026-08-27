@@ -15,17 +15,26 @@ const { describeDevice } = require("./describeDevice");
  * matters: an unclassified refusal is logged as a plugin error with a stack,
  * once per poll, for as long as the robot is away. The reason now travels as
  * a code and the prose is free to change.
- */
-/**
+ *
+ * `code` defaults to the transport code because most refusals ARE transport
+ * conditions — an offline robot, a dead cloud link, a missing local socket —
+ * and those must stay visible as warnings. A refusal that reflects what a
+ * robot family can never do is a capability fact instead, and passing
+ * `B01_METHOD_UNSUPPORTED` puts it on `catchError`'s calm branch by
+ * construction rather than leaving each caller to gate itself. Do not widen
+ * that to the transport cases: it would tell a user nothing is wrong while
+ * their robot is unreachable.
+ *
  * @param {string} kind
  * @param {string} message
+ * @param {string} [code]
  * @returns {Error & { code: string, transientKind: string }}
  */
-function refusal(kind, message) {
+function refusal(kind, message, code = "ROBOROCK_TRANSPORT_REFUSED") {
   const error = /** @type {Error & { code: string, transientKind: string }} */ (
     new Error(message)
   );
-  error.code = "ROBOROCK_TRANSPORT_REFUSED";
+  error.code = code;
   error.transientKind = kind;
   return error;
 }
@@ -327,9 +336,16 @@ class messageQueueHandler {
         const q10 = b01Q10Adapter.translateOutgoing(method, params);
 
         if (!q10) {
+          // A capability fact, not a transport fault: this dialect has no
+          // equivalent for the method and never will. Carrying the unsupported
+          // code keeps `catchError` calm BY CONSTRUCTION, so a caller that
+          // reaches here logs debug instead of "Failed to execute …" on warn.
+          // 3.19.0 and 3.19.1 were each one gate for one loop of exactly this
+          // class; the shape of the error is what kept producing them.
           throw refusal(
             "b01 q10 method unsupported",
-            `${describeDevice(this.adapter, duid)} speaks the B01 Q10 dialect, which has no equivalent for ${method}, so it was not sent. The Q10 dialect (${model || "ss*"}) writes numbered datapoints and sends no reply, so a request that exists to read a value cannot be answered over it; see issue #19.`
+            `${describeDevice(this.adapter, duid)} speaks the B01 Q10 dialect, which has no equivalent for ${method}, so it was not sent. The Q10 dialect (${model || "ss*"}) writes numbered datapoints and sends no reply, so a request that exists to read a value cannot be answered over it; see issue #19.`,
+            "B01_METHOD_UNSUPPORTED"
           );
         }
 

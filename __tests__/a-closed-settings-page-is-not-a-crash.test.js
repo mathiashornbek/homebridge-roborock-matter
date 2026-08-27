@@ -146,20 +146,42 @@ describe("a real child on a real closed channel", () => {
       proc.on("exit", (code, signal) => resolve({ code, signal, stderr }));
     });
 
-  test("crashes without the guard — the failure this fixes is real", async () => {
-    const control = await run(child(false));
+  // Both tests below start a REAL Node process and wait for it to exit, so
+  // they are the only tests in the suite whose wall-clock cost is a cold
+  // interpreter start rather than a function call. On jest's default 5 s
+  // timeout that is a coin flip under load: measured 27 Aug 2026, each of two
+  // consecutive full-suite runs failed one of these two tests — a DIFFERENT
+  // one each time — while the file passed 21/21 in 9.5 s on its own. A gate
+  // that fails at random either blocks releases it should not or teaches
+  // whoever reads it to wave failures through, and the second is worse.
+  //
+  // The generous ceiling still fails fast if the guard genuinely breaks: an
+  // unguarded child crashes in milliseconds and a guarded one exits in
+  // milliseconds, so nothing correct comes anywhere near this bound.
+  const CHILD_START_TIMEOUT = 30_000;
 
-    expect(control.code).not.toBe(0);
-    expect(control.stderr).toMatch(/Unhandled 'error' event/);
-  });
+  test(
+    "crashes without the guard — the failure this fixes is real",
+    async () => {
+      const control = await run(child(false));
 
-  test("exits cleanly with the guard, printing no stack trace", async () => {
-    const guarded = await run(child(true));
+      expect(control.code).not.toBe(0);
+      expect(control.stderr).toMatch(/Unhandled 'error' event/);
+    },
+    CHILD_START_TIMEOUT
+  );
 
-    expect(guarded.code).toBe(0);
-    expect(guarded.stderr).not.toMatch(/Unhandled 'error' event/);
-    expect(guarded.stderr).toBe("");
-  });
+  test(
+    "exits cleanly with the guard, printing no stack trace",
+    async () => {
+      const guarded = await run(child(true));
+
+      expect(guarded.code).toBe(0);
+      expect(guarded.stderr).not.toMatch(/Unhandled 'error' event/);
+      expect(guarded.stderr).toBe("");
+    },
+    CHILD_START_TIMEOUT
+  );
 });
 
 describe("the settings-page entry point", () => {

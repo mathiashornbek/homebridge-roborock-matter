@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.19.2
+
+**Two releases in a row gated one caller each against the same defect. This one changes the shape of the error that kept producing them, so the next caller is calm without having to know.**
+
+3.19.0 stopped the status loop polling a Q10 (`ss*`) for a value the dialect cannot return. 3.19.1 did the same for the live-room loop. Both were the same class one loop apart, and a sweep of every send site has since confirmed no third loop is left. What had not been fixed was the reason the class kept surfacing as a warning rather than a debug line.
+
+The send choke point refuses an untranslatable Q10 read correctly and by design. But it built that refusal with `ROBOROCK_TRANSPORT_REFUSED`, and `catchError`'s calm early exit matches only `B01_METHOD_UNSUPPORTED`. So the refusal missed the calm branch, picked up the transient-warning path, and came out as `Failed to execute get_status on robot … Future transient warnings for this robot will be logged at most once every 360 minutes` — a line that reads as a failing robot when the plugin declined to send by design.
+
+**A Q10 having no equivalent for a read is a capability fact, not a transport fault.** It is permanent, identical for every Q10, and the same kind of condition as the B01/Q7 unsupported-method case that has always logged at debug. It now carries the unsupported code, so any caller that reaches it is quiet by construction rather than by remembering to gate itself.
+
+**The reclassification is deliberately narrow, and the guard is part of the change.** The same helper builds three genuine transport refusals — an offline robot, an unavailable cloud link, a missing local socket — and those must stay warnings, because for those the robot really is unreachable and the user does need to know. Only the dialect-capability refusal is reclassified; the three transport refusals are pinned by tests that fail if a future change widens it.
+
+One existing test asserted the old code. It was not wrong about the code — the code was the defect — and its two message assertions are untouched.
+
+**A flaky test in the release gate is fixed, and it was found by this release rather than reported.** Two tests start a real Node child process and wait for it to exit, on jest's default 5-second timeout — the only tests in the suite whose cost is a cold interpreter start. Under full-suite load that is a coin flip: two consecutive runs each failed one of the two, a different one each time, while the file passed 21 of 21 in nine seconds on its own. Both now carry an explicit ceiling generous enough that only a genuine hang reaches it, and the suite-wide default is raised from jest's 5 seconds to 20 seconds because the class is wider than those two — a socket test connecting to a closed port failed the next run for the same reason. Twenty seconds is roughly 220 times the suite's mean test, so a test that reaches it is stuck rather than unlucky. A gate that fails at random either blocks releases it should not or teaches whoever reads it to wave failures through, and the second is the worse outcome.
+
+Troubleshooting documentation for the Apple Home "Updating…" / "No Response" tile is corrected on two points, both from field reports rather than reasoning. An iOS update is no longer presented as the confirmed cure: one reporter's tile has stayed up since 26.6.1, while another on the same version has watched it lapse and return for six months, so restarting the affected Apple device is now the remedy the page leads with. And a note explains why the symptom appears on a robot vacuum and no other accessory — Apple Home requires a vacuum to be its own Matter node, so it is the only accessory Homebridge publishes outside the bridge, and therefore the only one whose subscription can die alone.
+
 ## 3.19.1
 
 **The live-room loop was polling a Q10 for a map it cannot answer, and counting each refusal as a failure. Same defect 3.19.0 fixed in the status loop, one loop over.**

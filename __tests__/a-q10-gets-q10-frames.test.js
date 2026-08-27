@@ -190,7 +190,18 @@ describe("a Q10 gets Q10 frames", () => {
     }
   );
 
-  test("a refusal is still transient, so it is throttled rather than stack-traced", async () => {
+  // This test asserted `ROBOROCK_TRANSPORT_REFUSED` until 3.19.2. It was not
+  // wrong about the code; the code itself was the defect. Shaped as a
+  // transport fault, the refusal missed `catchError`'s calm branch and every
+  // caller that reached it printed `Failed to execute …` on warn — which is
+  // what 3.19.0 and 3.19.1 each gated one caller at a time. The dialect
+  // having no equivalent for a read is a capability fact, so it now carries
+  // the unsupported code and is calm by construction. The intent of this test
+  // is unchanged and its two message assertions are untouched; only the
+  // mechanism it checks got stronger. Full contract, including the guard that
+  // genuine transport refusals still warn:
+  // __tests__/a-q10-read-refusal-is-calm-by-construction.test.js
+  test("a refusal is a capability fact, so it is calm rather than stack-traced", async () => {
     const adapter = createB01Adapter("roborock.vacuum.ss07");
     const handler = new messageQueueHandler(adapter);
 
@@ -198,7 +209,7 @@ describe("a Q10 gets Q10 frames", () => {
       .sendRequest("duid-q10", "get_status", [])
       .catch((caught) => caught);
 
-    expect(error.code).toBe("ROBOROCK_TRANSPORT_REFUSED");
+    expect(error.code).toBe("B01_METHOD_UNSUPPORTED");
     expect(error.message).not.toMatch(/timed out/);
     expect(error.message).not.toMatch(/MQTT connection state/);
   });
