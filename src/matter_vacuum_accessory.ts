@@ -1445,9 +1445,6 @@ export default class RoborockMatterVacuumAccessory {
 
   async notifyDeviceUpdater(id: string, data: unknown): Promise<void> {
     if (id === "HomeData" || id === "RoomMapping") {
-      if (id === "HomeData") {
-        this.rememberHomeDataStatus(data);
-      }
       await this.updateMatterStateFromRoborock();
       return;
     }
@@ -4316,44 +4313,6 @@ export default class RoborockMatterVacuumAccessory {
       this.liveStatus.set(property, value);
       this.liveStatusUpdatedAt = Date.now();
     }
-  }
-
-  private rememberHomeDataStatus(data: unknown): void {
-    const message = this.asRecord(data);
-    const value = message?.val;
-    if (typeof value !== "string") {
-      return;
-    }
-
-    let homeData: unknown;
-    try {
-      homeData = JSON.parse(value);
-    } catch {
-      return;
-    }
-
-    const home = this.asRecord(homeData);
-    const devices = Array.isArray(home?.devices) ? home.devices : [];
-    const device = devices
-      .map((entry) => this.asRecord(entry))
-      .find((entry) => entry?.duid === this.getDuid());
-    const deviceStatus = this.asRecord(device?.deviceStatus);
-    if (!deviceStatus) {
-      return;
-    }
-
-    this.rememberLiveStatus(
-      "state",
-      this.getNumberFromValue(deviceStatus.state)
-    );
-    this.rememberLiveStatus(
-      "battery",
-      this.getNumberFromValue(deviceStatus.battery)
-    );
-    this.rememberLiveStatus(
-      "charge_status",
-      this.getNumberFromValue(deviceStatus.charge_status)
-    );
   }
 
   private getNumberStatus(property: string): number | null {
