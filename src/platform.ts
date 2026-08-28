@@ -1609,7 +1609,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       ...(accessory.features || {}),
       rvcCleanMode: {
         ...(accessory.features?.rvcCleanMode || {}),
-        directModeChange: true,
+        directModeChange: this.platformConfig.enableMatterCleanMode !== false,
       },
     };
     accessory.context = { ...(accessory.context || {}), duid };
