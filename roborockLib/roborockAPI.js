@@ -117,6 +117,45 @@ function liveRoomFetchGapMs(consecutiveFailures) {
   );
 }
 
+// Rooms rarely change, so a successful room-list refresh is good for 6 hours.
+const B01_ROOM_REFRESH_GAP_MS = 6 * 60 * 60 * 1000;
+
+// The same reasoning as the live-room backoff above, one loop further out. The
+// 6-hour stamp is written only on success, so a robot whose map channel is down
+// falls through to the periodic poller's own cadence — 180 s by default — and
+// spends a real `get_map_list` plus a map read that waits out its full 20 s
+// timeout, 480 times a day, for a room list that is not going to arrive.
+//
+// The first failure is deliberately NOT slowed: a single lost frame on a
+// healthy channel must not cost a room list, the same rule the live-room gap
+// follows. Past that the gap doubles from two poll cycles — a gap equal to the
+// cadence that produced the failure would delay nothing — and the cap stays far
+// below the 6-hour success cadence so a channel that comes back is picked up in
+// the same half hour rather than at the next scheduled refresh.
+const ROOM_REFRESH_BACKOFF_AFTER = 1;
+const B01_ROOM_REFRESH_RETRY_BASE_MS = 180000; // one periodic poll
+const B01_ROOM_REFRESH_RETRY_MAX_MS = 1800000; // 30 min
+
+/**
+ * Required gap before the next room-list refresh attempt, given how many
+ * attempts in a row have already failed.
+ * @param {number} [consecutiveFailures]
+ * @returns {number}
+ */
+function roomRefreshRetryGapMs(consecutiveFailures) {
+  const over = Number(consecutiveFailures) - ROOM_REFRESH_BACKOFF_AFTER;
+  if (!Number.isFinite(over) || over <= 0) {
+    return 0;
+  }
+  // Doubling starts at two poll cycles, not one: a gap equal to the cadence
+  // that produced the failure delays nothing, so the first widened step has to
+  // clear it to be a step at all.
+  return Math.min(
+    B01_ROOM_REFRESH_RETRY_BASE_MS * 2 ** over,
+    B01_ROOM_REFRESH_RETRY_MAX_MS
+  );
+}
+
 /**
  * Zero the counters that describe THIS run. clearLiveRoomForDevice runs at
  * every run boundary and its stated job is to stop state leaking into the next
@@ -4663,40 +4702,98 @@ class Roborock {
    * service.upload_by_mapid -> MAP_RESPONSE (protocol 301) -> AES-ECB/zlib
    * decode -> SCMap protobuf -> {roomId, roomName}. Rooms rarely change, so
    * refreshes are throttled to once per 6 hours unless forced.
+   *
+   * The 6-hour stamp is written only on SUCCESS, which is right for the happy
+   * path and was the whole story for a refresh that cannot succeed: a robot
+   * that never completes one never closes the throttle either, so it is asked
+   * again by every periodic poll. Both cases below exist to bound that.
+   * @param {string} duid
+   * @param {{force?: boolean}} [options]
+   * @returns {Promise<any[]>}
    */
   async refreshB01Rooms(duid, options = {}) {
+    // A Q10 (`ss*`) IS NOT FETCHED AT ALL — the third loop of this shape, after
+    // the status loop (3.19.0) and the live-room loop (3.19.1). `get_map_list`
+    // is not in NEUTRAL_RESPONSES and has no Q10 translation, so the send choke
+    // point refuses it by name and throws B01_METHOD_UNSUPPORTED. The caller
+    // catches that at debug level, so it is quiet — but the refusal is certain
+    // before the request is asked, and because it never succeeds the 6-hour
+    // throttle below is never stamped. A Q10 therefore repeats a designed
+    // refusal on every poll for as long as the plugin runs.
+    //
+    // Gated at the entry rather than at the two call sites for the same reason
+    // `refreshB01LiveRoom` is: both of them reach here through
+    // `refreshMatterServiceAreaRoomMappings`, which gates on `isB01Protocol` —
+    // and that is BOTH dialects, the premise of #19. Returning the cache is
+    // what the throttled path above already returns, so every caller handles
+    // it, and no failure state is allocated for a request never made.
+    if (
+      b01Q7Adapter.b01FamilyForModel(
+        this.getProductAttribute(duid, "model")
+      ) === b01Q7Adapter.B01_FAMILY.Q10
+    ) {
+      return this.getB01RoomCache(duid);
+    }
+
     if (!this._b01RoomRefreshAt) {
       this._b01RoomRefreshAt = new Map();
     }
     const lastAt = this._b01RoomRefreshAt.get(duid) || 0;
-    if (!options.force && Date.now() - lastAt < 6 * 60 * 60 * 1000) {
+    if (!options.force && Date.now() - lastAt < B01_ROOM_REFRESH_GAP_MS) {
       return this.getB01RoomCache(duid);
     }
 
-    const mapListData = await this.messageQueueHandler.sendRequest(
-      duid,
-      "get_map_list",
-      {}
-    );
-    const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
-    if (mapId === null) {
-      this.log.debug(`No B01 map available yet for ${duid}; rooms deferred.`);
+    if (!this._b01RoomRefreshFailures) {
+      this._b01RoomRefreshFailures = new Map();
+    }
+    const failureState = this._b01RoomRefreshFailures.get(duid);
+    if (
+      !options.force &&
+      failureState &&
+      Date.now() - failureState.lastAttemptAt <
+        roomRefreshRetryGapMs(failureState.consecutiveFailures)
+    ) {
       return this.getB01RoomCache(duid);
     }
 
-    const rawPayload = await this.sendB01MapRequest(duid, mapId);
-    const serial = this.getVacuumDeviceInfo(duid, "sn");
-    const model = this.getProductAttribute(duid, "model");
-    const mapKey = b01Q7Adapter.createMapKey(serial, model);
-    const scMap = b01Q7Adapter.decodeMapPayload(rawPayload, mapKey);
-    const rooms = b01Q7Adapter.parseRoomsFromScMap(scMap);
+    try {
+      const mapListData = await this.messageQueueHandler.sendRequest(
+        duid,
+        "get_map_list",
+        {}
+      );
+      const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+      if (mapId === null) {
+        // A reply arrived, so the channel is up; there is simply no map yet.
+        // That is not a failure and must not accrue a backoff, or a robot
+        // still building its first map would be asked ever more rarely
+        // precisely while the answer is about to become available.
+        this._b01RoomRefreshFailures.delete(duid);
+        this.log.debug(`No B01 map available yet for ${duid}; rooms deferred.`);
+        return this.getB01RoomCache(duid);
+      }
 
-    this._b01RoomRefreshAt.set(duid, Date.now());
-    await this.setB01RoomCache(duid, rooms);
-    this.log.info(
-      `B01 rooms for ${this.describeDevice(duid)}: ${rooms.length ? rooms.map((room) => `${room.roomName || "?"} (${room.roomId})`).join(", ") : "none reported"}.`
-    );
-    return rooms;
+      const rawPayload = await this.sendB01MapRequest(duid, mapId);
+      const serial = this.getVacuumDeviceInfo(duid, "sn");
+      const model = this.getProductAttribute(duid, "model");
+      const mapKey = b01Q7Adapter.createMapKey(serial, model);
+      const scMap = b01Q7Adapter.decodeMapPayload(rawPayload, mapKey);
+      const rooms = b01Q7Adapter.parseRoomsFromScMap(scMap);
+
+      this._b01RoomRefreshFailures.delete(duid);
+      this._b01RoomRefreshAt.set(duid, Date.now());
+      await this.setB01RoomCache(duid, rooms);
+      this.log.info(
+        `B01 rooms for ${this.describeDevice(duid)}: ${rooms.length ? rooms.map((room) => `${room.roomName || "?"} (${room.roomId})`).join(", ") : "none reported"}.`
+      );
+      return rooms;
+    } catch (error) {
+      this._b01RoomRefreshFailures.set(duid, {
+        lastAttemptAt: Date.now(),
+        consecutiveFailures: (failureState?.consecutiveFailures || 0) + 1,
+      });
+      throw error;
+    }
   }
 
   async sendB01MapRequest(duid, mapId) {

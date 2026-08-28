@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.19.5
+
+**A room-list refresh that cannot succeed is no longer re-attempted by every periodic poll. On a Q10 it is not attempted at all, and on a Q7 whose map channel is down it now backs off instead of running 480 guaranteed-to-fail map reads a day.**
+
+Room names on B01 robots come from the map channel, and because rooms rarely change a successful fetch is good for six hours. That six-hour stamp was written only on success — correct for the happy path, and the whole story for a refresh that never completes one. A robot that cannot answer never closes the throttle, so it was asked again by every periodic poll for as long as the plugin ran.
+
+**On a Q10 (`ss*`) the answer could never arrive.** `get_map_list` has no Q10 translation, so the send choke point refuses it by name before anything reaches the wire. That refusal is correct and is caught quietly at debug level, but it is certain before the request is made, and it was being repeated every three minutes forever. This is the third loop of that exact shape: the status loop was gated in 3.19.0 and the live-room loop in 3.19.1, and this one was missed both times. It is now gated at the same place and for the same reason — at the function entry, because both call sites reach it through a check that matches _both_ B01 dialects.
+
+**On a Q7 (`sc*`) the request is not refused, so the same missing guard cost real work.** A robot whose map channel is down ran a `get_map_list` on the wire plus a map read that waited out its full 20-second timeout, once per poll cycle — roughly 480 attempts a day for a room list that was not going to arrive, and in the uncached case it delayed the rest of the poll chain by that timeout each time.
+
+Repeated failures now widen the gap, following the same rule the live-room fetch already used. The first failure is deliberately not slowed, so a single lost frame on a healthy channel still costs nothing. Past that the gap doubles from two poll cycles and is capped at 30 minutes, which stays far below the six-hour success cadence — a channel that comes back is picked up within the same half hour rather than at the next scheduled refresh. A success clears the accumulated penalty outright.
+
+A reply that arrives but reports no current map is explicitly not counted as a failure. That is a robot still building its first map, and it must not be asked ever more rarely precisely while the answer is about to become available.
+
+This changes retry timing only. No new request is introduced, and nothing is published to Apple Home that was not published before.
+
 ## 3.19.4
 
 **An unmapped `error_code` is now logged with the state the robot was in when it appeared, because these codes turn out to describe transitions rather than faults — and a bare number cannot be reported usefully or mapped later.**
