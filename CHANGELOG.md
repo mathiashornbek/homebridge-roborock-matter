@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.19.3
+
+**A periodic cloud snapshot could overwrite live status with its own slightly older view, so a robot mid-clean briefly showed as docked. Reported with a measured sequence by [@jbyhb](https://github.com/jbyhb) in [#20](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/20).**
+
+During an active clean an S7 published 99% / running, a periodic HomeData refresh then published 88% / stopped, and the next live frame restored 99% / running one second later. No robot loses and regains 11% of its battery in a second, so the two readings were not a sequence of events — they were two views of the same moment, and the slower one won.
+
+**The cause is that HomeData was being promoted into the live cache.** Status reads prefer the live cache while it is fresh and fall back to the cloud snapshot once it is not, which is the right order. But parsing a HomeData poll into that cache also stamped it with the current time, so the poll presented itself as the newest live reading. Its values then took precedence over the genuinely newer transport frames until the next one arrived — and the freshness window it reset is the same one that decides whether live data is trusted at all.
+
+HomeData is no longer written into the live cache. It stays what it is: the fallback. The 15-minute staleness window is unchanged, so if live reporting genuinely goes quiet the snapshot still takes over and the tile still self-heals — that path is now pinned by a test that advances the clock past the window and asserts the snapshot wins, so this fix cannot quietly turn into a stale tile pinned forever.
+
+This corrects reporting only. It adds no command path and cannot move the robot.
+
+Troubleshooting documentation for the Apple Home "Updating…" tile is revised again, and this time it makes the remedy stronger rather than weaker. The reporter in [#7](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/7) clarified when his tile recovered during six months of chasing it: only ever immediately after installing an iOS release, perhaps twice, and never spontaneously. Installing a release restarts the device. So the recoveries that read as version fixes are the same restart step 1 already recommends, and the page now says so — including the part that matters to anyone living with it, which is that a restart buys days to a week rather than a permanent fix.
+
 ## 3.19.2
 
 **Two releases in a row gated one caller each against the same defect. This one changes the shape of the error that kept producing them, so the next caller is calm without having to know.**
