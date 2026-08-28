@@ -1277,17 +1277,45 @@ export default class RoborockMatterVacuumAccessory {
    * Once, because these codes linger: 2105 was present on every poll of 2
    * robots for the whole evening it was found, and a line per poll would bury
    * the log the way the ioBroker leftover did before 3.11.2 removed it.
+   *
+   * WHY THE LINE NAMES THE ROBOT'S STATE, AND IT IS A MEASUREMENT RATHER THAN
+   * A PREFERENCE. On 28 Aug 2026 the maintainer's 2 B01/sc05 robots produced 3
+   * distinct unmapped codes in a single log, and every one of them turned out
+   * to be tied to a state transition rather than to a fault: 2105 only while
+   * docked and charging at 100 %, 2110 one second after a run started
+   * (operationalState 1), 2104 on the way back to the dock
+   * (operationalState 64). Nothing was wrong with any of the 3 robots at any
+   * point — the run completed and they docked.
+   *
+   * Establishing that took hand-correlating each code against the neighbouring
+   * `Matter publish for …` lines in a 2574-line log, because the line itself
+   * carried only a number. A user filing a model report pastes the one line,
+   * so the context that makes the number mappable never arrives — and this
+   * plugin has 4 open model issues whose whole content is data like this.
+   *
+   * It also makes the line's own question answerable. "If the robot really is
+   * in trouble right now" is unanswerable from a bare number, and asking it
+   * while the robot is demonstrably cleaning normally invites a false report.
+   *
+   * The dedupe key stays the code alone rather than code-and-state. Keying on
+   * both would name a lingering code once per transition it survives, which is
+   * exactly the per-poll burial the "once" above exists to prevent; today's 3
+   * codes each appeared in exactly 1 state, so the extra key would have bought
+   * nothing and risked the guarantee.
    */
   private reportUnmappedErrorCode(errorCode: number): void {
     if (this.reportedUnmappedErrorCodes.has(errorCode)) {
       return;
     }
     this.reportedUnmappedErrorCodes.add(errorCode);
+    const robotState = this.getNumberStatus("state");
     this.platform.log.info(
-      `${this.getVacuumName()} reports error_code ${errorCode}, which this plugin has no mapping for. ` +
+      `${this.getVacuumName()} reports error_code ${errorCode} while its state is ` +
+        `${robotState ?? "unknown"} (Matter operationalState ${this.getOperationalState()}), ` +
+        "which this plugin has no mapping for. " +
         "Nothing is published to Apple Home for it, because an unrecognised code is as likely to be " +
         "informational as it is to be a fault. If the robot really is in trouble right now, please report " +
-        "the number and what the Roborock app says: " +
+        "the number, the state named above, and what the Roborock app says: " +
         "https://github.com/mathiashornbek/homebridge-roborock-matter/issues"
     );
   }

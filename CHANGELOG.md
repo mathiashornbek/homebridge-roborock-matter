@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.19.4
+
+**An unmapped `error_code` is now logged with the state the robot was in when it appeared, because these codes turn out to describe transitions rather than faults — and a bare number cannot be reported usefully or mapped later.**
+
+When a robot reports an `error_code` this plugin has no entry for, nothing is published to Apple Home and the number is named once in the log so it can be reported and mapped. That behaviour is unchanged and correct. What was missing was the context that makes the number mean anything.
+
+Three distinct unmapped codes appeared on two B01/sc05 robots in a single log during one ordinary scheduled run, and each one was tied to a state change: 2105 only while docked and charging at 100%, 2110 one second after the run started, 2104 on the way back to the dock. Nothing was wrong with any of the robots — the run started, ran and docked normally. Establishing that required hand-correlating each code against the neighbouring publish lines across a 2574-line log. Someone filing a model report pastes the one line, so that context never arrived with it.
+
+The line now names the robot's own state number and the Matter operational state derived from it. It also makes its own question answerable: "if the robot really is in trouble right now" cannot be judged from a number alone, and it was being asked while a robot was demonstrably cleaning normally.
+
+The once-per-code-per-robot-per-run rule is deliberately unchanged. Keying the de-duplication on code _and_ state would name a lingering code again at every transition it survived, which is the per-poll log burial that rule exists to prevent.
+
+No mapping is claimed for 2104, 2105 or 2110. They are still published as nothing, which remains the right answer for a number nobody has explained.
+
 ## 3.19.3
 
 **A periodic cloud snapshot could overwrite live status with its own slightly older view, so a robot mid-clean briefly showed as docked. Reported with a measured sequence by [@jbyhb](https://github.com/jbyhb) in [#20](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/20).**

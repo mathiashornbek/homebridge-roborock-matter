@@ -44,6 +44,8 @@ const HIGHEST_MATTER_1_2_ERROR = 71;
 
 const ROBOROCK_STATE_CHARGING = 8;
 const ROBOROCK_STATE_IN_ERROR = 12;
+const ROBOROCK_STATE_CLEANING = 5;
+const ROBOROCK_STATE_RETURNING = 6;
 
 function createPlatform({ status = {}, matterUpdates = [], faults } = {}) {
   const publish = jest.fn(async (uuid, cluster, attributes) => {
@@ -166,6 +168,63 @@ describe("a robot that stopped says what stopped it", () => {
             line.includes("issues")
         )
     ).toBe(true);
+  });
+
+  // Every unmapped code the maintainer's own B01/sc05 robots have produced,
+  // with the state each was actually measured in on 28 Aug 2026. None of the 3
+  // was a fault: the run started, ran and docked normally. The codes are tied
+  // to state transitions, which is precisely why a bare number cannot be
+  // mapped and why the line has to carry the state with it.
+  const MEASURED_UNMAPPED_CODES = [
+    ["docked and charging", 2105, ROBOROCK_STATE_CHARGING],
+    ["one second into a run", 2110, ROBOROCK_STATE_CLEANING],
+    ["on the way back to the dock", 2104, ROBOROCK_STATE_RETURNING],
+  ];
+
+  test.each(MEASURED_UNMAPPED_CODES)(
+    "an unmapped code seen %s names the state it was seen in",
+    async (_label, code, robotState) => {
+      const { platform } = await publishWith({
+        state: robotState,
+        battery: 100,
+        error_code: code,
+      });
+
+      const named = platform.log.info.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes(`error_code ${code}`));
+
+      expect(named).toHaveLength(1);
+      expect(named[0]).toContain(`state is ${robotState}`);
+    }
+  );
+
+  test("the operationalState in the unmapped-code line is the one published", async () => {
+    // Cross-checked against the publish line rather than pinned to a number,
+    // because the derived state depends on user toggles. What must hold is
+    // that a model report and the tile it describes cannot disagree.
+    const { vacuum, platform } = buildVacuum({
+      status: {
+        state: ROBOROCK_STATE_CLEANING,
+        battery: 100,
+        error_code: 2110,
+      },
+    });
+    await vacuum.updateMatterStateFromRoborock("test");
+
+    const reported = platform.log.info.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes("error_code 2110"));
+    const published = publishLines(platform).at(-1);
+
+    expect(reported).toBeDefined();
+    expect(published).toBeDefined();
+
+    const reportedState = /Matter operationalState (\d+)/.exec(reported)?.[1];
+    const publishedState = /operationalState=(\d+)/.exec(published)?.[1];
+
+    expect(reportedState).toBeDefined();
+    expect(reportedState).toBe(publishedState);
   });
 
   test("the unmapped code is named once, not once per poll", async () => {
