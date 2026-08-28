@@ -1300,16 +1300,16 @@ describe("Matter live status cache", () => {
     ).toBe(1); // RUNNING
   });
 
-  test("lets a newer HomeData docked snapshot replace a stale live cleaning state", async () => {
+  test("does not let periodic HomeData overwrite fresh live status", async () => {
     const matterUpdates = [];
     const platform = createPlatform({
       matterUpdates,
-      status: { state: 8, battery: 100 },
+      status: { state: 8, battery: 88 },
     });
     const { accessory, vacuum } = createAccessory(platform, true);
 
     await vacuum.notifyDeviceUpdater("LocalMessage", [
-      { state: 5, battery: 100 },
+      { state: 5, battery: 99 },
     ]);
     expect(
       await accessory.getState("rvcOperationalState", "operationalState")
@@ -1321,25 +1321,51 @@ describe("Matter live status cache", () => {
         devices: [
           {
             duid: "device-1",
-            deviceStatus: { state: "8", battery: "100" },
+            deviceStatus: { state: "8", battery: "88" },
+          },
+        ],
+      }),
+    });
+
+    // This is the field sequence measured on an S7: a periodic HomeData poll
+    // briefly published 88% / stopped over a live 99% / running status, then a
+    // live frame corrected it one second later. HomeData is a fallback, not a
+    // live event, so a poll must not replace or refresh the live cache.
+    expect(
+      matterUpdates.some(
+        (update) =>
+          update.cluster === "rvcOperationalState" &&
+          update.attributes.operationalState === RVC_OPERATIONAL_STATE_DOCKED
+      )
+    ).toBe(false);
+    expect(
+      await accessory.getState("rvcOperationalState", "operationalState")
+    ).toBe(RVC_OPERATIONAL_STATE_RUNNING);
+    expect(await accessory.getState("powerSource", "batPercentRemaining")).toBe(
+      198
+    );
+
+    // If the live transport actually goes quiet, the existing staleness
+    // window still lets HomeData recover the tile instead of pinning an old
+    // live value forever.
+    vacuum.liveStatusUpdatedAt = Date.now() - 16 * 60 * 1000;
+    await vacuum.notifyDeviceUpdater("HomeData", {
+      val: JSON.stringify({
+        devices: [
+          {
+            duid: "device-1",
+            deviceStatus: { state: "8", battery: "88" },
           },
         ],
       }),
     });
 
     expect(
-      matterUpdates.find((update) => update.cluster === "rvcRunMode").attributes
-        .currentMode
-    ).toBe(RUN_MODE_IDLE);
-    // Docked at 100% publishes DOCKED now that Charging/Docked defaults on.
-    // The subject is that the newer snapshot displaces the stale live value.
-    expect(
-      matterUpdates.find((update) => update.cluster === "rvcOperationalState")
-        .attributes.operationalState
-    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
-    expect(
       await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
+    ).toBe(RVC_OPERATIONAL_STATE_CHARGING);
+    expect(await accessory.getState("powerSource", "batPercentRemaining")).toBe(
+      176
+    );
   });
 });
 
