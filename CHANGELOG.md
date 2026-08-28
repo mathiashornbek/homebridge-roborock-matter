@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.19.6
+
+**The periodic poll no longer carries a cloud firmware check whose answer nothing reads. The check has in fact never run — a missing `await` disabled it — and the tempting one-character repair would have added roughly 480 discarded cloud round-trips per robot per day.**
+
+`checkForNewFirmware()` sat in the poll chain and asked the Roborock cloud for `ota/firmware/<duid>/updatev2` once per robot per poll interval. Its own gate read `const isLocalDevice = !this.isRemoteDevice(duid)`, and `isRemoteDevice` is `async`. Negating a promise is false for every promise there has ever been, so the gate never opened and the body behind it has been unreachable for the life of this plugin. Every other caller of that method awaits it; this one line did not.
+
+Adding the missing `await` was the obvious repair and it was the wrong one. The request's result goes to `setObjectNotExistsAsync`, which is a documented no-op here, and to `setStateAsync("Devices.<duid>.updateStatus.<field>")`, which nothing in the plugin, the settings UI or the diagnostics export ever reads. The firmware revision Apple Home shows comes from a different source entirely — the `fv` field in HomeData. So the repair would have bought an awaited HTTPS round-trip on the poll thread, per robot, every three minutes, for an answer with no reader, plus a `catchError` path able to log a warning once per poll whenever the OTA endpoint was unhappy. That is the same never-throttled retry loop that 3.19.0, 3.19.1 and 3.19.5 each closed one instance of, and it would have been introduced rather than found.
+
+The call and the unreachable method are removed instead. Because the code could never execute, this changes no runtime behaviour on any robot: the same requests go out, the same values reach Apple Home, and nothing that had a reader lost one.
+
+What is new is the guard. A test now pins the outcome rather than the implementation — a periodic poll may spend no cloud round-trip on an answer no one can read — and it was verified by applying the naive `await` and watching it go red at exactly 480 requests per simulated day.
+
 ## 3.19.5
 
 **A room-list refresh that cannot succeed is no longer re-attempted by every periodic poll. On a Q10 it is not attempted at all, and on a Q7 whose map channel is down it now backs off instead of running 480 guaranteed-to-fail map reads a day.**

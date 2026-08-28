@@ -3310,8 +3310,6 @@ class Roborock {
 
       await this.pollParameter(duid, vacuum, "get_timer", isB01);
 
-      await this.checkForNewFirmware(duid);
-
       switch (robotModel) {
         case "roborock.vacuum.s4":
         case "roborock.vacuum.s5":
@@ -3695,53 +3693,6 @@ class Roborock {
             "Devices." + duid + ".deviceInfo." + deviceAttribute,
             { val: devices[device][deviceAttribute], ack: true }
           );
-        }
-      }
-    }
-  }
-
-  async checkForNewFirmware(duid) {
-    const isLocalDevice = !this.isRemoteDevice(duid);
-
-    if (isLocalDevice) {
-      this.log.debug(`getting firmware status`);
-      if (this.api) {
-        try {
-          const update = await this.api.get(`ota/firmware/${duid}/updatev2`);
-
-          await this.setObjectNotExistsAsync(
-            "Devices." + duid + ".updateStatus",
-            {
-              type: "folder",
-              common: {
-                name: "Update status",
-              },
-              native: {},
-            }
-          );
-
-          for (const state in update.data.result) {
-            await this.setObjectNotExistsAsync(
-              "Devices." + duid + ".updateStatus." + state,
-              {
-                type: "state",
-                common: {
-                  name: state,
-                  type: this.getType(update.data.result[state]),
-                  role: "value",
-                  read: true,
-                  write: false,
-                },
-                native: {},
-              }
-            );
-            this.setStateAsync("Devices." + duid + ".updateStatus." + state, {
-              val: update.data.result[state],
-              ack: true,
-            });
-          }
-        } catch (error) {
-          this.catchError(error, "checkForNewFirmware()", duid);
         }
       }
     }

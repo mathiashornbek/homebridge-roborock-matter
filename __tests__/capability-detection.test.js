@@ -96,7 +96,6 @@ describe("capability-derived poll profile for unknown models", () => {
   function createHarness({ featureList }) {
     const api = createApi();
     api.getProductAttribute = jest.fn(() => "roborock.vacuum.a999");
-    api.checkForNewFirmware = jest.fn(async () => undefined);
     api.vacuums["duid-x"] = featureList
       ? { features: { getFeatureList: () => featureList } }
       : {};

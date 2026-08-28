@@ -34,7 +34,6 @@ function createHarness({ protocolVersion, model = "roborock.vacuum.sc05" }) {
   });
   api.getProductAttribute = jest.fn(() => model);
   api.getRobotVersion = jest.fn(async () => protocolVersion);
-  api.checkForNewFirmware = jest.fn(async () => undefined);
   api.refreshMatterServiceAreaRoomMappings = jest.fn(async () => false);
   api.vacuums["duid-q7"] = {
     features: { getFeatureList: () => ({ isCarpetSupported: true }) },
