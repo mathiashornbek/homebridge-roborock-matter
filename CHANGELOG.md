@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.19.8
+
+**A recovery line now names only a failure the log actually announced — and the test that says so had been failing on disk, uncommitted, for 3 days.**
+
+Two things, and the second is the more uncomfortable.
+
+**The log rule.** A B01 status attempt is logged at debug until the 10th consecutive failure, but the _recovery_ was announced at info from the first. With debug off, which is the default, a single transient miss that healed on the next tick told the user a channel had recovered from a problem they were never told about. On a robot with a flaky link that is a steady drip of good news about invisible bad news. The recovery is now announced exactly when the failure was — and no more than that, because a streak that did reach the warning must still get its closing line, or the log's last word on the channel stays "broken" long after it healed. The same rule was already written down in this file's own neighbour, `noteLiveRoomFetchRecovered`, whose doc comment says to announce a recovery exactly when the thing it reports on was itself announced "so the message and the behaviour it reports on cannot drift apart".
+
+**The part worth saying out loud.** The test suite for that rule was written on 29 August, saved to disk, and never committed. `git status` had been showing it as untracked ever since. So it failed on every local `npm test` run for 3 days while CI stayed green — because CI only runs what is in the repository, and this was not. A suite that is red locally and green remotely is worse than no suite: it trains whoever runs it to expect failures and to scroll past them.
+
+The test is now in the repository, where it fails 5 times against the old behaviour and passes against the new. Nothing about the release gate changes; the gate was never wrong. What was wrong was a file that only existed on one machine.
+
 ## 3.19.7
 
 **Driving through a room is not cleaning it.**

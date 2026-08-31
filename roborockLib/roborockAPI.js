@@ -4412,6 +4412,7 @@ class Roborock {
         lastAttemptAt: 0,
         inflight: null,
         consecutiveFailures: 0,
+        failureWarned: false,
       };
       this._b01StatusState.set(duid, refreshState);
     }
@@ -4476,7 +4477,21 @@ class Roborock {
         refreshState.lastV1Status = v1Status;
 
         if (refreshState.consecutiveFailures > 0) {
-          this.log.info(
+          // ANNOUNCE A RECOVERY ONLY FROM A FAILURE THE LOG ANNOUNCED.
+          //
+          // The attempts themselves are debug-level until the 10th, so a
+          // single transient miss that healed on the next tick used to
+          // produce an info line reporting a recovery from something the
+          // user had never been told about. On a robot with a flaky link
+          // that is a steady drip of good news about invisible bad news.
+          //
+          // The counterpart matters just as much: a streak that DID reach
+          // the warning must still get its closing line, or the log's last
+          // word on the channel stays "broken" long after it healed.
+          const announce = refreshState.failureWarned;
+          refreshState.failureWarned = false;
+          (announce ? this.log.info : this.log.debug).call(
+            this.log,
             `B01 status for ${this.describeDevice(duid)} recovered after ${refreshState.consecutiveFailures} failed attempt(s) (the attempts themselves are debug-level).`
           );
         }
@@ -4515,6 +4530,7 @@ class Roborock {
         refreshState.consecutiveFailures += 1;
         const message = error?.message || String(error);
         if (refreshState.consecutiveFailures % 10 === 0) {
+          refreshState.failureWarned = true;
           this.log.warn(
             `B01 status has failed ${refreshState.consecutiveFailures} times in a row for ${this.describeDevice(duid)}. Last error: ${message}`
           );
