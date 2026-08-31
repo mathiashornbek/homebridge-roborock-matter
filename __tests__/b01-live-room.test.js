@@ -440,6 +440,12 @@ describe("applyLiveServiceAreaRoom (Matter accessory)", () => {
     expect(instance.serviceAreaCurrentArea).toBe(kitchen);
     expect(progressById(instance)).toEqual({ [kitchen]: 1, [living]: 0 });
 
+    // Still in the kitchen on the next reading. That second reading is what
+    // separates cleaning a room from crossing it, and it is what earns the
+    // room its Completed when the robot moves on.
+    instance.applyLiveServiceAreaRoom(RUNNING);
+    expect(progressById(instance)).toEqual({ [kitchen]: 1, [living]: 0 });
+
     setLiveRoom(harness, 7, "Stue");
     instance.applyLiveServiceAreaRoom(RUNNING);
     expect(instance.serviceAreaCurrentArea).toBe(living);
@@ -448,6 +454,62 @@ describe("applyLiveServiceAreaRoom (Matter accessory)", () => {
 
     const cluster = instance.buildServiceAreaCluster();
     expect(cluster.currentArea).toBe(living);
+  });
+
+  test("driving through a room is not cleaning it", () => {
+    // Reported by vp-debug12 in #9: "if it passes through one room to reach
+    // another one it is scheduled to clean first ... it marks that room as
+    // cleaned."
+    //
+    // Before the dwell rule a room joined the confirmed set on its FIRST
+    // detection, and a confirmed room reports Completed the moment the robot
+    // moves on. So one reading taken while crossing the kitchen was enough to
+    // call the kitchen done.
+    const harness = createAccessory();
+    const { instance, areaBySegment } = harness;
+    const kitchen = areaBySegment.get(42);
+    const living = areaBySegment.get(7);
+
+    instance.beginFullCleanServiceAreaProgress();
+
+    // Caught mid-crossing, once.
+    setLiveRoom(harness, 42, "Køkken");
+    instance.applyLiveServiceAreaRoom(RUNNING);
+    expect(instance.serviceAreaCurrentArea).toBe(kitchen);
+
+    // And gone again by the next reading.
+    setLiveRoom(harness, 7, "Stue");
+    instance.applyLiveServiceAreaRoom(RUNNING);
+
+    // The kitchen must NOT claim to be cleaned. Pending is the honest answer:
+    // it is still in the run's scope and still owed a visit.
+    expect(progressById(instance)).toEqual({ [kitchen]: 0, [living]: 1 });
+  });
+
+  test("a room crossed, then genuinely cleaned later, still completes", () => {
+    // The dwell rule must not permanently disqualify a room just because the
+    // robot passed through it early. Confirmation is about the current visit.
+    const harness = createAccessory();
+    const { instance, areaBySegment } = harness;
+    const kitchen = areaBySegment.get(42);
+    const living = areaBySegment.get(7);
+
+    instance.beginFullCleanServiceAreaProgress();
+
+    setLiveRoom(harness, 42, "Køkken");
+    instance.applyLiveServiceAreaRoom(RUNNING);
+    setLiveRoom(harness, 7, "Stue");
+    instance.applyLiveServiceAreaRoom(RUNNING);
+    expect(progressById(instance)).toEqual({ [kitchen]: 0, [living]: 1 });
+
+    // Back to the kitchen, and this time it stays.
+    setLiveRoom(harness, 42, "Køkken");
+    instance.applyLiveServiceAreaRoom(RUNNING);
+    instance.applyLiveServiceAreaRoom(RUNNING);
+    setLiveRoom(harness, 7, "Stue");
+    instance.applyLiveServiceAreaRoom(RUNNING);
+
+    expect(progressById(instance)).toEqual({ [kitchen]: 3, [living]: 1 });
   });
 
   test("room clean: the initial first-room guess falls back to pending, not completed", () => {

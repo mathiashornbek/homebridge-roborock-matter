@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.19.7
+
+**Driving through a room is not cleaning it.**
+
+Reported by vp-debug12 in [#9](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/9): with several rooms selected, a room the robot merely crossed on its way to the first target was reported as cleaned.
+
+Exactly right, and the mechanism is one line. A room joined the confirmed-visited set on its **first** live-room detection, and a confirmed room is reported Completed the moment the robot moves on. One reading taken while crossing the hall was therefore enough to call the hall done — while it still had its whole clean ahead of it.
+
+A room now counts as visited only after the robot has been detected in it on **2 consecutive** live-room readings. Readings are at least 10 seconds apart, so this asks the robot to still be there next time: true of a room being cleaned, false of a room being crossed.
+
+Erring low is deliberate and is why 2 is enough rather than some larger number picked by feel. A room that really was cleaned but missed its second reading falls back to Pending mid-run, and the end of the run marks everything Completed anyway — so under-confirming corrects itself. Over-confirming is the one that lies, and it lies about work the robot has not done.
+
+Crossing a room early does not disqualify it either: confirmation is about the current visit, so a room crossed at the start and cleaned properly later still completes.
+
+3 tests, 2 of which fail against the old behaviour.
+
 ## 3.19.6
 
 **The periodic poll no longer carries a cloud firmware check whose answer nothing reads. The check has in fact never run — a missing `await` disabled it — and the tempting one-character repair would have added roughly 480 discarded cloud round-trips per robot per day.**

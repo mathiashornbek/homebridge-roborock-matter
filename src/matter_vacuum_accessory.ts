@@ -286,6 +286,13 @@ const ROBOROCK_WATER_BOX_OFF = 200;
 const ROBOROCK_WATER_BOX_MILD = 201;
 
 // Matter Service Area OperationalStatusEnum (progress list entries).
+/**
+ * How many consecutive live-room readings a room needs before the plugin will
+ * call it visited. See `liveRoomVisitAreaId` for why 2, and why erring low is
+ * the safe direction.
+ */
+const LIVE_ROOM_READINGS_TO_CONFIRM = 2;
+
 const SERVICE_AREA_PROGRESS = {
   PENDING: 0,
   OPERATING: 1,
@@ -766,6 +773,27 @@ export default class RoborockMatterVacuumAccessory {
   // have happened. In-memory only: after a mid-run restart the worst case is
   // one pending-instead-of-completed entry until the run ends.
   private liveConfirmedServiceAreaIds = new Set<number>();
+  /**
+   * Driving through a room is not cleaning it.
+   *
+   * A room reached `liveConfirmedServiceAreaIds` on its FIRST detection, and
+   * a confirmed room is reported Completed the moment the robot moves on. So
+   * a robot crossing the hall to reach the bedroom marked the hall cleaned on
+   * the way past — reported by vp-debug12 in #9, and exactly right.
+   *
+   * The fix is a dwell: a room counts as visited only once the robot has been
+   * detected in it on 2 consecutive live-room readings. Readings are at least
+   * 10 seconds apart, so this asks the robot to still be there next time —
+   * true of a room being cleaned, false of a room being crossed.
+   *
+   * Under-confirming is the safe direction and is why 2 is enough rather than
+   * some larger number tuned by guesswork: a room that really was cleaned but
+   * missed its second reading falls back to Pending mid-run, and the run's
+   * own end marks everything Completed anyway. Over-confirming is the one
+   * that lies, and it lies about work the robot has not done.
+   */
+  private liveRoomVisitAreaId: number | null = null;
+  private liveRoomVisitReadings = 0;
   // Per-cluster JSON of the last CONFIRMED publish. Used to skip republishing
   // identical cluster payloads on every poll/heartbeat. Safe against the
   // historical "Updating..." desync (see updateMatterState comment) because
@@ -3283,6 +3311,8 @@ export default class RoborockMatterVacuumAccessory {
     // reports which one the robot is actually inside, the first requested
     // area is shown as operating and the rest as pending.
     this.liveConfirmedServiceAreaIds = new Set();
+    this.liveRoomVisitAreaId = null;
+    this.liveRoomVisitReadings = 0;
     this.serviceAreaCurrentArea = areaIds[0];
     this.serviceAreaProgress = areaIds.map((areaId, index) => ({
       areaId,
@@ -3331,6 +3361,8 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
     this.liveConfirmedServiceAreaIds = new Set();
+    this.liveRoomVisitAreaId = null;
+    this.liveRoomVisitReadings = 0;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
@@ -3391,6 +3423,8 @@ export default class RoborockMatterVacuumAccessory {
 
   private clearServiceAreaProgress(): void {
     this.liveConfirmedServiceAreaIds = new Set();
+    this.liveRoomVisitAreaId = null;
+    this.liveRoomVisitReadings = 0;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = [];
     this.persistServiceAreaProgress();
@@ -3406,6 +3440,8 @@ export default class RoborockMatterVacuumAccessory {
     // The run ended (docked, charging, stopped): everything requested is
     // reported as completed and no area is current anymore.
     this.liveConfirmedServiceAreaIds = new Set();
+    this.liveRoomVisitAreaId = null;
+    this.liveRoomVisitReadings = 0;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
@@ -3534,7 +3570,15 @@ export default class RoborockMatterVacuumAccessory {
       });
     }
 
-    this.liveConfirmedServiceAreaIds.add(area.areaId);
+    if (this.liveRoomVisitAreaId === area.areaId) {
+      this.liveRoomVisitReadings += 1;
+    } else {
+      this.liveRoomVisitAreaId = area.areaId;
+      this.liveRoomVisitReadings = 1;
+    }
+    if (this.liveRoomVisitReadings >= LIVE_ROOM_READINGS_TO_CONFIRM) {
+      this.liveConfirmedServiceAreaIds.add(area.areaId);
+    }
     if (!changedCurrentArea && !changedProgress) {
       return;
     }
