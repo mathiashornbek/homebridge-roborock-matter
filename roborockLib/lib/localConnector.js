@@ -100,6 +100,13 @@ class localConnector {
     this.adapter = adapter;
 
     this.localClients = {};
+    /**
+     * Robots with a `createClient` in flight. See the comment there: the
+     * client map cannot serve as the guard because it is assigned only after
+     * the connect settles.
+     * @type {Set<string>}
+     */
+    this.pendingClientConnects = new Set();
     this.l01HandshakeWaiters = new Map();
     this.reconnectTimers = new Map();
     this.connectPromises = new Map();
@@ -244,7 +251,38 @@ class localConnector {
     });
   }
 
+  /**
+   * ONE SOCKET PER ROBOT AT A TIME.
+   *
+   * `this.localClients[duid]` is only assigned once the connect promise has
+   * settled, far below. The single-flight guard in `ensureConnected` does not
+   * cover this function, and `scheduleReconnect` calls it directly — so a
+   * reconnect timer firing while a connect was in flight built a second
+   * socket, and the later assignment quietly orphaned the first. Its `close`
+   * handler checks the map and correctly declines to reconnect, so there was
+   * no storm, but the file descriptor stayed open and its `data` handler kept
+   * firing for the life of the process.
+   *
+   * The claim is released in a `finally`. A claim that leaked would be worse
+   * than the leak it prevents: that robot could never reconnect again.
+   *
+   * @param {string} duid
+   * @param {string} ip
+   */
   async createClient(duid, ip) {
+    if (this.pendingClientConnects.has(duid)) {
+      return;
+    }
+    this.pendingClientConnects.add(duid);
+    try {
+      await this.createClientUnguarded(duid, ip);
+    } finally {
+      this.pendingClientConnects.delete(duid);
+    }
+  }
+
+  /** @param {string} duid @param {string} ip */
+  async createClientUnguarded(duid, ip) {
     this.clearReconnectTimer(duid);
     const existingClient = this.localClients[duid];
     if (existingClient?.connected || existingClient?.connecting) {
@@ -868,6 +906,45 @@ class localConnector {
       this.clearReconnectTimer(duid);
     }
     this.reconnectAttempts.clear();
+  }
+
+  /**
+   * Destroy every local socket on shutdown.
+   *
+   * `clearLocalDevicedTimeout` above disarms the reconnect timers and its own
+   * comment explains why — so nothing fires `createClient` into a torn-down
+   * adapter. It left every socket in `localClients` connected, which defeats
+   * the point: a socket that closes during shutdown reaches the `close`
+   * handler, which schedules a reconnect, which arms a NEW timer and starts
+   * writing diagnostics files while the bridge is being dismantled.
+   *
+   * Sockets are removed from `localClients` before being destroyed, because
+   * the `close` handler checks that map to decide whether the socket is still
+   * the current one — so removing first makes the handler a no-op by
+   * construction rather than by timing.
+   */
+  destroyAllClients() {
+    for (const duid of Object.keys(this.localClients)) {
+      const client = this.localClients[duid];
+      delete this.localClients[duid];
+      const waiter = this.l01HandshakeWaiters.get(duid);
+      if (waiter) {
+        this.adapter.clearTimeout(waiter.timeout);
+        this.l01HandshakeWaiters.delete(duid);
+      }
+      try {
+        client?.removeAllListeners?.();
+        client?.destroy?.();
+      } catch (error) {
+        this.adapter?.log?.debug?.(
+          `Destroying the local socket for ${duid} on shutdown failed: ${
+            error?.message || error
+          }`
+        );
+      }
+    }
+    this.l01HandshakeWaiters.clear();
+    this.pendingClientConnects.clear();
   }
 }
 

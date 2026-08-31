@@ -201,26 +201,55 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     this.api.on(APIEvent.SHUTDOWN, () => {
       this.log.debug("Shutting down...");
 
+      // EVERY STEP IS INDEPENDENT, BECAUSE THIS USED TO BE A STRAIGHT LINE.
+      //
+      // One throwing `dispose()` skipped everything after it, including
+      // `stopService()` — which is the step that stops the polling intervals
+      // and closes both transports. A shutdown that half-runs is worse than
+      // one that fails loudly: the bridge goes away and the plugin's timers
+      // and sockets do not.
+      const step = (what: string, run: () => void): void => {
+        try {
+          run();
+        } catch (error) {
+          this.log.debug(
+            `Shutdown step "${what}" failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      };
+
       // Stop Matter background work first so no heartbeat or deferred publish
       // fires into a bridge that is tearing down.
       for (const vacuum of this.matterVacuums.values()) {
-        vacuum.dispose();
+        step("matter vacuum dispose", () => vacuum.dispose());
       }
 
       for (const actionSwitch of this.actionSwitches.values()) {
-        actionSwitch.dispose();
+        step("action switch dispose", () => actionSwitch.dispose());
       }
 
       for (const stateSensor of this.stateSensors.values()) {
-        stateSensor.dispose();
+        step("state sensor dispose", () => stateSensor.dispose());
       }
 
       for (const schedule of this.hapScheduleAccessories.values()) {
-        schedule.shutdown();
+        step("schedule shutdown", () => schedule.shutdown());
       }
 
       if (this.roborockAPI) {
-        this.roborockAPI.stopService();
+        step("stopService", () => {
+          void Promise.resolve(this.roborockAPI.stopService()).catch(
+            (error) => {
+              this.log.debug(
+                `stopService rejected during shutdown: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+            }
+          );
+        });
       }
     });
   }

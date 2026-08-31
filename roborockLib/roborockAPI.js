@@ -525,16 +525,86 @@ class Roborock {
     return Boolean(this.localConnector.isConnected(duid));
   }
 
+  /**
+   * Every timer in this library goes through here, which is why 2 rules live
+   * in these 4 lines rather than at each of the ~20 call sites.
+   *
+   * **Unref.** `src/timers.ts` states the policy — "a pending timer must
+   * never be why Homebridge cannot shut down" — and `src/` honours it at all
+   * of its own call sites. This library never imported that module (JS/TS
+   * boundary), so every timer it created was ref'd, including each in-flight
+   * request timeout of up to 30 seconds. Homebridge always has listening
+   * sockets of its own holding the event loop, so unref'ing here cannot make
+   * the process exit early; it only stops these timers being the last thing
+   * standing during a shutdown.
+   *
+   * **Catch.** Several callers pass an `async` function, and the returned
+   * promise was dropped on the floor. Homebridge installs an
+   * `uncaughtException` handler whose body is `process.kill(SIGTERM)`, and
+   * node routes unhandled rejections through it, so one rejection from a
+   * poll loop takes the whole bridge down. No caller can reject today —
+   * every one of them catches internally — but `updateDataMinimumData` has
+   * no `try` in its 114 lines and survives only because each of its callees
+   * happens to catch. That is a contract nobody wrote down. This makes it
+   * one that cannot be broken from the outside.
+   *
+   * @param {(...a: any[]) => any} callback
+   * @param {number} interval
+   * @param {...any} args
+   */
   setInterval(callback, interval, ...args) {
-    return setInterval(() => callback(...args), interval);
+    const handle = setInterval(() => {
+      try {
+        const result = callback(...args);
+        if (result && typeof result.catch === "function") {
+          result.catch((/** @type {any} */ error) => {
+            this.log?.debug?.(
+              `Interval callback rejected: ${error?.message || error}`
+            );
+          });
+        }
+      } catch (error) {
+        this.log?.debug?.(
+          `Interval callback threw: ${/** @type {any} */ (error)?.message || error}`
+        );
+      }
+    }, interval);
+    if (typeof handle?.unref === "function") {
+      handle.unref();
+    }
+    return handle;
   }
 
   clearInterval(interval) {
     clearInterval(interval);
   }
 
+  /**
+   * @param {(...a: any[]) => any} callback
+   * @param {number} timeout
+   * @param {...any} args
+   */
   setTimeout(callback, timeout, ...args) {
-    return setTimeout(() => callback(...args), timeout);
+    const handle = setTimeout(() => {
+      try {
+        const result = callback(...args);
+        if (result && typeof result.catch === "function") {
+          result.catch((/** @type {any} */ error) => {
+            this.log?.debug?.(
+              `Timer callback rejected: ${error?.message || error}`
+            );
+          });
+        }
+      } catch (error) {
+        this.log?.debug?.(
+          `Timer callback threw: ${/** @type {any} */ (error)?.message || error}`
+        );
+      }
+    }, timeout);
+    if (typeof handle?.unref === "function") {
+      handle.unref();
+    }
+    return handle;
   }
 
   clearTimeout(timeout) {
@@ -2073,6 +2143,23 @@ class Roborock {
     try {
       this.flushPendingPersistedStates();
       await this.clearTimersAndIntervals();
+      // Timers were the only thing shutdown used to stop. Both transports
+      // stayed open, so frames kept arriving into disposed accessories and
+      // the process could only ever be killed rather than exit.
+      this.rr_mqtt_connector?.disconnect?.();
+      this.localConnector?.destroyAllClients?.();
+      // Nothing is coming back for these, and leaving them means every
+      // caller still awaiting one hangs until Homebridge is killed.
+      for (const [messageID, pending] of this.pendingRequests) {
+        try {
+          this.clearTimeout(pending?.timeout);
+          pending?.reject?.(new Error("Homebridge is shutting down."));
+        } catch {
+          // A rejected pending request that nobody is listening to any more
+          // is exactly what shutdown looks like; it must not stop the rest.
+        }
+        this.pendingRequests.delete(messageID);
+      }
       this.bInited = false;
     } catch (e) {
       this.catchError(e.stack);
@@ -2214,10 +2301,54 @@ class Roborock {
       throw new Error(`Login failed: ${JSON.stringify(loginResult)}`);
     } catch (error) {
       this.log.error(`Error in getUserData: ${error.message}`);
-      await this.deleteStateAsync("HomeData");
-      await this.deleteStateAsync("UserData");
+      // DO NOT THROW AWAY THE CACHED SESSION BECAUSE DNS WAS NOT UP YET.
+      //
+      // This used to delete both stored states for any failure at all, with
+      // no distinction between "Roborock rejected your password" and
+      // "getaddrinfo EAI_AGAIN". On a boot where the router is still coming
+      // up, that destroyed the only offline device-list snapshot the plugin
+      // has — state it did not need to touch to recover.
+      //
+      // Only a refusal invalidates the stored session. A transport failure
+      // means we learned nothing about whether the credentials are good.
+      if (this.isCredentialRejection(error)) {
+        await this.deleteStateAsync("HomeData");
+        await this.deleteStateAsync("UserData");
+      } else {
+        this.log.debug(
+          "Keeping the saved session: this looks like a network or Roborock-side failure rather than a credential rejection."
+        );
+      }
       throw error;
     }
+  }
+
+  /**
+   * Did Roborock actually refuse these credentials, or did we simply fail to
+   * ask?
+   *
+   * Errs towards keeping the session: an unrecognised failure is treated as
+   * transport, because deleting a good session costs the user a re-login
+   * while keeping a dead one costs one extra failed request.
+   *
+   * @param {any} error
+   */
+  isCredentialRejection(error) {
+    const code = Number(error?.code ?? error?.status);
+    if ([2012, 2008, 2018, 2010].includes(code)) {
+      return true;
+    }
+    const message = String(error?.message || error).toLowerCase();
+    if (
+      /(^|[^a-z])(enotfound|eai_again|econnrefused|econnreset|etimedout|ehostunreach|enetunreach|socket hang up|network|timeout)/.test(
+        message
+      )
+    ) {
+      return false;
+    }
+    return /(login failed|invalid|unauthor|password|credential|token)/.test(
+      message
+    );
   }
 
   isValidUserData(userdata) {

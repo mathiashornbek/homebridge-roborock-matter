@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.20.1
+
+**The resource half of the same review: seven things that leaked, hung on, or would have taken the bridge down given the right unlucky moment.**
+
+**Every timer this library creates is now unref'd, and cannot become an unhandled rejection.** `src/timers.ts` has stated the policy since it was written — "a pending timer must never be why Homebridge cannot shut down" — and `src/` honours it at every one of its own call sites. `roborockLib` never imported that module, so all ~20 of its timers were ref'd, including each in-flight request timeout of up to 30 seconds, none of which were cleared on shutdown. Both fixes live in the 2 wrapper methods every timer in the library already goes through, so they cover all of them at once. The rejection guard matters more than it looks: Homebridge's `uncaughtException` handler is `process.kill(SIGTERM)` and node routes unhandled rejections into it, so one rejecting poll callback takes the whole bridge down. None can reject today — but `updateDataMinimumData` has no `try` in its 114 lines and survives only because each of its callees happens to catch, which is a contract nobody had written down.
+
+**Shutdown now actually stops things.** `stopService()` cleared timers and nothing else. `client.end()` existed in exactly 1 place in the codebase, inside `reconnectClient`, and never on the shutdown path — so in the seconds between Homebridge's SIGTERM and its forced exit, robot frames kept arriving and being dispatched into disposed accessories, and a local socket closing in that window scheduled a _new_ reconnect and wrote diagnostics files into a bridge being dismantled. Both transports are closed now, and every pending request is rejected rather than left hanging.
+
+**One throwing `dispose()` no longer skips the rest of shutdown.** The SHUTDOWN handler was a straight-line sequence, so a throw anywhere in it skipped `stopService()` — the step that stops the polling and closes the transports. A shutdown that half-runs is worse than one that fails loudly.
+
+**A list that grew by 2 entries a minute, forever.** `processDockType()` runs on every status poll carrying `dock_type`, and the poll site's comment says that is safe because the function is idempotent. It is — for `commands`, `deviceStates` and `consumablesString`, which all use keyed assignment. `resetConsumables` was the one member using `.push`. Measured: 6 entries became 2016 after 1005 polls, about 86,400 a month per robot.
+
+**A transient network failure no longer deletes your saved session.** The login error path made no distinction between "Roborock rejected your password" and "DNS was not up yet", and deleted both the stored session and the cached device list for either. On a boot where the router is still coming up that destroyed the only offline snapshot the plugin has. Only an actual refusal clears it now, and an unrecognised failure is treated as transport — deleting a good session costs a re-login, keeping a dead one costs one failed request.
+
+**Two smaller ones.** A guard reading `photoGzipChunks != []` compared against a fresh array literal and was therefore always true, so it never guarded anything. And two concurrent `createClient` calls could each build a socket, with the later assignment orphaning the first — its handlers correctly declined to reconnect, so there was no storm, but the file descriptor stayed open for the life of the process. The new claim is released in a `finally`, because a leaked claim would be worse than the leak it prevents: that robot could never reconnect again.
+
+17 new tests.
+
 ## 3.20.0
 
 **Two ways the plugin could stop working and never start again. Both silent, both permanent until somebody restarted Homebridge.**

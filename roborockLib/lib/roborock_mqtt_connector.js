@@ -432,7 +432,14 @@ class roborock_mqtt_connector {
             return;
           }
 
-          if (data.seq == 2 && photoGzipChunks != [] && photoChunkID != 0) {
+          // `photoGzipChunks != []` compared against a fresh array literal
+          // and was therefore always true, so the guard it was written to be
+          // never guarded anything.
+          if (
+            data.seq == 2 &&
+            photoGzipChunks.length !== 0 &&
+            photoChunkID != 0
+          ) {
             this.adapter.log.debug(`Second photo gzip chunk detected!`);
             photoGzipChunks.push(data.payload);
 
@@ -587,6 +594,35 @@ class roborock_mqtt_connector {
 
   isConnected() {
     return this.connected;
+  }
+
+  /**
+   * Close the MQTT session on shutdown.
+   *
+   * `client.end()` existed in exactly 1 place in this codebase — inside
+   * `reconnectClient` — and never on the shutdown path. So during the seconds
+   * between Homebridge's SIGTERM and its forced exit, robot frames kept
+   * arriving and being dispatched into disposed accessories, and the socket
+   * kept the event loop alive so the process only ever died by being killed.
+   *
+   * `end(true)` rather than a graceful close: there is nothing left worth
+   * flushing to a broker at this point, and a graceful close can wait on an
+   * ack that will not come if the network is what is broken.
+   */
+  disconnect() {
+    this.clearInitialConnectTimeout();
+    if (!client) {
+      return;
+    }
+    try {
+      client.removeAllListeners();
+      client.end(true);
+    } catch (error) {
+      this.adapter?.log?.debug?.(
+        `Closing the MQTT client on shutdown failed: ${error?.message || error}`
+      );
+    }
+    this.connected = false;
   }
 
   /**

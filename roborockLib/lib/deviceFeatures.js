@@ -548,8 +548,22 @@ class deviceFeatures {
       divider: null,
     };
 
-    this.resetConsumables.push("strainer_work_times");
-    this.resetConsumables.push("cleaning_brush_work_times");
+    // GROWS FOREVER IF PUSHED BLINDLY. `processDockType()` runs on every
+    // status poll that carries `dock_type`, which is most robots and about
+    // once a minute — and the comment at vacuum.js's poll site says that is
+    // safe because this function is idempotent. It is, for `commands`,
+    // `deviceStates` and `consumablesString`, which all use keyed assignment.
+    // `resetConsumables` was the single member using `.push`, so it grew by 2
+    // entries a minute: measured at 6 entries becoming 2016 after 1005 polls,
+    // roughly 86,400 a month per robot. Nothing broke; it just never stopped.
+    for (const consumable of [
+      "strainer_work_times",
+      "cleaning_brush_work_times",
+    ]) {
+      if (!this.resetConsumables.includes(consumable)) {
+        this.resetConsumables.push(consumable);
+      }
+    }
   }
 
   isDustCollectionSettingSupported() {
