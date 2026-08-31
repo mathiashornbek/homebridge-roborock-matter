@@ -1968,6 +1968,13 @@ class Roborock {
           await this.initializeDeviceUpdates();
 
           this.bInited = true;
+          // A success ends the retry chain and forgets the backoff, so a
+          // later outage starts from one minute again rather than ten.
+          if (this.startServiceRetryTimer) {
+            this.clearTimeout(this.startServiceRetryTimer);
+            this.startServiceRetryTimer = null;
+          }
+          this.startServiceRetryAttempts = 0;
           this.log.info(
             `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
           );
@@ -1989,10 +1996,19 @@ class Roborock {
       // maintenance, a rate-limited response and plain DNS failure. The stack
       // tells the user nothing and the line used to end without saying what
       // now happens.
-      this.log.warn(
-        `Could not fetch your Roborock home details: ${error?.message || error}. This is almost always a temporary Roborock cloud or network problem; no robots will load until the next successful start.`
-      );
       this.log.debug(error?.stack || String(error));
+      // A CACHED SESSION MEANS THIS PATH IS THE COMMON ONE, AND IT USED TO BE
+      // TERMINAL.
+      //
+      // `getUserData` returns a stored session without touching the network,
+      // so an install that has logged in once never reaches the login retry
+      // above. It reaches `getHomeDetail` instead — and both `homedataInterval`
+      // and `reconnectIntervall` are created AFTER that call, so a failure here
+      // left the plugin with no MQTT client and not one timer that would ever
+      // try again. A Pi that reboots after a power cut while the router is
+      // still coming up registered nothing and sat idle until a human
+      // restarted Homebridge.
+      this.scheduleStartServiceRetry(error);
     }
 
     if (callback) {
@@ -3576,7 +3592,62 @@ class Roborock {
     return `${duid}:${mapId}`;
   }
 
+  /**
+   * Try `startService` again after a failure that left nothing running.
+   *
+   * Backoff doubles from 1 minute to a 10-minute ceiling and then keeps
+   * going, deliberately without an attempt cap: the failure this recovers
+   * from is "the network was not ready yet", and the device it runs on is
+   * unattended. Giving up would mean a human has to notice. One timer at a
+   * time, unref'd so it can never hold Homebridge open, and cleared on
+   * shutdown.
+   *
+   * @param {unknown} [error]
+   */
+  scheduleStartServiceRetry(error) {
+    if (this.startServiceRetryTimer || this.bInited) {
+      return;
+    }
+    this.startServiceRetryAttempts = (this.startServiceRetryAttempts || 0) + 1;
+    const delay = Math.min(
+      60000 * Math.pow(2, this.startServiceRetryAttempts - 1),
+      600000
+    );
+    this.log.warn(
+      `Could not fetch your Roborock home details: ${
+        /** @type {any} */ (error)?.message || error
+      }. This is almost always a temporary Roborock cloud or network problem. Retrying in ${Math.round(
+        delay / 60000
+      )} minute(s); no robots will load until it succeeds.`
+    );
+    const timer = setTimeout(() => {
+      this.startServiceRetryTimer = null;
+      if (this.bInited) {
+        return;
+      }
+      this.log.info(
+        `Retrying the Roborock connection (attempt ${this.startServiceRetryAttempts + 1}).`
+      );
+      void Promise.resolve(this.startService()).catch((retryError) => {
+        this.log.debug(
+          `Roborock connection retry failed: ${
+            /** @type {any} */ (retryError)?.message || retryError
+          }`
+        );
+        this.scheduleStartServiceRetry(retryError);
+      });
+    }, delay);
+    if (typeof timer?.unref === "function") {
+      timer.unref();
+    }
+    this.startServiceRetryTimer = timer;
+  }
+
   clearTimersAndIntervals() {
+    if (this.startServiceRetryTimer) {
+      this.clearTimeout(this.startServiceRetryTimer);
+      this.startServiceRetryTimer = null;
+    }
     if (this.reconnectIntervall) {
       this.clearInterval(this.reconnectIntervall);
     }
@@ -3641,7 +3712,7 @@ class Roborock {
         const homedata = home.data.result;
 
         if (homedata) {
-          this.superviseB01DeviceIntervals();
+          this.superviseDeviceIntervals();
           await this.refreshLocalKeysFromHomeData(homedata);
           await this.setStateAsync("HomeData", {
             val: JSON.stringify(homedata),
@@ -4554,17 +4625,43 @@ class Roborock {
    * their status polling forever. Called from the periodic HomeData refresh
    * as a supervisor: restarts intervals when a B01 robot is back online.
    */
-  superviseB01DeviceIntervals() {
+  /**
+   * Re-check every robot's polling intervals, from the home-data refresh.
+   *
+   * THIS USED TO SKIP EVERY CLASSIC ROBOT, AND THAT WAS A DEAD END IT COULD
+   * NOT COME BACK FROM.
+   *
+   * `manageDeviceIntervals` stops both intervals when the robot reads as
+   * offline and restarts them when it reads as online. The restart half was
+   * unreachable for a classic robot, because the only other caller sits
+   * inside the `get_status` handler — i.e. it only runs when a status poll
+   * SUCCEEDS, and `getStatusIntervalHandle` is the one thing that drives
+   * those polls. Once the intervals were cleared, nothing was left alive to
+   * notice the robot had come back.
+   *
+   * `onlineChecker` reads the cached home-data snapshot, which lags by up to
+   * one refresh, so the trigger was ordinary: robot drops off wifi, comes
+   * back, its LAN socket reconnects first, the next local poll succeeds, the
+   * stale snapshot still says offline, both intervals die. From then on the
+   * Apple Home tile froze on the last known state until the user pressed a
+   * button or restarted Homebridge.
+   *
+   * This runs on the home-data cadence, which is exactly the clock that
+   * decides `onlineChecker`'s answer, so a robot that comes back is picked up
+   * on the same tick that notices it. The B01 status loop stays B01-only —
+   * that is a different mechanism and it is started unconditionally below.
+   */
+  superviseDeviceIntervals() {
     this.startB01StatusLoop();
 
     for (const duid of this.initializedVacuumDuids) {
-      if (
-        this.getVacuumDeviceInfo(duid, "pv") ===
-        b01Q7Adapter.B01_PROTOCOL_VERSION
-      ) {
-        void this.manageDeviceIntervals(duid).catch(() => undefined);
-      }
+      void this.manageDeviceIntervals(duid).catch(() => undefined);
     }
+  }
+
+  /** @deprecated Kept so existing callers and tests keep working. */
+  superviseB01DeviceIntervals() {
+    this.superviseDeviceIntervals();
   }
 
   /**

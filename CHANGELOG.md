@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.20.0
+
+**Two ways the plugin could stop working and never start again. Both silent, both permanent until somebody restarted Homebridge.**
+
+Neither was a crash, which is why neither had been noticed. The plugin stayed up and stopped doing its job.
+
+### A classic robot that flapped offline was never polled again
+
+`manageDeviceIntervals` stops both polling intervals when a robot reads as offline and restarts them when it reads as online. The restart half was unreachable for a classic robot: the only caller sits **inside the `get_status` handler**, so it runs only when a status poll succeeds — and `getStatusIntervalHandle` is the one thing driving those polls. Once they were cleared, nothing was left alive to notice the robot had come back. The one other caller, the home-data supervisor, filtered on B01 and skipped every classic robot deliberately.
+
+`onlineChecker` reads the cached home-data snapshot, which lags by up to one refresh, so the trigger was ordinary rather than exotic: robot drops off wifi, comes back, its LAN socket reconnects first, the next local poll succeeds, the snapshot still says offline, both intervals die. From then on the tile froze on the last known state until the user pressed a button or restarted.
+
+Same dead end at boot, for a different reason: the intervals are only started `if (device.online)`, so a robot that was offline when Homebridge started was **never polled at all** for the life of the process.
+
+The supervisor now covers every robot. It runs on the home-data cadence, which is the same clock that decides `onlineChecker`'s answer, so a robot that comes back is picked up on the tick that notices it.
+
+### A cloud outage during startup wedged the plugin permanently
+
+`getUserData` returns a stored session **without touching the network**, so any install that has logged in once — essentially all of them — never reaches the login retry with backoff. It reaches `getHomeDetail` instead. When that failed, the plugin logged one warning and stopped.
+
+The ordering is what made it terminal: `homedataInterval` and `reconnectIntervall` are created _after_ that call, and `initUser` was never reached, so there was no MQTT client either. **Not one timer existed that would ever try again.** A Pi rebooting after a power cut, with the router still coming up, registered nothing and sat idle until a human intervened. The README's "retries with increasing backoff, up to 10 attempts" described only the login step, which this path skips.
+
+There is now a retry: 1 minute, doubling to a 10-minute ceiling, then holding there. Deliberately with no attempt cap — the failure it recovers from is "the network was not ready yet" and the device is unattended, so giving up means a person has to notice. One timer at a time, unref'd so it can never hold Homebridge open, cleared on shutdown, and reset by a success so a later outage starts from 1 minute again.
+
+9 new tests, and the supervisor's own test previously asserted the skip that caused the first bug.
+
 ## 3.19.8
 
 **A recovery line now names only a failure the log actually announced — and the test that says so had been failing on disk, uncommitted, for 3 days.**

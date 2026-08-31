@@ -1000,7 +1000,13 @@ describe("B01 status self-healing (2.0.0-matter.6)", () => {
     expect(vacuum.getNumberStatus("battery")).toBe(100);
   });
 
-  test("the HomeData poller supervises B01 intervals back to life", () => {
+  test("the HomeData poller supervises EVERY robot's intervals back to life", () => {
+    // This used to assert exactly one call, for the B01 robot only, and the
+    // classic robot beside it was skipped on purpose. That skip was a dead
+    // end: `manageDeviceIntervals` is what restarts a classic robot's polling
+    // after an offline flap, and the only other caller lives inside the
+    // `get_status` handler — so it runs only when a poll succeeds, and the
+    // poll it depends on is the one that was just stopped.
     const api = createApi();
     api.initializedVacuumDuids = new Set(["duid-1", "duid-v1"]);
     api.getVacuumDeviceInfo = jest.fn((duid, attr) =>
@@ -1008,10 +1014,59 @@ describe("B01 status self-healing (2.0.0-matter.6)", () => {
     );
     api.manageDeviceIntervals = jest.fn().mockResolvedValue(true);
 
-    api.superviseB01DeviceIntervals();
+    api.superviseDeviceIntervals();
 
-    expect(api.manageDeviceIntervals).toHaveBeenCalledTimes(1);
+    expect(api.manageDeviceIntervals).toHaveBeenCalledTimes(2);
     expect(api.manageDeviceIntervals).toHaveBeenCalledWith("duid-1");
+    expect(api.manageDeviceIntervals).toHaveBeenCalledWith("duid-v1");
+  });
+
+  test("a classic robot that flaps offline and back gets its polling restarted", () => {
+    // The whole failure, end to end, against the real manageDeviceIntervals.
+    const api = createApi();
+    let online = true;
+    api.initializedVacuumDuids = new Set(["duid-v1"]);
+    api.getVacuumDeviceInfo = jest.fn((_duid, attr) =>
+      attr === "pv" ? "1.0" : ""
+    );
+    api.hasInitializedVacuum = () => true;
+    api.onlineChecker = jest.fn(async () => online);
+
+    const vacuum = {
+      getStatusIntervalHandle: 101,
+      mainUpdateIntervalHandle: 202,
+      getStatusIntervall: jest.fn(function () {
+        vacuum.getStatusIntervalHandle = 303;
+      }),
+    };
+    api.vacuums = { "duid-v1": vacuum };
+    api.startMainUpdateInterval = jest.fn(() => {
+      vacuum.mainUpdateIntervalHandle = 404;
+    });
+    api.clearInterval = jest.fn();
+    api.startB01StatusLoop = jest.fn();
+
+    // The robot reads offline: both intervals are cleared. This half always
+    // worked, and it is what left the robot unable to speak for itself.
+    online = false;
+    return api
+      .manageDeviceIntervals("duid-v1")
+      .then(() => {
+        expect(vacuum.getStatusIntervalHandle).toBeNull();
+        expect(vacuum.mainUpdateIntervalHandle).toBeNull();
+
+        // It comes back. Nothing inside the robot's own poll path can notice,
+        // because that path is exactly what stopped. The home-data supervisor
+        // is the only thing left, and it now covers classic robots.
+        online = true;
+        api.superviseDeviceIntervals();
+        return new Promise((resolve) => setImmediate(resolve));
+      })
+      .then(() => {
+        expect(vacuum.getStatusIntervall).toHaveBeenCalled();
+        expect(api.startMainUpdateInterval).toHaveBeenCalled();
+        expect(vacuum.mainUpdateIntervalHandle).toBe(404);
+      });
   });
 });
 
