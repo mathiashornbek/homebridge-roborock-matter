@@ -1661,6 +1661,13 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       this.roborockAPI.getVacuumDeviceInfo(duid, "sn") || duid;
     accessory.manufacturer = "Roborock";
     accessory.model = this.getVacuumModel(duid);
+    accessory.features = {
+      ...(accessory.features || {}),
+      rvcCleanMode: {
+        ...(accessory.features?.rvcCleanMode || {}),
+        directModeChange: this.platformConfig.enableMatterCleanMode !== false,
+      },
+    };
     accessory.context = { ...(accessory.context || {}), duid };
 
     if (firmwareRevision) {

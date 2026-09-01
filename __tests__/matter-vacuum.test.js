@@ -1081,6 +1081,168 @@ describe("Matter operational state", () => {
     });
   });
 
+  test.each([
+    {
+      label: "clean type",
+      newMode: 2,
+      expectedSettings: {
+        cleanMode: 2,
+        fanPower: 104,
+        waterBoxMode: 202,
+      },
+    },
+    {
+      label: "suction intensity",
+      newMode: 5,
+      expectedSettings: {
+        cleanMode: 0,
+        fanPower: 103,
+        waterBoxMode: 200,
+      },
+    },
+  ])(
+    "applies a live $label change while the robot is running",
+    async ({ newMode, expectedSettings }) => {
+      const applyMatterCleanModeSettings = jest.fn().mockResolvedValue({
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      });
+      const appStart = jest.fn().mockResolvedValue(undefined);
+      const platform = createPlatform({
+        capabilities: {
+          canVacuum: true,
+          canMop: true,
+          canControlFanPower: true,
+          canControlWater: true,
+        },
+        status: {
+          state: 5,
+          fan_power: 104,
+          water_box_mode: 202,
+        },
+        appStart,
+        applyMatterCleanModeSettings,
+      });
+      const { accessory } = createAccessory(platform, true);
+
+      await accessory.handlers.rvcCleanMode.changeToMode({ newMode });
+
+      expect(applyMatterCleanModeSettings).toHaveBeenCalledWith(
+        "device-1",
+        expectedSettings,
+        {
+          waitForResult: true,
+          throwOnError: true,
+          preferLocal: true,
+          allowOfflineCloudSend: true,
+          requestTimeoutMs: 2000,
+          prepWindowMs: 2500,
+          context: "during cleaning",
+        }
+      );
+      expect(appStart).not.toHaveBeenCalled();
+    }
+  );
+
+  test("falls back to the robot report when a live change never converges", async () => {
+    jest.useFakeTimers();
+    const status = {
+      state: 5,
+      fan_power: 104,
+      water_box_mode: 202,
+    };
+    const platform = createPlatform({
+      capabilities: {
+        canVacuum: true,
+        canMop: true,
+        canControlFanPower: true,
+        canControlWater: true,
+      },
+      status,
+      applyMatterCleanModeSettings: jest.fn().mockResolvedValue({
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      }),
+    });
+    const { accessory } = createAccessory(platform, true);
+
+    await accessory.handlers.rvcCleanMode.changeToMode({ newMode: 5 });
+
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(5);
+
+    await jest.advanceTimersByTimeAsync(150001);
+
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(2);
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("did not converge within 150 seconds")
+    );
+  });
+
+  test("accepts fan power as live confirmation when clean type is absent", async () => {
+    const status = {
+      state: 5,
+      fan_power: 104,
+    };
+    const platform = createPlatform({
+      capabilities: {
+        canVacuum: true,
+        canMop: false,
+        canControlFanPower: true,
+        canControlWater: false,
+      },
+      status,
+      applyMatterCleanModeSettings: jest.fn().mockResolvedValue({
+        unconfirmedSettings: [],
+        cleanTypeConfirmed: true,
+      }),
+    });
+    const { accessory } = createAccessory(platform, true);
+
+    await accessory.handlers.rvcCleanMode.changeToMode({ newMode: 5 });
+
+    status.fan_power = 103;
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(5);
+
+    // Confirmation releases the optimistic selection. A later robot-side
+    // intensity change is authoritative again.
+    status.fan_power = 104;
+    expect(await accessory.getState("rvcCleanMode", "currentMode")).toBe(6);
+  });
+
+  test("rejects an unconfirmed live clean mode change", async () => {
+    const matterUpdates = [];
+    const platform = createPlatform({
+      capabilities: {
+        canVacuum: true,
+        canMop: true,
+        canControlFanPower: true,
+        canControlWater: true,
+      },
+      status: {
+        state: 5,
+        fan_power: 104,
+        water_box_mode: 202,
+      },
+      matterUpdates,
+      applyMatterCleanModeSettings: jest.fn().mockResolvedValue({
+        unconfirmedSettings: ["fan power"],
+        cleanTypeConfirmed: true,
+      }),
+    });
+    const { accessory } = createAccessory(platform, true);
+
+    await expect(
+      accessory.handlers.rvcCleanMode.changeToMode({ newMode: 5 })
+    ).rejects.toThrow("did not confirm the fan power");
+    expect(
+      matterUpdates.some(
+        (update) =>
+          update.cluster === "rvcCleanMode" &&
+          update.attributes.currentMode === 5
+      )
+    ).toBe(false);
+  });
+
   test("does not block Matter start behind slow clean mode prep", async () => {
     jest.useFakeTimers();
     const appStart = jest.fn().mockResolvedValue(undefined);

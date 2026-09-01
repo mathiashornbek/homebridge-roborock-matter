@@ -2781,7 +2781,11 @@ class Roborock {
    * @param {string[]} unconfirmedSettings
    * @returns {{ unconfirmedSettings: string[], cleanTypeConfirmed: boolean }}
    */
-  reportUnconfirmedMatterCleanModeSettings(duid, unconfirmedSettings) {
+  reportUnconfirmedMatterCleanModeSettings(
+    duid,
+    unconfirmedSettings,
+    context = "before starting"
+  ) {
     const reported = [...new Set(unconfirmedSettings)];
     const result = {
       unconfirmedSettings: reported,
@@ -2795,7 +2799,7 @@ class Roborock {
     }
 
     this.log.warn(
-      `Roborock did not confirm the ${reported.join(" and ")} for ${this.describeDevice(duid)} before starting; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
+      `Roborock did not confirm the ${reported.join(" and ")} for ${this.describeDevice(duid)} ${context}; the robot may keep its previous settings for this run, so the clean may not match the mode selected in your controller.`
     );
 
     return result;
@@ -2815,7 +2819,11 @@ class Roborock {
    * @returns {Promise<{ unconfirmedSettings: string[], cleanTypeConfirmed: boolean }>}
    */
   async applyMatterCleanModeSettings(duid, settings, options = {}) {
-    const { prepWindowMs, ...commandInput } = options ?? {};
+    const {
+      prepWindowMs,
+      context = "before starting",
+      ...commandInput
+    } = options ?? {};
     const budget = this.createMatterCleanModePrepBudget(prepWindowMs);
     const { commandOptions } = this.buildCommandOptions(commandInput, {
       requestTimeoutMs: MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS,
@@ -2911,7 +2919,8 @@ class Roborock {
 
       return this.reportUnconfirmedMatterCleanModeSettings(
         duid,
-        unconfirmedSettings
+        unconfirmedSettings,
+        context
       );
     }
 
@@ -3002,7 +3011,8 @@ class Roborock {
 
     return this.reportUnconfirmedMatterCleanModeSettings(
       duid,
-      unconfirmedSettings
+      unconfirmedSettings,
+      context
     );
   }
 
