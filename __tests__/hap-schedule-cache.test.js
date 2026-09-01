@@ -7,8 +7,9 @@ jest.mock("../src/hap_schedule_api.ts", () => ({
 }));
 
 const { getServerTimers } = require("../src/hap_schedule_api.ts");
-const RoborockHapScheduleAccessory =
-  require("../src/hap_schedule_accessory.ts").default;
+const scheduleModule = require("../src/hap_schedule_accessory.ts");
+const RoborockHapScheduleAccessory = scheduleModule.default;
+const { ScheduleAccountCoordinator, scheduleFailureBackoffMs } = scheduleModule;
 
 function makeCoordinator() {
   const coordinator = Object.create(RoborockHapScheduleAccessory.prototype);
@@ -30,6 +31,11 @@ function makeCoordinator() {
   coordinator.cachedSchedules = undefined;
   coordinator.lastScheduleRefreshAt = 0;
   coordinator.lastFailedRefreshAt = 0;
+  coordinator.consecutiveRefreshFailures = 0;
+  coordinator.nextRefreshAttemptAt = 0;
+  coordinator.scheduleBackoffRandom = () => 0.5;
+  coordinator.accountCoordinator = new ScheduleAccountCoordinator();
+  coordinator.writeBatcher = { cancelPending: jest.fn() };
   coordinator.refreshInProgress = undefined;
   coordinator.refreshInProgressStartedAt = 0;
   coordinator.refreshGeneration = 0;
@@ -41,6 +47,18 @@ function makeCoordinator() {
 describe("HAP schedule coordinator cache", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test("backoff jitter is bounded around each progressive delay", () => {
+    expect(scheduleFailureBackoffMs(1, 0)).toBe(54_000);
+    expect(scheduleFailureBackoffMs(1, 0.5)).toBe(60_000);
+    expect(scheduleFailureBackoffMs(1, 1)).toBe(66_000);
+    expect(scheduleFailureBackoffMs(5, 0.5)).toBe(3_600_000);
+    expect(scheduleFailureBackoffMs(99, 0.5)).toBe(3_600_000);
   });
 
   test("fresh cache does not make another cloud request", async () => {
@@ -71,7 +89,7 @@ describe("HAP schedule coordinator cache", () => {
         timer: ["timer-1", "on"],
       },
     ];
-    coordinator.lastScheduleRefreshAt = Date.now() - 61000;
+    coordinator.lastScheduleRefreshAt = Date.now() - 301000;
 
     getServerTimers.mockResolvedValue([
       ["timer-1", "off"],
@@ -113,7 +131,7 @@ describe("HAP schedule coordinator cache", () => {
         timer: ["timer-1", "on"],
       },
     ];
-    coordinator.lastScheduleRefreshAt = Date.now() - 61000;
+    coordinator.lastScheduleRefreshAt = Date.now() - 301000;
 
     let resolveRequest;
     getServerTimers.mockReturnValue(
@@ -126,6 +144,7 @@ describe("HAP schedule coordinator cache", () => {
     const second = coordinator.refresh();
     const third = coordinator.refreshIfNeeded();
 
+    await Promise.resolve();
     expect(getServerTimers).toHaveBeenCalledTimes(1);
 
     resolveRequest([["timer-1", "off"]]);
@@ -216,7 +235,7 @@ describe("HAP schedule coordinator cache", () => {
         timer: ["timer-existing", "on"],
       },
     ];
-    coordinator.lastScheduleRefreshAt = Date.now() - 61000;
+    coordinator.lastScheduleRefreshAt = Date.now() - 301000;
 
     getServerTimers.mockRejectedValueOnce(new Error("cloud timeout"));
 
@@ -229,8 +248,8 @@ describe("HAP schedule coordinator cache", () => {
     await expect(coordinator.refreshIfNeeded()).resolves.toBe(true);
     expect(getServerTimers).toHaveBeenCalledTimes(1);
 
-    // Simulate the 30-second backoff having expired.
-    coordinator.lastFailedRefreshAt = Date.now() - 31000;
+    // Simulate the first one-minute backoff having expired.
+    coordinator.nextRefreshAttemptAt = Date.now() - 1;
 
     getServerTimers.mockResolvedValueOnce([["timer-existing", "off"]]);
 
@@ -244,6 +263,44 @@ describe("HAP schedule coordinator cache", () => {
         timer: ["timer-existing", "off"],
       },
     ]);
+    expect(coordinator.consecutiveRefreshFailures).toBe(0);
+    expect(coordinator.nextRefreshAttemptAt).toBe(0);
+  });
+
+  test("five-minute cache absorbs frequent independent readers", async () => {
+    const coordinator = makeCoordinator();
+
+    getServerTimers.mockResolvedValue([["timer-1", "on"]]);
+
+    await expect(coordinator.refreshIfNeeded()).resolves.toBe(true);
+
+    for (let reader = 0; reader < 20; reader++) {
+      await expect(coordinator.refreshIfNeeded()).resolves.toBe(true);
+    }
+
+    expect(getServerTimers).toHaveBeenCalledTimes(1);
+  });
+
+  test("failure backoff progresses and caps at one hour before jitter", async () => {
+    const coordinator = makeCoordinator();
+    const now = 1_000_000;
+
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    getServerTimers.mockRejectedValue(new Error("cloud cap"));
+
+    const expectedDelays = [60_000, 120_000, 300_000, 900_000, 3_600_000];
+
+    for (const [index, expectedDelay] of expectedDelays.entries()) {
+      coordinator.nextRefreshAttemptAt = 0;
+      await expect(coordinator.refresh()).resolves.toBe(false);
+      expect(coordinator.consecutiveRefreshFailures).toBe(index + 1);
+      expect(coordinator.nextRefreshAttemptAt).toBe(now + expectedDelay);
+    }
+
+    coordinator.nextRefreshAttemptAt = 0;
+    await expect(coordinator.refresh()).resolves.toBe(false);
+    expect(coordinator.consecutiveRefreshFailures).toBe(6);
+    expect(coordinator.nextRefreshAttemptAt).toBe(now + 3_600_000);
   });
 
   test("refreshAndGetSchedule returns the full refreshed snapshot entry", async () => {
@@ -289,6 +346,7 @@ describe("HAP schedule coordinator cache", () => {
     const first = coordinator.refreshIfNeeded();
     const verification = coordinator.refreshAndGetSchedule("timer-1", 0);
 
+    await Promise.resolve();
     expect(getServerTimers).toHaveBeenCalledTimes(1);
 
     resolveRequest([["timer-1", "off"]]);
@@ -329,21 +387,19 @@ describe("HAP schedule coordinator cache", () => {
     const oldGeneration = coordinator.refreshGeneration;
 
     expect(oldStartedAt).toBeGreaterThan(0);
+    await Promise.resolve();
 
-    const verification = coordinator.refreshAndGetSchedule(
-      "timer-1",
-      oldStartedAt + 1
-    );
+    const verification = coordinator.refreshDetailed(oldStartedAt + 1, true);
 
+    await Promise.resolve();
     expect(getServerTimers).toHaveBeenCalledTimes(2);
     expect(coordinator.refreshGeneration).toBeGreaterThan(oldGeneration);
 
     resolveNew([["timer-1", "on"]]);
 
     await expect(verification).resolves.toEqual({
-      id: "timer-1",
-      enabled: true,
-      timer: ["timer-1", "on"],
+      success: true,
+      hasSchedules: true,
     });
 
     expect(coordinator.cachedSchedules).toEqual([
@@ -387,6 +443,7 @@ describe("HAP schedule coordinator cache", () => {
 
     const refresh = coordinator.refresh();
 
+    await Promise.resolve();
     expect(getServerTimers).toHaveBeenCalledTimes(1);
 
     coordinator.stopRuntime =

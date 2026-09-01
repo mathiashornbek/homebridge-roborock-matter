@@ -50,6 +50,10 @@ function makeHarness() {
 
   platform.accessories = [cachedAccessory];
   platform.hapScheduleAccessories = new Map();
+  platform.scheduleAccountCoordinator = {
+    policyDescription: jest.fn().mockReturnValue("Schedule cloud policy"),
+  };
+  platform.schedulePolicyLogged = false;
 
   platform.log = {
     debug: jest.fn(),

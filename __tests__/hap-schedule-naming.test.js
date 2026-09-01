@@ -342,6 +342,9 @@ describe("HAP schedule names and stable group identity", () => {
       const platform = makePlatform();
       const command = jest.fn().mockResolvedValue("ok");
       platform.roborockAPI = {
+        getServerTimers: jest
+          .fn()
+          .mockResolvedValue([["timer-complex", "on", 1]]),
         vacuums: {
           "device-1": { command },
         },
@@ -358,19 +361,13 @@ describe("HAP schedule names and stable group identity", () => {
           timer,
         },
       ]);
-      coordinator.refreshAndGetSchedule = jest.fn().mockResolvedValue({
-        id: "timer-complex",
-        enabled: true,
-        timer: ["timer-complex", "on", 1],
-      });
-
       const onCharacteristic = switchService(
         accessory,
         "timer-complex"
       ).getCharacteristic(Characteristic.On);
       const writePromise = onCharacteristic.setHandler(true);
 
-      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(4000);
       await writePromise;
 
       expect(command).toHaveBeenCalledTimes(1);
@@ -385,12 +382,280 @@ describe("HAP schedule names and stable group identity", () => {
           throwOnError: true,
         }
       );
-      expect(coordinator.refreshAndGetSchedule).toHaveBeenCalledTimes(1);
-      expect(coordinator.refreshAndGetSchedule).toHaveBeenCalledWith(
-        "timer-complex",
-        expect.any(Number)
+      expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledWith(
+        "device-1",
+        expect.objectContaining({ preferCloud: true })
       );
       expect(timer).toEqual(["timer-complex", "off", 1]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("rapid HomeKit changes send only the final schedule value", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const platform = makePlatform();
+      const command = jest.fn().mockResolvedValue("ok");
+      platform.roborockAPI = {
+        getServerTimers: jest.fn().mockResolvedValue([["timer-rapid", "on"]]),
+        vacuums: {
+          "device-1": { command },
+        },
+      };
+
+      const accessory = new FakeAccessory("Test Vacuum Schedules");
+      const coordinator = makeCoordinator(platform, accessory);
+      coordinator.sync([
+        {
+          id: "timer-rapid",
+          enabled: false,
+          timer: ["timer-rapid", "off"],
+        },
+      ]);
+      const onCharacteristic = switchService(
+        accessory,
+        "timer-rapid"
+      ).getCharacteristic(Characteristic.On);
+
+      const first = onCharacteristic.setHandler(true);
+      const second = onCharacteristic.setHandler(false);
+      const final = onCharacteristic.setHandler(true);
+
+      await jest.advanceTimersByTimeAsync(3500);
+      await Promise.all([first, second, final]);
+
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(command).toHaveBeenCalledWith(
+        "device-1",
+        "upd_server_timer",
+        [["timer-rapid", "on"]],
+        expect.objectContaining({ preferCloud: true, waitForResult: true })
+      );
+      expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledWith(
+        "device-1",
+        expect.objectContaining({ preferCloud: true })
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("one batch of distinct schedule writes uses one consolidated verification read", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const platform = makePlatform();
+      const command = jest.fn().mockResolvedValue("ok");
+      platform.roborockAPI = {
+        getServerTimers: jest.fn().mockResolvedValue([
+          ["timer-1", "on"],
+          ["timer-2", "on"],
+        ]),
+        vacuums: {
+          "device-1": { command },
+        },
+      };
+
+      const accessory = new FakeAccessory("Test Vacuum Schedules");
+      const coordinator = makeCoordinator(platform, accessory);
+      coordinator.sync([
+        schedule("timer-1", false),
+        schedule("timer-2", false),
+      ]);
+
+      const first = switchService(accessory, "timer-1")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+      const second = switchService(accessory, "timer-2")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+
+      await jest.advanceTimersByTimeAsync(500);
+      expect(command).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(499);
+      expect(command).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(1);
+      expect(command).toHaveBeenCalledTimes(2);
+
+      await jest.advanceTimersByTimeAsync(3000);
+      await Promise.all([first, second]);
+
+      expect(command).toHaveBeenCalledTimes(2);
+      expect(command.mock.calls.map((call) => call[2])).toEqual([
+        [["timer-1", "on"]],
+        [["timer-2", "on"]],
+      ]);
+      expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("an explicit throttle stops the rest of the vacuum batch without verification", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const platform = makePlatform();
+      const throttle = Object.assign(new Error("Too many requests"), {
+        status: 429,
+      });
+      const command = jest.fn().mockRejectedValue(throttle);
+      platform.roborockAPI = {
+        getServerTimers: jest.fn(),
+        vacuums: {
+          "device-1": { command },
+        },
+      };
+
+      const accessory = new FakeAccessory("Test Vacuum Schedules");
+      const coordinator = makeCoordinator(platform, accessory);
+      coordinator.sync([
+        schedule("timer-1", false),
+        schedule("timer-2", false),
+      ]);
+
+      const first = switchService(accessory, "timer-1")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+      const second = switchService(accessory, "timer-2")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+
+      await jest.advanceTimersByTimeAsync(500);
+      await Promise.all([first, second]);
+
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(platform.roborockAPI.getServerTimers).not.toHaveBeenCalled();
+      expect(
+        switchService(accessory, "timer-1").getCharacteristic(Characteristic.On)
+          .value
+      ).toBe(false);
+      expect(
+        switchService(accessory, "timer-2").getCharacteristic(Characteristic.On)
+          .value
+      ).toBe(false);
+      expect(platform.log.warn).toHaveBeenCalledWith(
+        expect.stringContaining("pausing this vacuum's schedule traffic")
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("one unconfirmed schedule gets one bounded fallback and one final batch verification", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const platform = makePlatform();
+      const command = jest.fn().mockResolvedValue("ok");
+      platform.roborockAPI = {
+        getServerTimers: jest
+          .fn()
+          .mockResolvedValueOnce([
+            ["timer-1", "on"],
+            ["timer-2", "off"],
+          ])
+          .mockResolvedValueOnce([
+            ["timer-1", "on"],
+            ["timer-2", "on"],
+          ]),
+        vacuums: { "device-1": { command } },
+      };
+
+      const accessory = new FakeAccessory("Test Vacuum Schedules");
+      const coordinator = makeCoordinator(platform, accessory);
+      coordinator.sync([
+        schedule("timer-1", false),
+        schedule("timer-2", false),
+      ]);
+
+      const first = switchService(accessory, "timer-1")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+      const second = switchService(accessory, "timer-2")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(command).toHaveBeenCalledTimes(3);
+      expect(command).toHaveBeenLastCalledWith(
+        "device-1",
+        "upd_timer",
+        ["timer-2", "on"],
+        expect.objectContaining({ preferCloud: true, waitForResult: true })
+      );
+
+      await jest.advanceTimersByTimeAsync(3000);
+      await Promise.all([first, second]);
+
+      expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledTimes(2);
+      expect(platform.log.info).toHaveBeenCalledWith(
+        "Schedule fallback verification for device-1: requested=2; primarySent=2; primaryConfirmed=1; fallbackNeeded=1; fallbackSent=1; fallbackConfirmed=1; failed=0."
+      );
+      expect(
+        switchService(accessory, "timer-1").getCharacteristic(Characteristic.On)
+          .value
+      ).toBe(true);
+      expect(
+        switchService(accessory, "timer-2").getCharacteristic(Characteristic.On)
+          .value
+      ).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("one failed primary write does not poison another schedule in the batch", async () => {
+    jest.useFakeTimers();
+
+    try {
+      const platform = makePlatform();
+      const primaryFailure = new Error("timer-1 refused");
+      const command = jest.fn(async (_duid, method, parameters) => {
+        if (method === "upd_server_timer" && parameters[0][0] === "timer-1") {
+          throw primaryFailure;
+        }
+        return "ok";
+      });
+      platform.roborockAPI = {
+        getServerTimers: jest.fn().mockResolvedValue([
+          ["timer-1", "off"],
+          ["timer-2", "on"],
+        ]),
+        vacuums: { "device-1": { command } },
+      };
+
+      const accessory = new FakeAccessory("Test Vacuum Schedules");
+      const coordinator = makeCoordinator(platform, accessory);
+      coordinator.sync([
+        schedule("timer-1", false),
+        schedule("timer-2", false),
+      ]);
+
+      const first = switchService(accessory, "timer-1")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+      const second = switchService(accessory, "timer-2")
+        .getCharacteristic(Characteristic.On)
+        .setHandler(true);
+
+      await jest.advanceTimersByTimeAsync(4000);
+      await Promise.all([first, second]);
+
+      expect(command).toHaveBeenCalledTimes(2);
+      expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledTimes(1);
+      expect(
+        switchService(accessory, "timer-1").getCharacteristic(Characteristic.On)
+          .value
+      ).toBe(false);
+      expect(
+        switchService(accessory, "timer-2").getCharacteristic(Characteristic.On)
+          .value
+      ).toBe(true);
     } finally {
       jest.useRealTimers();
     }
