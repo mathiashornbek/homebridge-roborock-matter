@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.21.3
+
+**A robot that refuses a request was reported as a robot that answered nothing.**
+
+DSimeone1989 reported in #22 that his Roborock app schedules never appear. His Saros 10R (`roborock.vacuum.a144`) answers `get_status`, `get_timer`, `get_carpet_mode` and `get_water_box_custom_mode` over the cloud in the same second, and refuses `get_server_timer`. All the plugin could say about it was:
+
+```
+Cloud message with protocol 102 and id 10 received. Result: undefined
+Schedule discovery for 1MDui…: type=undefined, value=undefined
+Unable to reliably read Roborock schedules …: get_server_timer returned undefined
+```
+
+**The reason was decoded and then dropped.** A Roborock reply carries its payload in `result`. Both connectors handed `result` straight to the waiting promise without asking whether the reply had one, so a refusal resolved as a success whose value happened to be `undefined` — the same value a caller sees for a reply the parser could not read, and indistinguishable from a genuine empty answer. Whatever the robot said about why now never reached a log line, an error, or the user.
+
+**A reply with no `result` is no longer treated as an empty answer.** When the robot spells out a refusal, the waiting caller gets it as an error naming the method and the robot's own words, over both the cloud and the LAN socket. When there is no result and no stated reason, the debug log prints the reply itself instead of the word `undefined`.
+
+Deliberately narrow: a reply that carries a `result` is untouched, and an empty array stays an authoritative "you have no timers" rather than becoming an error. Only a refusal the robot actually stated changes behaviour.
+
+11 new tests, red against the old code on both halves.
+
 ## 3.21.2
 
 **Driving through a room still marked it cleaned. 3.19.7 was meant to fix that and did not.**

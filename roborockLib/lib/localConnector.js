@@ -5,6 +5,7 @@ const Parser = require("binary-parser").Parser;
 const net = require("net");
 const dgram = require("dgram");
 const { describeDevice } = require("./describeDevice");
+const { describeReplyRefusal } = require("./describeReplyRefusal");
 
 const PORT = 58866;
 const TIMEOUT = 5000; // 5 Sekunden Timeout
@@ -584,16 +585,29 @@ class localConnector {
     const result = parsed_102.result;
 
     if (this.adapter.pendingRequests.has(id)) {
+      const refusal = describeReplyRefusal(parsed_102);
       this.adapter.log.debug(
-        `Local message with protocol 4 and id ${id} received. Result: ${JSON.stringify(result)}`
+        typeof result === "undefined"
+          ? `Local message with protocol 4 and id ${id} received. No result; reply was ${JSON.stringify(parsed_102)}`
+          : `Local message with protocol 4 and id ${id} received. Result: ${JSON.stringify(result)}`
       );
-      const { resolve, timeout } = this.adapter.pendingRequests.get(id);
+      const { resolve, reject, timeout, method } =
+        this.adapter.pendingRequests.get(id);
       this.adapter.clearTimeout(timeout);
       this.adapter.pendingRequests.delete(id);
       // Proof that this socket is not mute, so any run of timeouts counted
-      // against it starts over.
+      // against it starts over. A refusal still proves the socket answers —
+      // it is the request that failed, not the transport.
       if (this.adapter.noteLocalRequestSucceeded) {
         this.adapter.noteLocalRequestSucceeded(duid);
+      }
+      if (refusal && typeof reject === "function") {
+        reject(
+          new Error(
+            `The robot refused ${method || "the request"} (local id ${id}): ${refusal}`
+          )
+        );
+        return;
       }
       resolve(result);
 

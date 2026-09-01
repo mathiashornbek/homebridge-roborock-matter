@@ -6,6 +6,7 @@ const Parser = require("binary-parser").Parser;
 const zlib = require("zlib");
 const roborockCrypto = require("./roborockCrypto");
 const { describeDevice } = require("./describeDevice");
+const { describeReplyRefusal } = require("./describeReplyRefusal");
 
 const PHOTO_MAGIC = "ROBOROCK";
 const PHOTO_HEADER_MIN_LENGTH = 9;
@@ -364,8 +365,15 @@ class roborock_mqtt_connector {
             // Runs for every cloud message; only pay the stringify cost
             // when debug logging is actually enabled.
             if (this.adapter.config.debug) {
+              // A reply with no `result` used to print "Result: undefined",
+              // which reads like a robot that said nothing. It said something;
+              // it just did not say it in `result`. Print the reply itself so
+              // the refusal is on the record even when nobody is waiting for
+              // this id any more.
               this.adapter.log.debug(
-                `Cloud message with protocol 102 and id ${dps.id} received. Result: ${JSON.stringify(dps.result)}`
+                typeof dps.result === "undefined"
+                  ? `Cloud message with protocol 102 and id ${dps.id} received. No result; reply was ${JSON.stringify(dps)}`
+                  : `Cloud message with protocol 102 and id ${dps.id} received. Result: ${JSON.stringify(dps.result)}`
               );
             }
             if (typeof dps.result !== "undefined") {
@@ -403,7 +411,19 @@ class roborock_mqtt_connector {
           if (shouldResolveOn102(pending, dps.result)) {
             this.adapter.clearTimeout(pending.timeout);
             this.adapter.pendingRequests.delete(dps.id);
-            pending.resolve(dps.result);
+            // A refusal is a failed request, not an empty one. Resolving it
+            // with `undefined` is indistinguishable from a real empty answer
+            // to every caller upstream — see describeReplyRefusal.
+            const refusal = describeReplyRefusal(dps);
+            if (refusal) {
+              pending.reject(
+                new Error(
+                  `The robot refused ${pending.method || "the request"} (cloud id ${dps.id}): ${refusal}`
+                )
+              );
+            } else {
+              pending.resolve(dps.result);
+            }
           }
           // protocol 300 seems to be for get_photo 0 only. get_photo 0 is for large images. 1 is for small images.
         } else if (data.protocol == 300) {
