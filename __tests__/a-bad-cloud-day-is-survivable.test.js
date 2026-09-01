@@ -26,12 +26,17 @@ function createLog() {
   };
 }
 
+// Every adapter this file builds, so the retry timers it deliberately arms
+// can be disarmed again when the test ends.
+const created = [];
+
 function createApi() {
   const api = new Roborock({
     log: createLog(),
     storagePath: fs.mkdtempSync(path.join(os.tmpdir(), "bad-cloud-day-")),
   });
   api.startB01StatusLoop = jest.fn();
+  created.push(api);
   return api;
 }
 
@@ -39,7 +44,24 @@ const warnings = (api) =>
   api.log.warn.mock.calls.map(([line]) => String(line)).filter(Boolean);
 
 describe("a bad cloud day at startup is survivable", () => {
+  // Most of these tests arm a real 60-second timer on purpose and then assert
+  // on the handle rather than on it firing. Left alone it outlives the test:
+  // the handle is unref'd so it cannot hold the worker open, but the suite
+  // runs for minutes, so it fires inside some later test and calls
+  // `startService`, whose first statement requires the translations file.
+  // That is where the suite's `You are trying to require a file after the
+  // Jest environment has been torn down` came from.
   afterEach(() => {
+    for (const api of created.splice(0)) {
+      if (api.startServiceRetryTimer) {
+        clearTimeout(api.startServiceRetryTimer);
+        api.startServiceRetryTimer = null;
+      }
+      if (api.loginRetryTimer) {
+        clearTimeout(api.loginRetryTimer);
+        api.loginRetryTimer = null;
+      }
+    }
     jest.useRealTimers();
   });
 
@@ -75,10 +97,20 @@ describe("a bad cloud day at startup is survivable", () => {
   test("backoff doubles to a ten-minute ceiling and does not give up", () => {
     const api = createApi();
     const delays = [];
+    // Nulling the handle between arms is what lets the guard through, and it
+    // also orphans the timer that was on it. Keep each one so afterEach can
+    // disarm all 8 rather than only the last.
+    const orphaned = [];
     for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (api.startServiceRetryTimer) {
+        orphaned.push(api.startServiceRetryTimer);
+      }
       api.startServiceRetryTimer = null;
       api.scheduleStartServiceRetry(new Error("still down"));
       delays.push(api.startServiceRetryTimer._idleTimeout);
+    }
+    for (const timer of orphaned) {
+      clearTimeout(timer);
     }
 
     expect(delays).toEqual([

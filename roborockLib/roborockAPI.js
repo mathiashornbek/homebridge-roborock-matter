@@ -396,6 +396,15 @@ class Roborock {
   constructor(options) {
     this.bInited = false;
 
+    // `bInited` answers "is the service up", which is false both before a
+    // successful start and after a shutdown. A retry timer needs to tell
+    // those two apart: the first is exactly what it exists to recover from,
+    // the second is a corpse it must not restart.
+    /** @type {boolean} */
+    this.stopped = false;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    this.loginRetryTimer = null;
+
     this.config = {
       ...options,
       cloudOnlyMode: Boolean(options.cloudOnlyMode),
@@ -1747,6 +1756,10 @@ class Roborock {
    * Is called when databases are connected and adapter received configuration.
    */
   async startService(callback) {
+    // A deliberate start clears the shutdown latch: Homebridge restarts a
+    // child bridge in-process, and a stopped adapter that is started again
+    // must be allowed to retry.
+    this.stopped = false;
     this.log.info(`Connecting to your Roborock account…`);
     this.translations = require(
       `./i18n/${this.language || "en"}/translations.json`
@@ -1822,7 +1835,15 @@ class Roborock {
         this.log.warn(
           `Could not reach the Roborock cloud (attempt ${this._startupLoginAttempts}/10): ${message}. Retrying in ${Math.round(delayMs / 60000)} minute(s).`
         );
+        // The handle goes on the instance, not in a local const: shutdown
+        // clears what it can reach, and a local was unreachable by
+        // construction. The guard inside covers the case the clear cannot —
+        // a timer the event loop had already picked up when stopService ran.
         const retryTimer = this.setTimeout(() => {
+          this.loginRetryTimer = null;
+          if (this.stopped) {
+            return;
+          }
           this.startService(callback).catch((retryError) => {
             this.log.error(
               `Roborock startup retry failed unexpectedly: ${retryError?.message || retryError}`
@@ -1832,6 +1853,7 @@ class Roborock {
         if (typeof retryTimer?.unref === "function") {
           retryTimer.unref();
         }
+        this.loginRetryTimer = retryTimer;
       } else {
         this.log.error(
           `Could not reach the Roborock cloud after ${this._startupLoginAttempts - 1} attempts: ${message}. Giving up until the next Homebridge restart.`
@@ -2141,6 +2163,9 @@ class Roborock {
 
   async stopService() {
     try {
+      // Latched before anything is torn down, so a retry callback that fires
+      // mid-shutdown reads it as already set.
+      this.stopped = true;
       this.flushPendingPersistedStates();
       await this.clearTimersAndIntervals();
       // Timers were the only thing shutdown used to stop. Both transports
@@ -3746,7 +3771,7 @@ class Roborock {
    * @param {unknown} [error]
    */
   scheduleStartServiceRetry(error) {
-    if (this.startServiceRetryTimer || this.bInited) {
+    if (this.startServiceRetryTimer || this.bInited || this.stopped) {
       return;
     }
     this.startServiceRetryAttempts = (this.startServiceRetryAttempts || 0) + 1;
@@ -3763,7 +3788,10 @@ class Roborock {
     );
     const timer = setTimeout(() => {
       this.startServiceRetryTimer = null;
-      if (this.bInited) {
+      // `bInited` alone let a cleared-too-late timer restart a shut-down
+      // adapter: after stopService it is false, which used to read as
+      // "still needs starting".
+      if (this.bInited || this.stopped) {
         return;
       }
       this.log.info(
@@ -3788,6 +3816,10 @@ class Roborock {
     if (this.startServiceRetryTimer) {
       this.clearTimeout(this.startServiceRetryTimer);
       this.startServiceRetryTimer = null;
+    }
+    if (this.loginRetryTimer) {
+      this.clearTimeout(this.loginRetryTimer);
+      this.loginRetryTimer = null;
     }
     if (this.reconnectIntervall) {
       this.clearInterval(this.reconnectIntervall);

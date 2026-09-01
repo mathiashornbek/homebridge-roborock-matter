@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.21.1
+
+**A login retry could restart the plugin after Homebridge had already shut it down.**
+
+3.20.0 added a retry for the case where the Roborock cloud is unreachable at boot, and wired it to shutdown properly. It was not the only retry in the file. The older one, on the login step itself, kept its timer handle in a local variable — so `clearTimersAndIntervals` had nothing it could clear even in principle, and nothing checked whether the adapter was still alive before the timer fired.
+
+The window is up to 10 minutes wide. A boot where the network is not up yet arms the retry; if Homebridge stops the plugin inside that window — a restart from the UI, a config change, a child bridge reload — the timer still fires into the shut-down adapter and runs the full startup again: a fresh login, a new MQTT client, and a new set of poll intervals attached to an instance whose sockets had already been destroyed and whose pending requests had already been rejected.
+
+**Both retries now check a shutdown latch, not just `bInited`.** That distinction is the actual fix. `bInited` is false both before a successful start and after a shutdown, so a retry callback that read it could not tell "still needs starting" from "already stopped" — which means the 3.20.0 retry had the same race, narrower but real, in the gap between the timer being picked up by the event loop and the clear running. A deliberate `startService` clears the latch, so restarting a stopped adapter in-process still works.
+
+**The suite's `You are trying to require a file after the Jest environment has been torn down` is gone, and it was not what the last release assumed.** It was read as a stray cloud-retry timer in the library. The real source was the retry's own test file: the backoff test arms 8 real timers in a loop, nulling the handle between arms so the "only one in flight" guard lets the next one through, which orphans the 7 before it. Those fired 1 to 10 minutes later, inside whatever test happened to be running by then, and called `startService` — whose first statement requires the translations file. Unref'd timers cannot hold the worker open, so nothing failed; it just printed a warning that pointed at the library instead of at the test. All 8 are disarmed now.
+
+5 new tests.
+
 ## 3.21.0
 
 **You can now change the clean mode while the robot is already cleaning. This needed a change in Homebridge itself, and that change has now shipped.**
