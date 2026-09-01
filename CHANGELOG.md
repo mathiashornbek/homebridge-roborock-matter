@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.21.0
+
+**You can now change the clean mode while the robot is already cleaning. This needed a change in Homebridge itself, and that change has now shipped.**
+
+Until now a mode picked mid-run only moved the picker. The prep sequence that sends the mode to the robot runs before a start and nowhere else, so the robot carried on with the settings it began with, and the tile quietly disagreed with the floor. That was not an oversight in this plugin: Matter's RvcCleanMode cluster forbids a mode change outside idle unless the device advertises the `DirectModeChange` feature, and Homebridge had no way for a plugin to advertise it. [homebridge/homebridge#4001](https://github.com/homebridge/homebridge/pull/4001) added one, and it is merged and released in `2.4.1-beta.11`.
+
+**What happens now.** A mode change while the robot is running or paused is sent to the robot immediately, and the picker holds your choice until the robot's own status agrees with it — up to 150 seconds, after which the picker gives up and follows the robot again with a warning line naming what it asked for. If the command fails outright, every piece of selection state rolls back to what it was and the controller is told the change failed, so a rejected change cannot leave the picker showing a mode the robot never took.
+
+**On the empty-tank warning, which had to move with it.** The tank check deliberately read the robot's live water level rather than the picker, on the reasoning that a mid-run selection was never applied and so could not be trusted. That reasoning no longer holds, and left alone it would have raised a tank warning for water the robot had already acknowledged turning off. The applied-type pin is now the authority during the confirmation window.
+
+**What you need to run it.** Homebridge `2.4.1-beta.11` or newer. On `2.4.0` the feature declaration is inert — that version has no concept of plugin-advertised Matter features, so nothing changes and nothing breaks. It follows the existing `enableMatterCleanMode` setting: leave it on and live changes are advertised, turn it off and neither the declaration nor the handler exists.
+
+6 new tests.
+
 ## 3.20.1
 
 **The resource half of the same review: seven things that leaked, hung on, or would have taken the bridge down given the right unlucky moment.**

@@ -37,7 +37,7 @@ This is the most feature-packed, most thoroughly engineered Roborock plugin for 
 - 📍 **See where it's cleaning — live.** Apple Home shows _"Cleaning — Kitchen"_ with the room the robot is actually inside, updating as it moves from room to room. Works even for cleans started from the robot's button or the Roborock app. No other Homebridge plugin does this.
 - 🧭 **One robot, one tile — and as many robots as you own.** Sign in once and your whole fleet comes along: every vacuum on your account appears as its own clean, native accessory in Apple Home. No clutter of fake fans and helper switches, and rooms appear with the names you gave them in the Roborock app.
 - ⚡ **Fast and reliable.** Commands go directly to the robot over your own network whenever possible, with the Roborock cloud as automatic backup — and built-in diagnostics in the settings if you ever want to look under the hood.
-- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 1680 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed and endorsed by the Homebridge team. 1686 automated tests, zero known vulnerabilities, no analytics, and a startup designed to never crash your Homebridge — even when your Wi-Fi or the Roborock cloud has a bad day.
 
 ## Features
 
@@ -89,6 +89,8 @@ While a robot is actively cleaning, the plugin fetches its live position from th
 Enable **Enable Suction-Level Cleaning Modes** (`enableFanPowerCleanModes`) and Apple Home's mode picker gains the suction levels — rendered by Apple with localized names from the Matter mode tags: **Quiet / Automatic / Quick / Max** (+ **Deep Clean** for the Q7's Max+ level). The current mode follows the robot live, so suction changed in the Roborock app shows up in Apple Home too.
 
 The clean mode follows the robot as well: start a vacuum+mop or mop-only clean from the Roborock app (or the robot's buttons) and Apple Home switches to the matching mode during the run — no setup needed.
+
+**Changing the mode mid-run needs Homebridge `2.4.1-beta.11` or newer.** Matter forbids a clean-mode change outside idle unless the device advertises the `DirectModeChange` feature, and a plugin could not advertise it until [homebridge/homebridge#4001](https://github.com/homebridge/homebridge/pull/4001). With a version that has it, a mode picked while the robot is running or paused is sent to the robot straight away and the picker holds your choice until the robot's status agrees. On `2.4.0` the declaration is inert: the picker still only takes effect on the next start, exactly as before.
 
 > ⚠️ **Re-pairing required:** Matter locks an accessory's mode list at commissioning. After enabling (or disabling) this option, restart Homebridge, then **remove the robot from Apple Home and pair it again** — otherwise the new modes will not appear. The same applies to any option that changes announced capabilities.
 
@@ -255,7 +257,7 @@ The complete path — robot → plugin → Homebridge → matter.js store — wa
 
 ## Contributing
 
-Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 1680 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
+Model reports, diagnostics exports, and pull requests are very welcome. The codebase ships with 1686 tests (protocol fixtures verified against the [python-roborock](https://github.com/Python-roborock/python-roborock) reference), strict TypeScript checking, and CI across Node 22/24 × Homebridge 1.11/2.x — `npm test` before you push and you're set.
 
 ## Support the project
 
