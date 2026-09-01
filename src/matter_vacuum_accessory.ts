@@ -287,14 +287,43 @@ const ROBOROCK_FAN_POWER_BALANCED = 102;
 const ROBOROCK_WATER_BOX_OFF = 200;
 const ROBOROCK_WATER_BOX_MILD = 201;
 
-// Matter Service Area OperationalStatusEnum (progress list entries).
 /**
- * How many consecutive live-room readings a room needs before the plugin will
- * call it visited. See `liveRoomVisitAreaId` for why 2, and why erring low is
- * the safe direction.
+ * Floor on how many DISTINCT live-room observations a room needs before the
+ * plugin will call it visited. This is only a floor: the dwell below is what
+ * actually separates cleaning a room from crossing it. See
+ * `liveRoomVisitAreaId`.
  */
 const LIVE_ROOM_READINGS_TO_CONFIRM = 2;
 
+/**
+ * How long the robot has to have been observed inside a room, continuously,
+ * before the room counts as visited.
+ *
+ * This is the measurement that separates cleaning from crossing, and it is
+ * sized against the two durations it has to tell apart rather than tuned:
+ *
+ * - A crossing is bounded by the room's own size divided by travel speed. A
+ *   Roborock travels on the order of 0.3 m/s, so even a 10-metre traverse is
+ *   about 35 seconds, and most are far shorter.
+ * - Cleaning the smallest real room takes minutes, because the robot covers it
+ *   in a boustrophedon pattern rather than a straight line.
+ *
+ * 90 seconds sits between the two with margin on both sides. It is also 9x the
+ * 10-second live-room observation cadence, which matters for the reason this
+ * project already wrote down for backoff constants: a gate on the same order
+ * as the cadence that produced the failure does not gate anything. The
+ * previous rule — 2 readings, nominally 10 to 20 seconds — was exactly that
+ * gate, which is why vp-debug12 still saw crossed rooms marked cleaned.
+ *
+ * The failure direction is deliberate. A room that really was cleaned but
+ * somehow missed the dwell falls back to Pending mid-run, and the end of the
+ * run marks every requested area Completed anyway, so that mistake corrects
+ * itself. The opposite mistake does not: it reports work the robot has not
+ * done. When in doubt, under-confirm.
+ */
+const LIVE_ROOM_DWELL_TO_CONFIRM_MS = 90 * 1000;
+
+// Matter Service Area OperationalStatusEnum (progress list entries).
 const SERVICE_AREA_PROGRESS = {
   PENDING: 0,
   OPERATING: 1,
@@ -783,19 +812,36 @@ export default class RoborockMatterVacuumAccessory {
    * a robot crossing the hall to reach the bedroom marked the hall cleaned on
    * the way past — reported by vp-debug12 in #9, and exactly right.
    *
-   * The fix is a dwell: a room counts as visited only once the robot has been
-   * detected in it on 2 consecutive live-room readings. Readings are at least
-   * 10 seconds apart, so this asks the robot to still be there next time —
-   * true of a room being cleaned, false of a room being crossed.
+   * 3.19.7 answered this with a dwell of 2 consecutive readings, and
+   * vp-debug12 reported the symptom unchanged. The rule was defeated twice
+   * over, and both holes are worth naming because both are easy to reintroduce.
    *
-   * Under-confirming is the safe direction and is why 2 is enough rather than
-   * some larger number tuned by guesswork: a room that really was cleaned but
-   * missed its second reading falls back to Pending mid-run, and the run's
-   * own end marks everything Completed anyway. Over-confirming is the one
-   * that lies, and it lies about work the robot has not done.
+   * 1. It counted CALLS, not observations. This method runs from the 15-second
+   *    poll, the 60-second heartbeat and every pushed cloud message, while the
+   *    live room itself is refetched at most every 10 seconds. Two calls inside
+   *    one fetch window therefore read the SAME physical position sample twice
+   *    and confirmed the room from it — a single sighting, counted double.
+   * 2. Even with two genuinely distinct samples, 2 readings 10 seconds apart
+   *    spans about as long as a crossing takes. The gate was the same order of
+   *    magnitude as the thing it was filtering.
+   *
+   * So a visit is now measured the way the physical question is asked: over
+   * distinct observations, identified by the reading's own `at` timestamp, and
+   * over the elapsed time those observations span. A room is visited once it
+   * has been seen at least `LIVE_ROOM_READINGS_TO_CONFIRM` times and the visit
+   * spans at least `LIVE_ROOM_DWELL_TO_CONFIRM_MS`. Leaving the room ends the
+   * visit, so time is never accumulated across separate passes.
+   *
+   * Elapsed time comes from the observations themselves rather than from
+   * `Date.now()` at processing time: it is the interval the robot was actually
+   * seen in the room, not the interval during which we happened to look.
    */
   private liveRoomVisitAreaId: number | null = null;
   private liveRoomVisitReadings = 0;
+  // First and most recent observation timestamps of the CURRENT visit. Their
+  // difference is the dwell. In-memory only, like liveConfirmedServiceAreaIds.
+  private liveRoomVisitFirstSeenAt: number | null = null;
+  private liveRoomVisitLastSeenAt: number | null = null;
   // Per-cluster JSON of the last CONFIRMED publish. Used to skip republishing
   // identical cluster payloads on every poll/heartbeat. Safe against the
   // historical "Updating..." desync (see updateMatterState comment) because
@@ -3442,6 +3488,8 @@ export default class RoborockMatterVacuumAccessory {
     this.liveConfirmedServiceAreaIds = new Set();
     this.liveRoomVisitAreaId = null;
     this.liveRoomVisitReadings = 0;
+    this.liveRoomVisitFirstSeenAt = null;
+    this.liveRoomVisitLastSeenAt = null;
     this.serviceAreaCurrentArea = areaIds[0];
     this.serviceAreaProgress = areaIds.map((areaId, index) => ({
       areaId,
@@ -3492,6 +3540,8 @@ export default class RoborockMatterVacuumAccessory {
     this.liveConfirmedServiceAreaIds = new Set();
     this.liveRoomVisitAreaId = null;
     this.liveRoomVisitReadings = 0;
+    this.liveRoomVisitFirstSeenAt = null;
+    this.liveRoomVisitLastSeenAt = null;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
@@ -3554,6 +3604,8 @@ export default class RoborockMatterVacuumAccessory {
     this.liveConfirmedServiceAreaIds = new Set();
     this.liveRoomVisitAreaId = null;
     this.liveRoomVisitReadings = 0;
+    this.liveRoomVisitFirstSeenAt = null;
+    this.liveRoomVisitLastSeenAt = null;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = [];
     this.persistServiceAreaProgress();
@@ -3571,6 +3623,8 @@ export default class RoborockMatterVacuumAccessory {
     this.liveConfirmedServiceAreaIds = new Set();
     this.liveRoomVisitAreaId = null;
     this.liveRoomVisitReadings = 0;
+    this.liveRoomVisitFirstSeenAt = null;
+    this.liveRoomVisitLastSeenAt = null;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
@@ -3626,6 +3680,46 @@ export default class RoborockMatterVacuumAccessory {
     }
   }
 
+  /**
+   * Fold one live-room observation into the current visit, and promote the
+   * room to confirmed once the visit is long enough to be a clean rather than
+   * a crossing. See `liveRoomVisitAreaId` for why both conditions are needed.
+   */
+  private recordLiveRoomVisit(areaId: number, observedAt: number): void {
+    if (this.liveRoomVisitAreaId !== areaId) {
+      // A different room ends the previous visit outright: dwell is never
+      // accumulated across separate passes through the same room.
+      this.liveRoomVisitAreaId = areaId;
+      this.liveRoomVisitReadings = 1;
+      this.liveRoomVisitFirstSeenAt = observedAt;
+      this.liveRoomVisitLastSeenAt = observedAt;
+    } else if (
+      this.liveRoomVisitLastSeenAt === null ||
+      observedAt > this.liveRoomVisitLastSeenAt
+    ) {
+      // A genuinely new sighting. Re-reading the cached sample — which happens
+      // whenever a publish cycle runs faster than the live-room refetch — adds
+      // neither a reading nor dwell, because nothing new was observed.
+      this.liveRoomVisitReadings += 1;
+      this.liveRoomVisitLastSeenAt = observedAt;
+      if (this.liveRoomVisitFirstSeenAt === null) {
+        this.liveRoomVisitFirstSeenAt = observedAt;
+      }
+    }
+
+    const dwellMs =
+      this.liveRoomVisitFirstSeenAt !== null &&
+      this.liveRoomVisitLastSeenAt !== null
+        ? this.liveRoomVisitLastSeenAt - this.liveRoomVisitFirstSeenAt
+        : 0;
+    if (
+      this.liveRoomVisitReadings >= LIVE_ROOM_READINGS_TO_CONFIRM &&
+      dwellMs >= LIVE_ROOM_DWELL_TO_CONFIRM_MS
+    ) {
+      this.liveConfirmedServiceAreaIds.add(areaId);
+    }
+  }
+
   private applyLiveServiceAreaRoom(operationalState: number): void {
     if (!this.isServiceAreaEnabled()) {
       return;
@@ -3652,6 +3746,9 @@ export default class RoborockMatterVacuumAccessory {
     if (segmentId === null) {
       return;
     }
+    // The reading's own observation time. Older API surfaces on the classic
+    // path may not carry one; processing time is the honest fallback there.
+    const observedAt = this.getNumberFromValue(liveRoom?.at) ?? Date.now();
 
     const area = this.getMatterServiceAreas().find(
       (candidate) => candidate.segmentId === segmentId
@@ -3699,15 +3796,7 @@ export default class RoborockMatterVacuumAccessory {
       });
     }
 
-    if (this.liveRoomVisitAreaId === area.areaId) {
-      this.liveRoomVisitReadings += 1;
-    } else {
-      this.liveRoomVisitAreaId = area.areaId;
-      this.liveRoomVisitReadings = 1;
-    }
-    if (this.liveRoomVisitReadings >= LIVE_ROOM_READINGS_TO_CONFIRM) {
-      this.liveConfirmedServiceAreaIds.add(area.areaId);
-    }
+    this.recordLiveRoomVisit(area.areaId, observedAt);
     if (!changedCurrentArea && !changedProgress) {
       return;
     }

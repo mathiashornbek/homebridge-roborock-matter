@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.21.2
+
+**Driving through a room still marked it cleaned. 3.19.7 was meant to fix that and did not.**
+
+vp-debug12 reported in #9 that a room the robot merely crosses on its way somewhere else gets reported as cleaned. 3.19.7 answered it with a rule that a room has to be seen on 2 consecutive readings before it counts as visited. He reported the symptom unchanged, and guessed the reason himself: it takes longer than expected to move across the area. He was right, and the rule was defeated in two separate ways.
+
+**It counted calls, not sightings.** The code that folds a live room into the Matter progress list runs from the 15-second poll, from the 60-second heartbeat, and from every pushed cloud message. The robot's position is refetched at most every 10 seconds. So two of those calls landing inside one fetch window read the _same_ physical position sample twice, and that was enough to confirm the room — one sighting, counted double. A room could be marked cleaned from a single glimpse, which is exactly the behaviour 3.19.7 set out to remove.
+
+**And two readings was never long enough anyway.** Readings are 10 seconds apart, so the rule asked a crossed room to still be there roughly 10 to 20 seconds later — about as long as crossing a room takes. The gate was the same order of magnitude as the thing it was filtering, so it filtered very little.
+
+**A visit is now measured in time, over distinct sightings.** Each reading carries the moment the position was observed, and repeated reads of one sample no longer count. A room is reported cleaned only once the robot has been seen inside it at least twice and those sightings span at least 90 seconds. Leaving the room ends the visit, so two crossings never add up to a clean.
+
+90 seconds is picked against the two durations it has to separate rather than tuned: a crossing is bounded by the room's size divided by travel speed, which puts even a long traverse near 35 seconds, while covering a room in the robot's back-and-forth pattern takes minutes.
+
+**If it errs, it errs toward saying less.** A room genuinely cleaned that somehow falls short of the dwell shows as pending mid-run, and the end of the run marks everything completed regardless — so that mistake corrects itself. Claiming a clean that never happened does not correct itself, which is the whole complaint.
+
+4 new tests, 3 of which fail against the old rule, including a replay of a slow crossing and of one sample read by two publish cycles.
+
 ## 3.21.1
 
 **A login retry could restart the plugin after Homebridge had already shut it down.**
