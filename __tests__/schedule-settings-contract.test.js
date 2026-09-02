@@ -33,6 +33,31 @@ describe("HomeKit schedule settings contract", () => {
     expect(uiHtml).toContain('id="homekit-action-schedules"');
   });
 
+  test("schedule cloud policy keeps internal defaults out of user configuration", () => {
+    const removedKeys = [
+      "scheduleRefreshIntervalMinutes",
+      "scheduleBatchWindowMilliseconds",
+      "scheduleWriteSpacingMilliseconds",
+      "scheduleRateLimitCooldownMinutes",
+    ];
+
+    for (const key of removedKeys) {
+      expect(typesSource).not.toContain(`${key}?: number;`);
+      expect(schema.schema.properties[key]).toBeUndefined();
+      expect(uiJs).not.toContain(key);
+      expect(platformSource).not.toContain(`this.platformConfig.${key}`);
+    }
+
+    expect(uiHtml).not.toContain("schedule-refresh-interval-minutes");
+    expect(uiHtml).not.toContain("schedule-batch-window-milliseconds");
+    expect(uiHtml).not.toContain("schedule-write-spacing-milliseconds");
+    expect(uiHtml).not.toContain("schedule-rate-limit-cooldown-minutes");
+    expect(platformSource).toContain("new ScheduleAccountCoordinator()");
+    expect(scheduleSource).toMatch(
+      /cacheTtlMs: SCHEDULE_CACHE_TTL_MS,[\s\S]*?batchWindowMs: SCHEDULE_WRITE_BATCH_WINDOW_MS,[\s\S]*?writeSpacingMs: SCHEDULE_WRITE_SPACING_MS,[\s\S]*?throttleCooldownMs: SCHEDULE_THROTTLE_COOLDOWN_MS/
+    );
+  });
+
   test("the schedule checkbox is loaded from saved config", () => {
     expect(uiJs).toMatch(
       /elements\.homeKitActionSchedules\.checked\s*=\s*Boolean\(\s*config\.enableHomeKitScheduleSwitches\s*\)/
@@ -116,8 +141,10 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).not.toContain("stopPolling");
   });
 
-  test("schedule refresh uses a 60-second cache and no permanent polling", () => {
-    expect(scheduleSource).toMatch(/const SCHEDULE_CACHE_TTL_MS = 60 \* 1000;/);
+  test("schedule refresh uses a five-minute cache and no permanent polling", () => {
+    expect(scheduleSource).toMatch(
+      /const SCHEDULE_CACHE_TTL_MS = 5 \* 60 \* 1000;/
+    );
 
     expect(scheduleSource).toMatch(
       /private cachedSchedules: RoborockSchedule\[\] \| undefined;/
@@ -134,11 +161,11 @@ describe("HomeKit schedule settings contract", () => {
     );
 
     expect(scheduleSource).toMatch(
-      /const refresh = this\.performRefresh\(generation\);[\s\S]*?this\.refreshInProgress = refresh;/
+      /const refresh = this\.performRefresh\(generation, accountCoordinatorHeld\);[\s\S]*?this\.refreshInProgress = refresh;/
     );
 
     expect(scheduleSource).toMatch(
-      /const raw = await getServerTimers\(api, this\.duid, \{/
+      /const readSchedules = \(\) =>[\s\S]*?getServerTimers\(api, this\.duid, \{/
     );
 
     expect(scheduleSource).not.toContain("SCHEDULE_POLL_INTERVAL_MS");
@@ -178,7 +205,7 @@ describe("HomeKit schedule settings contract", () => {
 
   test("non-empty unparsable schedule responses are treated as untrusted", () => {
     expect(scheduleSource).toMatch(
-      /if \(raw\.length > 0 && schedules\.length === 0\) \{[\s\S]*?lastFailedRefreshAt = Date\.now\(\);[\s\S]*?preserving existing schedules/
+      /if \(raw\.length > 0 && schedules\.length === 0\) \{[\s\S]*?this\.recordRefreshFailure\(\);[\s\S]*?preserving existing schedules/
     );
   });
 
@@ -224,19 +251,33 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain("generation !== this.refreshGeneration");
   });
 
-  test("schedule writes capture a timestamp before each actual cloud write", () => {
-    expect(scheduleSource).toContain("const writeStartedAt = Date.now();");
+  test("schedule batches capture a timestamp before each verification phase", () => {
+    expect(scheduleSource).toContain("const primaryStartedAt = Date.now();");
+    expect(scheduleSource).toContain("const fallbackStartedAt = Date.now();");
     expect(scheduleSource).toContain(
-      "const fallbackWriteStartedAt = Date.now();"
+      "await this.refreshDetailed(primaryStartedAt, true);"
     );
-    expect(scheduleSource).toContain("this.verify(enabled, writeStartedAt)");
     expect(scheduleSource).toContain(
-      "this.verify(enabled, fallbackWriteStartedAt)"
+      "await this.refreshDetailed(fallbackStartedAt, true);"
+    );
+  });
+
+  test("schedule writes are serialized by the per-vacuum coordinator", () => {
+    expect(scheduleSource).toContain(
+      "new ScheduleWriteBatcher<ScheduleWriteRequest>("
+    );
+    expect(scheduleSource).toContain(
+      "const executed = await this.coordinator.enqueueScheduleWrite("
+    );
+    expect(scheduleSource).toMatch(
+      /private stopRuntime\(\): void \{[\s\S]*?this\.writeBatcher\.cancelPending\(\);/
     );
   });
 
   test("failure backoff is debug-level", () => {
-    const start = scheduleSource.indexOf("this.lastFailedRefreshAt > 0 &&");
+    const start = scheduleSource.indexOf(
+      "(this.nextRefreshAttemptAt || 0) > now"
+    );
     const end = scheduleSource.indexOf(
       "this.platform.log.debug(`Schedule refreshIfNeeded: CALLING refresh()`);",
       start
@@ -254,12 +295,68 @@ describe("HomeKit schedule settings contract", () => {
 
   test("schedule verification uses the shared timer utility", () => {
     expect(scheduleSource).toContain(
-      'import { scheduleTimer, unrefTimer } from "./timers";'
+      'import { clearTimer, scheduleTimer, unrefTimer } from "./timers";'
     );
     expect(scheduleSource).toContain(
       "const timer = scheduleTimer(resolve, VERIFY_DELAY_MS);"
     );
     expect(scheduleSource).toContain("unrefTimer(timer);");
+  });
+
+  test("distinct schedule writes are conservatively spaced", () => {
+    expect(scheduleSource).toContain("const SCHEDULE_WRITE_SPACING_MS = 500;");
+    expect(scheduleSource).toContain(
+      "await this.waitForScheduleWriteSpacing();"
+    );
+    expect(scheduleSource).toContain(
+      "this.accountCoordinator.policy.writeSpacingMs"
+    );
+  });
+
+  test("definite throttling stops pending schedule traffic", () => {
+    expect(scheduleSource).toContain(
+      "export function isDefiniteScheduleThrottle(error: unknown): boolean"
+    );
+    expect(scheduleSource).toContain(
+      "const SCHEDULE_THROTTLE_COOLDOWN_MS = 65 * 60 * 1000;"
+    );
+    expect(scheduleSource).toContain("this.recordScheduleThrottle(error);");
+    expect(scheduleSource).toContain(
+      "this.accountCoordinator.recordThrottle(error);"
+    );
+    expect(scheduleSource).toContain(
+      "this.accountCoordinator.currentThrottleError()"
+    );
+  });
+
+  test("all vacuum schedule batches share the platform account coordinator", () => {
+    expect(scheduleSource).toContain("export class ScheduleAccountCoordinator");
+    expect(platformSource).toContain(
+      "private readonly scheduleAccountCoordinator: ScheduleAccountCoordinator;"
+    );
+    expect(platformSource).toContain(
+      "this.scheduleAccountCoordinator = new ScheduleAccountCoordinator();"
+    );
+    expect(platformSource).toContain("this.scheduleAccountCoordinator");
+    expect(scheduleSource).toContain(
+      "const result = await this.accountCoordinator.enqueue("
+    );
+    expect(scheduleSource).toContain(
+      "await this.accountCoordinator.enqueue(readSchedules, (error) => {"
+    );
+  });
+
+  test("schedule cloud policy and cumulative request totals are observable", () => {
+    expect(scheduleSource).toContain("metricsSnapshot():");
+    expect(scheduleSource).toContain("Schedule cloud totals: reads=");
+    expect(scheduleSource).toContain("primaryWrites=${metrics.primaryWrites}");
+    expect(scheduleSource).toContain(
+      "fallbackWrites=${metrics.fallbackWrites}"
+    );
+    expect(scheduleSource).toContain("coalesced=${metrics.coalescedChanges}");
+    expect(platformSource).toContain(
+      "this.log.info(this.scheduleAccountCoordinator.policyDescription());"
+    );
   });
 
   test("routine schedule cache decisions are debug-level", () => {
@@ -324,25 +421,15 @@ describe("HomeKit schedule settings contract", () => {
     );
   });
 
-  test("schedule verification refreshes through the coordinator", () => {
-    expect(scheduleSource).toContain("this.coordinator.refreshAndGetSchedule(");
+  test("schedule verification refreshes once per batch through the coordinator", () => {
     expect(scheduleSource).toContain(
-      "const current = await this.coordinator.refreshAndGetSchedule("
+      "await this.refreshDetailed(primaryStartedAt, true);"
     );
+    expect(scheduleSource).toContain("const fallback = primarySent.filter(");
     expect(scheduleSource).toContain(
-      "this.schedule = { ...current, timer: [...current.timer] };"
+      "await this.refreshDetailed(fallbackStartedAt, true);"
     );
-    expect(scheduleSource).toContain("return current.enabled === enabled;");
-  });
-
-  test("verified schedule writes use the coordinator snapshot", () => {
-    expect(scheduleSource).toContain(
-      "const current = await this.coordinator.refreshAndGetSchedule("
-    );
-    expect(scheduleSource).toContain(
-      "this.schedule = { ...current, timer: [...current.timer] };"
-    );
-    expect(scheduleSource).toContain("this.updateService(current.enabled);");
+    expect(scheduleSource).toContain("this.cachedScheduleMatches(request)");
   });
 
   test("stopped schedule coordinators cannot sync an in-flight refresh", () => {
