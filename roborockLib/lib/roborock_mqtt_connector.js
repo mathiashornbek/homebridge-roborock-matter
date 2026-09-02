@@ -6,7 +6,10 @@ const Parser = require("binary-parser").Parser;
 const zlib = require("zlib");
 const roborockCrypto = require("./roborockCrypto");
 const { describeDevice } = require("./describeDevice");
-const { describeReplyRefusal } = require("./describeReplyRefusal");
+const {
+  describeReplyRefusal,
+  createRefusalError,
+} = require("./describeReplyRefusal");
 
 const PHOTO_MAGIC = "ROBOROCK";
 const PHOTO_HEADER_MIN_LENGTH = 9;
@@ -417,8 +420,9 @@ class roborock_mqtt_connector {
             const refusal = describeReplyRefusal(dps);
             if (refusal) {
               pending.reject(
-                new Error(
-                  `The robot refused ${pending.method || "the request"} (cloud id ${dps.id}): ${refusal}`
+                createRefusalError(
+                  `The robot refused ${pending.method || "the request"} (cloud id ${dps.id}): ${refusal}`,
+                  dps
                 )
               );
             } else {

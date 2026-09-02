@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.21.4
+
+**The refusal 3.21.3 made visible was then reported as a plugin crash, twice per poll cycle, forever.**
+
+DSimeone1989 ran 3.21.3 and sent the line it was written to produce. His Saros 10R answers:
+
+```
+Cloud message with protocol 102 and id 5 received. No result; reply was {"id":5,"error":{"code":-10007,"message":"Not FCC robot"}}
+```
+
+That is the answer: the robot's firmware declines `get_server_timer` outright. The fix worked. What it also produced was this, every poll cycle, for a robot behaving exactly as intended:
+
+```
+Failed to execute get_server_timer on robot Rocky (roborock.vacuum.a144): Error: The robot refused get_server_timer (cloud id 5): Not FCC robot (code -10007)
+    at MqttClient.<anonymous> (…/roborock_mqtt_connector.js:420:17)
+    at MqttClient.emit (node:events:514:28)
+    … eight more frames
+```
+
+**A stated refusal was thrown as a bare `Error`.** It carried no code, so it matched none of `catchError`'s calm branches and fell through to the final `else`, which logs `error.stack`. The stack names our own MQTT handler and describes nothing that went wrong. Because the schedule coordinator and the generic poll both ask, it was emitted twice per cycle, indefinitely.
+
+**A refusal the robot spelled out is now a capability fact, not a failure.** It is tagged where it is constructed, carries the robot's own error code, is reported once per robot per method so the owner learns why a feature is missing, and then drops to debug. It never carries a stack trace and never escalates to `log.error`.
+
+Deliberately narrow: transport failures are untouched. A robot that is unreachable, a dead cloud link and a missing local socket all keep their existing loud paths — quieting those would tell an owner nothing is wrong while their robot is offline.
+
 ## 3.21.3
 
 **A robot that refuses a request was reported as a robot that answered nothing.**

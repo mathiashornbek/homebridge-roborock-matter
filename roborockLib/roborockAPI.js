@@ -20,6 +20,7 @@ const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
 const roborockCrypto = require("./lib/roborockCrypto");
+const { METHOD_REFUSED_CODE } = require("./lib/describeReplyRefusal");
 const b01Q7Adapter = require("./lib/b01Q7Adapter");
 
 // v1 states in which the robot is actively doing something and state
@@ -4313,6 +4314,33 @@ class Roborock {
         error.code === "B01_METHOD_UNSUPPORTED"
       ) {
         this.log.debug(errorText);
+        return;
+      }
+
+      // A refusal the robot spelled out is a fact about that robot, not a
+      // plugin failure: nothing on our side went wrong, so there is no stack
+      // worth printing, and the same robot will keep saying the same thing on
+      // every poll. Say it once so the owner learns why a feature is missing,
+      // then keep quiet. (Issue #22: a Saros 10R refuses `get_server_timer`
+      // with "Not FCC robot", which 3.21.3 rendered as an ERROR plus a
+      // ten-frame stack trace twice per poll cycle, indefinitely.)
+      if (
+        error &&
+        typeof error === "object" &&
+        error.code === METHOD_REFUSED_CODE
+      ) {
+        if (!this._reportedMethodRefusals) {
+          this._reportedMethodRefusals = new Set();
+        }
+        const seenKey = `${duid || "unknown"}:${attribute || "unknown"}`;
+        if (this._reportedMethodRefusals.has(seenKey)) {
+          this.log.debug(errorText);
+        } else {
+          this._reportedMethodRefusals.add(seenKey);
+          this.log.warn(
+            `${this.describeDevice(duid)} (${model || "unknown model"}) refuses ${attribute}: ${error.message}. This is the robot's own answer, not a plugin failure; it will not be reported again this session.`
+          );
+        }
         return;
       }
 

@@ -5,7 +5,10 @@ const Parser = require("binary-parser").Parser;
 const net = require("net");
 const dgram = require("dgram");
 const { describeDevice } = require("./describeDevice");
-const { describeReplyRefusal } = require("./describeReplyRefusal");
+const {
+  describeReplyRefusal,
+  createRefusalError,
+} = require("./describeReplyRefusal");
 
 const PORT = 58866;
 const TIMEOUT = 5000; // 5 Sekunden Timeout
@@ -603,8 +606,9 @@ class localConnector {
       }
       if (refusal && typeof reject === "function") {
         reject(
-          new Error(
-            `The robot refused ${method || "the request"} (local id ${id}): ${refusal}`
+          createRefusalError(
+            `The robot refused ${method || "the request"} (local id ${id}): ${refusal}`,
+            parsed_102
           )
         );
         return;
