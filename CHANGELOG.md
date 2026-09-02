@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.23.0
+
+**Where a newer robot actually keeps its schedules: a read-only measurement, on request.**
+
+Some newer robots decline the device-side schedule method outright. A Saros 10R (`roborock.vacuum.a144`) answers `-10007 "Not FCC robot"` to every `get_server_timer`, while the legacy `get_timer` honestly answers `[]`. Both answers are true — that robot holds no _device-side_ timers — and yet its owner has three daily schedules, which he showed running under the robot's own Schedule screen in the Roborock app. They are held server-side, on cloud routes the device protocol never touches, and this plugin has only ever asked the robot.
+
+Rather than map a payload nobody here has seen, this release measures it. With debug logging on, the plugin now asks the two candidate cloud routes for each robot once and prints what came back:
+
+- `user/devices/{duid}/jobs` — schedules
+- `user/scene/device/{duid}` — the app's Routines
+
+The answer is also filed under `lastCloudScheduleProbe` in the plugin's diagnostics.
+
+**This is a diagnostic, not a feature, and it is built to stay that way.** It is silent unless debug logging is on, so no installation pays for it uninvited. It only ever issues GETs, so it cannot alter a schedule. It runs once per robot per session, so no poll cadence can turn it into traffic. It cannot throw, because it rides along on a live poll. And credential-shaped fields in the answer are redacted before anything is logged.
+
+It does not yet expose these schedules in HomeKit. It establishes their shape, which is what the next step needs.
+
 ## 3.22.0
 
 **Schedule reads cost far fewer cloud calls, and the queue that makes that possible could deadlock itself.**

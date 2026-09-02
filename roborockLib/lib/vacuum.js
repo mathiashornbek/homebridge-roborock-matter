@@ -980,6 +980,19 @@ class vacuum {
           this.adapter.log.debug(
             `Roborock ${parameter} diagnostic for ${duid}: ${JSON.stringify(this.adapter.compactDiagnosticPayload(timers))}`
           );
+
+          // Both device-side timer methods have now answered for this robot,
+          // so this is the one moment where their answers can be compared with
+          // what the cloud holds (#22). The probe is read-only, debug-only and
+          // runs once per robot per session; it must not be able to fail the
+          // poll it is riding along on.
+          try {
+            await this.adapter.probeCloudScheduleRoutes?.(duid);
+          } catch (error) {
+            this.adapter.log.debug(
+              `Roborock cloud schedule probe for ${duid} could not run: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
       } else if (parameter == "get_photo") {
         const photoresponse = await sendParameterRequest(

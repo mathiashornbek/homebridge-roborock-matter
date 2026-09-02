@@ -59,4 +59,54 @@ describe("generic timer poll ownership", () => {
       "lastTimerDiagnostic: roborockDiagnostic.lastTimer || null"
     );
   });
+
+  /**
+   * Issue #22: the cloud schedule probe rides along on the legacy timer
+   * diagnostic, which is the one point in a poll where both device-side timer
+   * methods have already answered. Riding on a live poll is only acceptable
+   * while the two properties below hold, and both are invisible in the probe's
+   * own unit tests — they are properties of the CALL SITE.
+   */
+  test("the cloud schedule probe rides inside the debug-gated timer branch", () => {
+    const legacyTimerBranch = branchBetween(
+      '} else if (parameter == "get_timer") {',
+      '} else if (parameter == "get_photo") {'
+    );
+
+    expect(legacyTimerBranch).toContain(
+      "await this.adapter.probeCloudScheduleRoutes?.(duid);"
+    );
+    // The debug gate opens the branch, so the probe inherits it rather than
+    // re-deciding for itself here.
+    expect(
+      legacyTimerBranch.indexOf("if (this.adapter.config.debug) {")
+    ).toBeLessThan(legacyTimerBranch.indexOf("probeCloudScheduleRoutes"));
+  });
+
+  test("the probe cannot fail the poll it rides on", () => {
+    const legacyTimerBranch = branchBetween(
+      '} else if (parameter == "get_timer") {',
+      '} else if (parameter == "get_photo") {'
+    );
+
+    expect(legacyTimerBranch).toMatch(
+      /try \{\s*await this\.adapter\.probeCloudScheduleRoutes\?\.\(duid\);\s*\} catch \(error\) \{/
+    );
+  });
+
+  test("the probe reads the two cloud schedule routes and only reads", () => {
+    expect(apiSource).toContain("`user/devices/${duid}/jobs`");
+    expect(apiSource).toContain("`user/scene/device/${duid}`");
+
+    const probeStart = apiSource.indexOf("async probeCloudScheduleRoutes(");
+    const probeEnd = apiSource.indexOf("async updateServerTimer(", probeStart);
+    expect(probeStart).toBeGreaterThanOrEqual(0);
+    expect(probeEnd).toBeGreaterThan(probeStart);
+
+    const probeSource = apiSource.slice(probeStart, probeEnd);
+    expect(probeSource).toContain("await this.api.get(route.path)");
+    // A write to any of these routes would change a user's schedule. The probe
+    // exists to measure, and nothing in it may send one.
+    expect(probeSource).not.toMatch(/this\.api\.(post|put|patch|delete)\(/);
+  });
 });

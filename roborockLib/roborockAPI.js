@@ -4540,6 +4540,113 @@ class Roborock {
     return await this.vacuums[duid].getServerTimers(duid, options);
   }
 
+  /**
+   * Ask the Roborock CLOUD where a robot's schedules live (#22).
+   *
+   * Some newer robots decline the device-side `get_server_timer` outright —
+   * a Saros 10R (`roborock.vacuum.a144`) answers `-10007 "Not FCC robot"` on
+   * every attempt, while the legacy `get_timer` honestly answers `[]`. Both
+   * answers are true: that robot has no DEVICE-side timers. Its owner
+   * demonstrably has three daily schedules in the app, under the robot's own
+   * Schedule screen, so they are held server-side on routes the device
+   * protocol knows nothing about.
+   *
+   * This is a MEASUREMENT, not a feature. It reads the two candidate routes
+   * and prints what came back, so the next release can map a real payload
+   * instead of a guess. Deliberately constrained:
+   *
+   * - **Debug only.** Silent for every installation that has not asked for it.
+   * - **GET only.** Nothing here can change a schedule. The Hawk interceptor
+   *   signs an empty body (`roborockAPI.js` request interceptor), so a
+   *   body-bearing write would not authenticate anyway — a read does.
+   * - **Once per robot per session,** so a poll cadence cannot turn it into
+   *   traffic.
+   * - **Never throws.** A probe that breaks startup would be worse than the
+   *   missing feature it investigates.
+   *
+   * @param {string} duid Robot to probe.
+   * @returns {Promise<Record<string, unknown> | undefined>} Per-route outcome,
+   *   or `undefined` when the probe did not run.
+   */
+  async probeCloudScheduleRoutes(duid) {
+    if (!duid || !this.config?.debug || !this.api) {
+      return undefined;
+    }
+
+    if (!this._probedCloudScheduleRoutes) {
+      this._probedCloudScheduleRoutes = new Set();
+    }
+
+    if (this._probedCloudScheduleRoutes.has(duid)) {
+      return undefined;
+    }
+
+    this._probedCloudScheduleRoutes.add(duid);
+
+    // Route names and shapes cross-checked against python-roborock's
+    // `get_schedules` and `get_scenes`. Our own `executeScene` already talks to
+    // `user/scene/{id}/execute` on this same client, which is what makes the
+    // base URL and the leading-slash convention here a measured fact rather
+    // than a hope.
+    const routes = [
+      { label: "schedules", path: `user/devices/${duid}/jobs` },
+      { label: "scenes", path: `user/scene/device/${duid}` },
+    ];
+
+    /** @type {Record<string, unknown>} */
+    const results = {};
+
+    for (const route of routes) {
+      try {
+        const response = await this.api.get(route.path);
+        // Roborock wraps most answers in `{api,result,status,success}`. Keep
+        // the envelope only when there is no `result` to unwrap, so the log
+        // shows the payload rather than the wrapper.
+        const payload =
+          response?.data?.result === undefined
+            ? response?.data
+            : response.data.result;
+
+        results[route.label] = {
+          path: route.path,
+          ok: true,
+          response: payload,
+        };
+
+        this.log.debug(
+          `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} answered: ${JSON.stringify(
+            this.compactDiagnosticPayload(payload)
+          )}`
+        );
+      } catch (error) {
+        const status = error?.response?.status;
+        const message =
+          error instanceof Error ? error.message : String(error ?? "");
+
+        results[route.label] = {
+          path: route.path,
+          ok: false,
+          status: status ?? null,
+          error: message,
+        };
+
+        this.log.debug(
+          `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} failed${
+            status ? ` with HTTP ${status}` : ""
+          }: ${message}`
+        );
+      }
+    }
+
+    await this.updateRoborockDiagnostics(
+      String(duid),
+      "lastCloudScheduleProbe",
+      results
+    );
+
+    return results;
+  }
+
   async updateServerTimer(duid, timerId, enabled, options = {}) {
     if (!this.vacuums[duid]) {
       throw new Error(
