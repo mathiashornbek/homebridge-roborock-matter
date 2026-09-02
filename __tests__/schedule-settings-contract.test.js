@@ -341,9 +341,34 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain(
       "const result = await this.accountCoordinator.enqueue("
     );
+    // The read path enqueues too, unless its caller already holds the queue.
     expect(scheduleSource).toContain(
-      "await this.accountCoordinator.enqueue(readSchedules, (error) => {"
+      ": await this.accountCoordinator.enqueue("
     );
+    expect(scheduleSource).toContain("return readSchedules();");
+  });
+
+  test("a caller holding the account queue cannot adopt a refresh that does not hold it", () => {
+    // Adopting one would be a circular wait: that refresh is queued behind the
+    // caller. No request timeout can break it, because the queued read has not
+    // been issued, so there is nothing to expire.
+    expect(scheduleSource).toContain(
+      "private refreshInProgressHoldsAccountQueue = false;"
+    );
+    expect(scheduleSource).toContain(
+      "(!accountCoordinatorHeld || this.refreshInProgressHoldsAccountQueue)"
+    );
+    expect(scheduleSource).toContain(
+      "this.refreshInProgressHoldsAccountQueue = accountCoordinatorHeld;"
+    );
+  });
+
+  test("a superseded refresh does not spend a cloud request when its turn comes", () => {
+    expect(scheduleSource).toContain(
+      "if (generation !== this.refreshGeneration || this.disposed) {"
+    );
+    expect(scheduleSource).toContain("superseded = true;");
+    expect(scheduleSource).toContain("if (superseded) {");
   });
 
   test("schedule cloud policy and cumulative request totals are observable", () => {

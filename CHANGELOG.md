@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.22.0
+
+**Schedule reads cost far fewer cloud calls, and the queue that makes that possible could deadlock itself.**
+
+pponce contributed #23, which cuts the cloud traffic HomeKit schedule operations generate. The schedule snapshot is now cached for 5 minutes instead of 1, read failures back off progressively (1m → 2m → 5m → 15m → 1h, with 10% jitter) instead of retrying every 30 seconds, rapid switch toggles inside a 500ms window are coalesced so only the last value for a schedule is sent, all schedule traffic for an account is serialised through one queue with 500ms spacing, and an explicit rate-limit answer from Roborock pauses that account's schedule traffic for 65 minutes rather than hammering it. For an account with several vacuums this is the difference between a steady stream of requests and a handful.
+
+**The defect found while reviewing it, and fixed here.** A write batch runs inside the account queue and verifies itself afterwards by refreshing. That verification refresh is told the queue is already held, so it reads directly instead of queueing behind itself — correct. But a refresh may _adopt_ another refresh that is already in flight, and an ordinary HomeKit read of a schedule switch starts one that does **not** hold the queue. With a schedule snapshot older than the cache, a single `onGet` during a write was enough:
+
+- the HomeKit read's refresh takes a place in the queue **behind** the running batch;
+- the batch finishes writing, waits, and adopts that refresh as its verification;
+- the refresh cannot start until the batch releases the queue, and the batch cannot release it until the refresh returns.
+
+Nothing below the queue could break this. The timeouts that make the queue safe apply to requests that have been issued, and this read was never issued — there was nothing to expire. Both promises stayed pending forever: the HomeKit switch never answered, and the account queue was wedged for **every** vacuum on the account until Homebridge restarted.
+
+A caller holding the queue now refuses to adopt a refresh that does not hold it, and starts its own instead. Separately, a refresh that has been superseded while waiting in the queue no longer spends a cloud request when its turn comes — the generation guards already barred it from storing the result, so the request was pure waste.
+
 ## 3.21.4
 
 **The refusal 3.21.3 made visible was then reported as a plugin crash, twice per poll cycle, forever.**

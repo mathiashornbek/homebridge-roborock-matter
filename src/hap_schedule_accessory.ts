@@ -387,6 +387,7 @@ export default class RoborockHapScheduleAccessory {
   private readonly writeBatcher: ScheduleWriteBatcher<ScheduleWriteRequest>;
   private refreshInProgress: Promise<RoborockScheduleRefreshResult> | undefined;
   private refreshInProgressStartedAt = 0;
+  private refreshInProgressHoldsAccountQueue = false;
   private refreshGeneration = 0;
 
   constructor(
@@ -618,7 +619,14 @@ export default class RoborockHapScheduleAccessory {
 
     if (
       this.refreshInProgress &&
-      this.refreshInProgressStartedAt >= minimumRefreshStartedAt
+      this.refreshInProgressStartedAt >= minimumRefreshStartedAt &&
+      // A caller that already holds the account queue must never adopt a
+      // refresh that does not hold it. Such a refresh is waiting its turn
+      // *behind* this caller, so waiting for it is a circular wait that no
+      // request timeout can break: the queued read has not been issued, so
+      // there is nothing to expire. It would strand the HomeKit write and
+      // wedge the account queue for every vacuum until Homebridge restarts.
+      (!accountCoordinatorHeld || this.refreshInProgressHoldsAccountQueue)
     ) {
       return this.refreshInProgress;
     }
@@ -630,6 +638,7 @@ export default class RoborockHapScheduleAccessory {
 
     this.refreshInProgress = refresh;
     this.refreshInProgressStartedAt = startedAt;
+    this.refreshInProgressHoldsAccountQueue = accountCoordinatorHeld;
 
     try {
       return await refresh;
@@ -639,6 +648,7 @@ export default class RoborockHapScheduleAccessory {
       if (this.refreshInProgress === refresh) {
         this.refreshInProgress = undefined;
         this.refreshInProgressStartedAt = 0;
+        this.refreshInProgressHoldsAccountQueue = false;
       }
     }
   }
@@ -655,11 +665,33 @@ export default class RoborockHapScheduleAccessory {
           requestTimeoutMs: 10000,
         });
       };
+      // A refresh can wait a long time in the account queue, and a newer
+      // refresh may replace it while it waits. A superseded refresh is barred
+      // from storing its result by the generation guards below, so issuing its
+      // cloud request once it reaches the front of the queue is pure waste.
+      let superseded = false;
       const raw = accountCoordinatorHeld
         ? await readSchedules()
-        : await this.accountCoordinator.enqueue(readSchedules, (error) => {
-            throw error;
-          });
+        : await this.accountCoordinator.enqueue(
+            async () => {
+              if (generation !== this.refreshGeneration || this.disposed) {
+                superseded = true;
+                return undefined;
+              }
+
+              return readSchedules();
+            },
+            (error) => {
+              throw error;
+            }
+          );
+
+      if (superseded) {
+        return {
+          success: false,
+          hasSchedules: this.scheduleAccessories.size > 0,
+        };
+      }
 
       this.platform.log.debug(
         `Schedule discovery for ${this.duid}: ` +
@@ -1040,6 +1072,7 @@ export default class RoborockHapScheduleAccessory {
     this.refreshGeneration++;
     this.refreshInProgress = undefined;
     this.refreshInProgressStartedAt = 0;
+    this.refreshInProgressHoldsAccountQueue = false;
     this.cachedSchedules = undefined;
     this.lastScheduleRefreshAt = 0;
     this.clearRefreshFailure();
