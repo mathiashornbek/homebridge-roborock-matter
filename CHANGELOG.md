@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.24.0
+
+**The probe from 3.23.0 came back, and it found the schedules.**
+
+Issue #22's reporter has three daily schedules in the Roborock app that his Saros 10R (`roborock.vacuum.a144`) insists it does not have — it refuses `get_server_timer` outright with `-10007 "Not FCC robot"`, and answers the legacy `get_timer` with `[]`. Both answers were true. 3.23.0 shipped a read-only diagnostic to find out where the schedules actually live, and his log settles it:
+
+- `GET user/devices/<duid>/jobs` → `[]`. That route is out.
+- `GET user/scene/device/<duid>` → **all three schedules**, with cron, timezone, enable flag and the room task.
+
+His app screenshots explain the shape. The three entries under **Meine Programme** each carry a clock icon, and in Roborock's data model a named program with a timer _is_ a scene with a `TIMER` trigger. Newer robots keep their schedules as cloud scenes, not as device timers. The device protocol was being asked a question only the cloud can answer.
+
+**What this release changes is the diagnostic, not the feature.** Reading these into HomeKit switches needs a route that can enable and disable a scene, and no such route has been measured. Guessing a write endpoint against somebody's live account is how you delete a schedule they depend on, so that half waits for a measurement rather than a hope.
+
+What it does change is that the measurement now survives being logged. The probe printed its answer through the diagnostic compactor, which caps every string at 500 characters and every array at 8 entries — the right default for an envelope nobody has mapped, and costly on this one. Measured on the real answer: every one of the three scenes was cut mid-task, so the log recorded _when_ each schedule fires and never _what it runs_, and an account with more than eight schedules would have lost the rest of them silently. The payload is now decoded from the raw answer, before compaction, and reported as facts:
+
+```
+… — user/scene/device/<duid> carries 3 timer-driven scene(s):
+…   "Saugen+" (scene …) — 09:00 on Wed (Europe/Berlin), enabled, runs do_scenes_segments over 7 segment(s)
+```
+
+The constraints from 3.23.0 are unchanged: debug logging only, `GET` only, once per robot per session, and it cannot throw. The decoder is pure, carries neither the duid nor room names out of the payload, and renders a cron only in the shape the app actually produces — anything else is printed verbatim rather than half-translated. A scene with no timer is one of the app's manually run Routines; it is counted in the summary rather than dropped without saying so.
+
 ## 3.23.1
 
 **A Q7 that finished cleaning normally asked its owner to report a fault.**

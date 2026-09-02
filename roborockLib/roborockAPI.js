@@ -21,6 +21,9 @@ const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
 const roborockCrypto = require("./lib/roborockCrypto");
 const { METHOD_REFUSED_CODE } = require("./lib/describeReplyRefusal");
+const {
+  summariseCloudSceneSchedules,
+} = require("./lib/parseCloudSceneSchedules");
 const b01Q7Adapter = require("./lib/b01Q7Adapter");
 
 // v1 states in which the robot is actively doing something and state
@@ -4568,6 +4571,25 @@ class Roborock {
    * @returns {Promise<Record<string, unknown> | undefined>} Per-route outcome,
    *   or `undefined` when the probe did not run.
    */
+  /**
+   * Turn a cloud schedule answer into legible lines, or nothing.
+   *
+   * Wrapped because it decorates a diagnostic that rides on a live poll: a
+   * decoder that threw would cost more than the reading it produces. The
+   * decoder itself is pure and already declines shapes it does not recognise,
+   * so an unrecognised route simply yields no extra lines.
+   *
+   * @param {unknown} payload unwrapped route answer
+   * @returns {string[]} headline plus one line per schedule, or an empty array
+   */
+  describeCloudScheduleAnswer(payload) {
+    try {
+      return summariseCloudSceneSchedules(payload);
+    } catch {
+      return [];
+    }
+  }
+
   async probeCloudScheduleRoutes(duid) {
     if (!duid || !this.config?.debug || !this.api) {
       return undefined;
@@ -4607,10 +4629,18 @@ class Roborock {
             ? response?.data
             : response.data.result;
 
+        // Decode BEFORE compacting. `compactDiagnosticPayload` caps strings at
+        // 500 characters and arrays at 8 entries; measured on the real scenes
+        // answer, that cut every schedule mid-task and would drop a ninth
+        // schedule entirely. The raw answer is the only place the measurement
+        // is intact.
+        const decoded = this.describeCloudScheduleAnswer(payload);
+
         results[route.label] = {
           path: route.path,
           ok: true,
           response: payload,
+          schedules: decoded.length > 0 ? decoded : undefined,
         };
 
         this.log.debug(
@@ -4618,6 +4648,18 @@ class Roborock {
             this.compactDiagnosticPayload(payload)
           )}`
         );
+
+        if (decoded.length > 0) {
+          const [headline, ...entries] = decoded;
+          this.log.debug(
+            `Roborock cloud schedule probe for ${this.describeDevice(duid)} — ${route.path} carries ${headline}:`
+          );
+          for (const entry of entries) {
+            this.log.debug(
+              `Roborock cloud schedule probe for ${this.describeDevice(duid)} —   ${entry}`
+            );
+          }
+        }
       } catch (error) {
         const status = error?.response?.status;
         const message =

@@ -321,6 +321,147 @@ describe("the probe cannot break the poll it rides on", () => {
   });
 });
 
+describe("the probe reports the schedules it found, not just the bytes", () => {
+  /**
+   * The reporter's real answer, structurally faithful: the cron lives inside
+   * a JSON string nested two levels deep, behind a room list long enough to
+   * pass the diagnostic's own 500-character string cap.
+   */
+  const ROOMS = "Schlafzimmer Esszimmer Küche Wohnzimmer Büro Flur ".repeat(20);
+  const TIMER_SCENE = {
+    id: 14303871,
+    name: "Saugen+",
+    enabled: true,
+    type: "WORKFLOW",
+    param: JSON.stringify({
+      triggers: [
+        {
+          id: 6841731,
+          name: "TIMER",
+          type: "TIMER",
+          entityId: "",
+          param: JSON.stringify({
+            cron: "0 9 * * 3",
+            type: "NORMAL",
+            enabled: true,
+            repeated: true,
+            timeZoneId: "Europe/Berlin",
+          }),
+        },
+      ],
+      action: {
+        type: "S",
+        items: [
+          {
+            id: 1,
+            type: "CMD",
+            name: ROOMS,
+            entityId: "duid-a144",
+            param: JSON.stringify({
+              id: 1,
+              method: "do_scenes_segments",
+              params: { data: [{ tid: "1786680804759", segs: [{ sid: 2 }] }] },
+            }),
+          },
+        ],
+      },
+    }),
+  };
+
+  function withTimerScene() {
+    return makeClient({
+      [SCHEDULES_PATH]: { data: { result: [] } },
+      [SCENES_PATH]: { data: { result: [TIMER_SCENE] } },
+    });
+  }
+
+  test("the decoded schedule reaches the log in plain words", async () => {
+    const adapter = makeAdapter({ client: withTimerScene() });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    const logged = adapter.log.lines.debug.join("\n");
+    expect(logged).toContain("carries 1 timer-driven scene(s)");
+    expect(logged).toContain('"Saugen+" (scene 14303871)');
+    expect(logged).toContain("09:00 on Wed");
+    expect(logged).toContain("Europe/Berlin");
+    expect(logged).toContain("do_scenes_segments");
+  });
+
+  test("the task the raw line truncated away is still reported", async () => {
+    const adapter = makeAdapter({ client: withTimerScene() });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    const rawLine = adapter.log.lines.debug.find(
+      (line) => line.includes("answered:") && line.includes(SCENES_PATH)
+    );
+    // The diagnostic still compacts what it prints, and that is right for an
+    // envelope nobody has mapped. This is what it cost on the real answer:
+    // every scene was cut mid-task, so the log said when each schedule fires
+    // and never what it does.
+    expect(rawLine).toContain("...");
+    expect(rawLine).not.toContain("do_scenes_segments");
+    // The decoded reading is taken from the raw answer, so it is intact.
+    expect(
+      adapter.log.lines.debug.some((line) =>
+        line.includes("do_scenes_segments over 1 segment(s)")
+      )
+    ).toBe(true);
+  });
+
+  test("a ninth schedule survives the array cap that drops it from the raw line", async () => {
+    const many = Array.from({ length: 9 }, (_, index) => ({
+      ...TIMER_SCENE,
+      id: 100 + index,
+      name: `Plan ${index}`,
+    }));
+    const adapter = makeAdapter({
+      client: makeClient({
+        [SCHEDULES_PATH]: { data: { result: [] } },
+        [SCENES_PATH]: { data: { result: many } },
+      }),
+    });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    const rawLine = adapter.log.lines.debug.find(
+      (line) => line.includes("answered:") && line.includes(SCENES_PATH)
+    );
+    expect(rawLine).toContain("[truncated:1]");
+    expect(rawLine).not.toContain("Plan 8");
+
+    expect(
+      adapter.log.lines.debug.some((line) =>
+        line.includes("carries 9 timer-driven scene(s)")
+      )
+    ).toBe(true);
+    expect(
+      adapter.log.lines.debug.some((line) => line.includes('"Plan 8"'))
+    ).toBe(true);
+  });
+
+  test("the decoded reading is filed in diagnostics alongside the answer", async () => {
+    const adapter = makeAdapter({ client: withTimerScene() });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.scenes.schedules[0]).toBe("1 timer-driven scene(s)");
+    expect(result.schedules.schedules).toBeUndefined();
+  });
+
+  test("a route with nothing to decode adds no lines at all", async () => {
+    const adapter = makeAdapter({ client: okBoth() });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(
+      adapter.log.lines.debug.some((line) => line.includes("carries"))
+    ).toBe(false);
+    expect(adapter.log.lines.error).toHaveLength(0);
+  });
+});
+
 describe("a cloud envelope is not ours to print blindly", () => {
   test("credential-shaped keys in the answer are redacted in the log", async () => {
     const client = makeClient({
