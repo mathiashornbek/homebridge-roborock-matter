@@ -197,13 +197,40 @@ function v1FanPowerToWind(family) {
 // Fault codes that are informational rather than active errors — per family,
 // because the 2 families reuse the same numbers for different things.
 //
-// Q7: 407 = "Cleaning in progress. Scheduled cleanup ignored".
-// Q10: 400 = scheduled clean starting, 501 = cleaning completed and returning
+// Q7: 407 = "Cleaning in progress. Scheduled cleanup ignored", 2100 = "Low
+// battery. Resume cleaning after recharging", 2102 = "Cleaning completed.
+// Returning to the dock".
+// Q10: 400 = scheduled clean starting, 407 = cleaning in progress and a due
+// scheduled clean ignored, 501 = cleaning completed and returning
 // (hardware-confirmed upstream, and it fires after EVERY task, so treating it
 // as a fault would leave a Q10 permanently in error), 502 = low-battery
 // resume.
-const INFORMATIONAL_Q7_FAULTS = new Set([0, 407]);
-const INFORMATIONAL_Q10_FAULTS = new Set([0, 400, 501, 502]);
+//
+// EACH FAMILY NEEDS ITS OWN PER-TASK COMPLETION CODE, AND THE Q7 WAS MISSING
+// ITS ONE UNTIL 3.23.1. The 2 sets started from the codes each family had
+// actually been measured emitting, which left them asymmetric in both
+// directions: the Q10 had its after-every-task code (501) while the Q7 did
+// not, and the Q7 had 407 while the Q10 did not — even though upstream marks
+// `YXFault` 407 hardware-confirmed on a physical ss07 and "lifecycle, not an
+// error".
+//
+// The Q7 gap surfaced on the maintainer's own `sc05`, which logged 6 distinct
+// unmapped codes in a single day (2110, 2108, 501, 2102, 2103, 2105), every
+// one of them mid-run, and then finished and docked at 100 % with nothing
+// wrong. Read against python-roborock's `B01Fault`, 2 of the 6 are not faults:
+// 2102 fires after every task, and 2100 is the robot announcing normal
+// auto-recharge-and-resume — the Q7 analogue of the Q10's 502.
+//
+// WHAT IS DELIBERATELY LEFT SURFACING, BECAUSE SILENCE IS NOT FREE. Only a
+// healthy robot's lifecycle notifications belong here. Q7's 2003 ("Battery
+// level below 20%. Scheduled task canceled") and 2007/2012 ("Unable to reach
+// the target. Cleaning ended") are outcomes a user may want to know about — a
+// scheduled clean that did not run is not noise. And the codes upstream has no
+// description for at all (2103, 2105, 2108, 2110 are bare `fault_NNNN` there)
+// stay put: silencing a number nobody has explained would be a guess, not a
+// translation.
+const INFORMATIONAL_Q7_FAULTS = new Set([0, 407, 2100, 2102]);
+const INFORMATIONAL_Q10_FAULTS = new Set([0, 400, 407, 501, 502]);
 
 /** @param {string} family */
 function informationalFaults(family) {

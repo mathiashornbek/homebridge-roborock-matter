@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.23.1
+
+**A Q7 that finished cleaning normally asked its owner to report a fault.**
+
+The maintainer's own `roborock.vacuum.sc05` logged six distinct unexplained `error_code`s in a single day — 2110, 2108, 501, 2102, 2103 and the long-familiar 2105 — every one of them while it was running. It then finished its run and docked at 100%. Nothing was wrong with it at any point.
+
+Read against python-roborock's own per-family fault tables, two of those six are not faults at all:
+
+- **2102** — "Cleaning completed. Returning to the dock." It fires after **every** task.
+- **2100** — "Low battery. Resume cleaning after recharging." The robot announcing normal auto-recharge-and-resume.
+
+The plugin already treats the Q10 family's equivalents this way: upstream marks that family's 501 as hardware-confirmed and firing per completed task, and its 502 as a low-battery resume, and both have been informational here since the families were split. The Q7 family was simply never given its own two. The asymmetry ran the other way too — the Q7 has always silenced 407 ("cleaning in progress, scheduled clean ignored") while the Q10 did not, though upstream marks it hardware-confirmed and "lifecycle, not an error" on that family as well. All three are informational now.
+
+Apple Home was never affected: no B01 fault number appears in the plugin's v1 error table, so an unrecognised one has always published nothing rather than drawing a fault on a healthy tile. What it reached was the log, which named the code once per run and asked the owner to report the number "if the robot really is in trouble right now" — asked, in these two cases, after a clean that had just completed successfully.
+
+**Restraint is the other half of this.** Only a healthy robot's lifecycle notifications are silenced. A scheduled clean that did not run (2003, "Battery level below 20%. Scheduled task canceled") and a clean that ended without reaching its target (2007, 2012) are outcomes an owner may want to know about, so they still surface. And the codes upstream itself cannot explain — 2103, 2105, 2108 and 2110 are bare `fault_NNNN` entries there too — stay exactly as they were. Silencing a number nobody has explained would be a guess, not a translation.
+
 ## 3.23.0
 
 **Where a newer robot actually keeps its schedules: a read-only measurement, on request.**
