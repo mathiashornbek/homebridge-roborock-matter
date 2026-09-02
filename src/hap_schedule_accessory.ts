@@ -10,6 +10,33 @@ import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const VERIFY_DELAY_MS = 3000;
 const WRITE_SUPPRESSION_MS = 5000;
+// WHY FIVE MINUTES, IN THE AUTHOR'S OWN WORDS. Recorded here rather than left
+// in the pull request, because the next person to look at this number will
+// look at this line and not at #23.
+//
+// pponce, who contributed the cache in 3.22.0, settled on 5 minutes for these
+// reasons:
+//
+//   * HomeKit reads characteristics far more often than schedules change.
+//   * A cloud request per read would multiply traffic across every switch and
+//     every vacuum on the account.
+//   * A schedule changed in HomeKit does NOT wait for this TTL — the write
+//     path performs its own authoritative verification.
+//   * So the only staleness this bounds is a change made externally, in the
+//     Roborock app.
+//   * Five minutes bounds that case while sharply cutting steady-state cloud
+//     traffic.
+//
+// The fourth point is the one worth keeping: this TTL is not "how stale may a
+// schedule switch be", it is "how stale may a switch be after a change this
+// bridge had no way to observe". Reasoning about it as a bound on all schedule
+// changes overstates the cost considerably.
+//
+// A user-configurable setting was considered and deliberately not added: the
+// real axis is how much a given user drives schedules from the Roborock app
+// versus from HomeKit, nobody has yet reported the default as wrong, and a
+// setting in this plugin costs four places to keep in sync permanently. This
+// constant can become a setting in an afternoon; a setting cannot be withdrawn.
 const SCHEDULE_CACHE_TTL_MS = 5 * 60 * 1000;
 const SCHEDULE_FAILURE_BACKOFF_STEPS_MS = [
   60 * 1000,
