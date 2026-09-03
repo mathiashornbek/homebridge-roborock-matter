@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.24.1
+
+**A robot whose DHCP lease moved it stayed on the cloud until Homebridge was restarted.**
+
+Issue #21 asked the question directly: other plugins for this robot drop the connection when its IP changes, so does this one handle it? The honest answer needed measuring, and the measurement found a gap.
+
+The local TCP transport learns each robot's address once, at startup, from the robot's own UDP broadcast. That address was then held in a closure for the life of the process. For every reason a local socket drops — a blip, a robot picked up and carried out of range, a reboot — retrying the same address is exactly right. For the one reason that lasts, a lease that moved the robot, it never was: the retry chain went on probing the old address, backing off to once every fifteen minutes, until somebody restarted Homebridge.
+
+Nothing looked broken, which is why this survived. A failed local connect falls back to the Roborock cloud automatically, so commands kept working and Apple Home kept responding. The only symptom was that the fast path never came back.
+
+Two things change:
+
+- The address a reconnect aims at is resolved when the retry timer fires rather than when it was armed, so any correction from elsewhere is picked up.
+- A reconnect also re-consults the LAN in the background. The robot's UDP broadcast is the one signal that means "this robot is on _this_ network at _this_ address", so it is the right source for the correction — the cloud's `get_network_info` cannot serve here, because a robot whose local connect just failed has already been marked cloud-only, and that mark is what gates the write of its address. The correction is written where every other caller reads it, so a moved robot is picked up by ordinary commands too, not only by the retry.
+
+The re-check does not hold the reconnect attempt open: it is for the retry after this one, at least a minute out, and the common case is a robot that blipped and is still where we left it. A pass that hears nothing, or hears the address already held, changes nothing at all. Cloud-only installs never open the port. A move is reported once, by name, with both addresses.
+
+LAN discovery is now also single-flight. It binds a fixed port, so a startup pass and a reconnect pass could overlap and the second `bind` would fail with `EADDRINUSE` — rejecting a discovery that had nothing wrong with it.
+
 ## 3.24.0
 
 **The probe from 3.23.0 came back, and it found the schedules.**

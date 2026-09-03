@@ -117,6 +117,12 @@ class localConnector {
     // Consecutive failed local connects per duid, used to back the retry delay
     // off. Reset the moment a connect succeeds.
     this.reconnectAttempts = new Map();
+    /**
+     * The discovery pass currently listening, if any. See getLocalDevices for
+     * why there can only be one.
+     * @type {Promise<Record<string, string>>|null}
+     */
+    this.discoveryInFlight = null;
   }
 
   /**
@@ -161,15 +167,119 @@ class localConnector {
     // swallowing them here only prevents the crash.
     const timer = setTimer(() => {
       this.reconnectTimers.delete(duid);
+      // The address is re-read here rather than taken from the closure. See
+      // reconnectTargetFor.
       Promise.resolve()
-        .then(() => this.createClient(duid, ip))
+        .then(() => this.createClient(duid, this.reconnectTargetFor(duid, ip)))
         .catch((error) => {
           this.adapter.log.debug(
             `Local reconnect attempt for ${duid} failed: ${error?.message || error}`
           );
         });
+      // Deliberately not awaited before the attempt above: the correction it
+      // produces is for the retry AFTER this one, which is at least a minute
+      // out, and a robot that merely blipped is still at the address we hold.
+      // Making every attempt wait five seconds for a listen window would slow
+      // the common case down to fix the rare one.
+      void this.refreshLocalIpFromBroadcast(duid);
     }, delayMs);
     this.reconnectTimers.set(duid, timer);
+  }
+
+  /**
+   * The address the next reconnect should aim at.
+   *
+   * `scheduleReconnect` used to close over the address the socket was built
+   * with, and that is right for every reason a local socket drops but the one
+   * that lasts: a DHCP lease that moved the robot. That robot sat reachable at
+   * a new address while the retry chain probed the old one — backing off to
+   * once every fifteen minutes, for the life of the process. Nothing looked
+   * broken, because a failed local connect falls back to the cloud
+   * automatically and every command still worked; the only symptom was that
+   * the fast path never returned until Homebridge was restarted.
+   *
+   * The captured address stays the fallback. An adapter that knows no address
+   * for this robot must not turn a failed connect into a `connect(undefined)`,
+   * which is a thrown TypeError inside a timer callback rather than a
+   * connection failure the retry logic understands.
+   *
+   * @param {string} duid
+   * @param {string} fallbackIp the address the socket was originally built with
+   * @returns {string}
+   */
+  reconnectTargetFor(duid, fallbackIp) {
+    const known = this.adapter.getKnownLocalIp?.(duid);
+
+    return typeof known == "string" && known ? known : fallbackIp;
+  }
+
+  /**
+   * Re-run LAN discovery and adopt whatever address `duid` broadcasts now.
+   *
+   * The UDP broadcast is the one signal that means "this robot is on THIS LAN
+   * at THIS address", which is exactly what a local connection needs to know —
+   * so it, and not the cloud's `get_network_info`, is the right source for a
+   * correction. (`get_network_info` cannot serve here anyway: a robot whose
+   * local connect just failed has already been marked remote, and that mark is
+   * what gates the write of its address.)
+   *
+   * A pass that hears nothing changes nothing, and neither does one that hears
+   * the address we already hold: writing diagnostics unconditionally would let
+   * a background re-check overwrite the `tcp-connected` reason of a reconnect
+   * that had meanwhile succeeded.
+   *
+   * @param {string} duid
+   * @returns {Promise<string|null>} the new address, or null if nothing changed
+   */
+  async refreshLocalIpFromBroadcast(duid) {
+    if (this.adapter.isCloudOnlyModeEnabled?.()) {
+      return null;
+    }
+
+    let discovered;
+    try {
+      const devices = await this.getLocalDevices();
+      discovered = devices?.[duid];
+    } catch (error) {
+      this.adapter.log.debug(
+        `Re-discovery for ${duid} found nothing usable: ${error?.message || error}`
+      );
+      return null;
+    }
+
+    if (typeof discovered != "string" || !discovered) {
+      return null;
+    }
+
+    const previous = this.adapter.localDevices?.[duid];
+    if (previous === discovered) {
+      return null;
+    }
+
+    // Written back to the adapter rather than kept here, because
+    // `getKnownLocalIp` and `ensureLocalConnection` read that map: a
+    // correction only this module knew about would leave every other caller
+    // aiming at the dead address.
+    if (this.adapter.localDevices) {
+      this.adapter.localDevices[duid] = discovered;
+    }
+
+    if (previous) {
+      this.adapter.log.info(
+        `${describeDevice(this.adapter, duid)} is answering at a new local address ` +
+          `(${previous} → ${discovered}), so the local connection will be remade there. ` +
+          `A DHCP lease that moves is normal; reserve the address on the router if you ` +
+          `would rather it did not.`
+      );
+    }
+
+    await this.adapter.updateTransportDiagnostics(duid, {
+      localIp: discovered,
+      localDiscoveryState: "rediscovered",
+      lastTransportReason: "udp-broadcast-rediscovery",
+    });
+
+    return discovered;
   }
 
   async ensureConnected(duid, ip) {
@@ -755,7 +865,38 @@ class localConnector {
     await handshakePromise;
   }
 
-  async getLocalDevices() {
+  /**
+   * Listen for the robots' UDP broadcasts and answer duid → address.
+   *
+   * SINGLE-FLIGHT, because the listen socket binds a fixed port. Startup runs
+   * one pass, and a failing reconnect now runs one of its own, so two can
+   * genuinely overlap — and the second `bind` would fail with EADDRINUSE,
+   * which reaches `catchError` and rejects a discovery that had nothing wrong
+   * with it. A caller that arrives while a pass is listening joins that pass
+   * instead of opening a second one.
+   *
+   * The claim is released in a `finally`, including on rejection: a claim that
+   * leaked would be worse than the collision it prevents, because nothing
+   * would ever discover again.
+   *
+   * @returns {Promise<Record<string, string>>}
+   */
+  getLocalDevices() {
+    if (this.discoveryInFlight) {
+      return this.discoveryInFlight;
+    }
+
+    const pass = this.listenForLocalDevices().finally(() => {
+      if (this.discoveryInFlight === pass) {
+        this.discoveryInFlight = null;
+      }
+    });
+    this.discoveryInFlight = pass;
+
+    return pass;
+  }
+
+  async listenForLocalDevices() {
     return new Promise((resolve, reject) => {
       const devices = {};
 
