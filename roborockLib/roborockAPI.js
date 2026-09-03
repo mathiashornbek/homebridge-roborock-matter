@@ -5338,7 +5338,7 @@ class Roborock {
    * Fetch the current SCMap and derive which room the robot is physically
    * inside (currentPose ray-cast against the per-room boundary chains).
    * Called from the B01 status loop while the robot is actively cleaning;
-   * throttled on attempts (min 20s gap), single-flight per device, and
+   * throttled on attempts (min 10s gap), single-flight per device, and
    * disabled entirely with the enableLiveRoomTracking=false config option.
    *
    * On a room CHANGE the cached last v1 status is re-broadcast through
