@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.25.1
+
+**The schedule probe kept the status code of a refused route and threw away the server's explanation of it — so the route it was built to measure came back saying nothing.**
+
+3.25.0 shipped a read of the singular cloud scene resource, on the reasoning that a 200 makes it a candidate for a later write and a 404 rules it out for free. Issue #22's reporter ran it, and the answer was neither: `400`.
+
+That is the one outcome the probe had nothing to say about. A 404 means there is no such resource. A 400 means the server routed the request and then rejected it — which is a statement about the request, not about whether the route exists. Whether it means "unknown route", "wrong method" or "that scene is not yours" lives in the body the server sent back, and axios flattens every one of those into the same sentence: `Request failed with status code 400`.
+
+The probe recorded that sentence and dropped the body. So a measurement that took a release to ship, and somebody else's live account to run, produced a number and no reading.
+
+A refused route now keeps what the server actually said, in the log and in the diagnostics record, under the same compaction and redaction a successful answer already gets — an error envelope is no more ours to print blindly than a normal one. This holds for every route the probe reads, not just the one it was found on.
+
+No behaviour outside the diagnostic changes, and the probe is still debug-only, GET-only, once per robot per session, and unable to throw.
+
 ## 3.25.0
 
 **The schedule probe now measures whether a cloud schedule is a resource the plugin could ever write to.**

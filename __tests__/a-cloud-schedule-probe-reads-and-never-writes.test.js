@@ -657,3 +657,182 @@ describe("the probe measures whether a scene is a resource it could write to", (
     expect(logged).not.toContain("should-never-be-printed");
   });
 });
+
+describe("a refused route is only measured if the refusal is kept", () => {
+  /**
+   * Issue #22, fifth act, and this one is a defect in our own instrument.
+   *
+   * The reporter ran 3.25.0 and the singular scene resource answered `400` —
+   * not the `404` the probe was written to expect, and not `200`. That
+   * distinction is the whole measurement: a 404 rules the resource out, while
+   * a 400 means the server routed the request and then rejected it, which is
+   * a statement about the request rather than about the route's existence.
+   *
+   * Which of those it is lives in the body the server sent back. The probe
+   * threw that body away and logged only what axios flattens every HTTP error
+   * into — `Request failed with status code 400` — so a route we had gone to
+   * some trouble to measure came back carrying no information at all.
+   *
+   * These tests pin the rule rather than the case: for every route the probe
+   * reads, a refusal that carries a body must surface that body, in the record
+   * and in the log, under the same redaction a successful answer gets.
+   */
+  const ROUTES = [
+    ["the schedules route", SCHEDULES_PATH],
+    ["the scenes route", SCENES_PATH],
+  ];
+
+  function refusal(status, data) {
+    return Object.assign(
+      new Error(`Request failed with status code ${status}`),
+      { response: data === undefined ? { status } : { status, data } }
+    );
+  }
+
+  function clientRefusing(path, error) {
+    const responders = {
+      [SCHEDULES_PATH]: { data: { result: [] } },
+      [SCENES_PATH]: { data: { result: [] } },
+    };
+    responders[path] = () => {
+      throw error;
+    };
+    return makeClient(responders);
+  }
+
+  test.each(ROUTES)(
+    "%s surfaces the server's own words, not just the status code",
+    async (_label, path) => {
+      const adapter = makeAdapter({
+        client: clientRefusing(
+          path,
+          refusal(400, { code: 10004, msg: "param error" })
+        ),
+      });
+
+      const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+      const record = Object.values(result).find(
+        (entry) => entry && entry.path === path
+      );
+      expect(record).toMatchObject({
+        ok: false,
+        status: 400,
+        body: { code: 10004, msg: "param error" },
+      });
+
+      const line = adapter.log.lines.debug.find(
+        (entry) => entry.includes(path) && entry.includes("failed")
+      );
+      expect(line).toContain("HTTP 400");
+      expect(line).toContain("param error");
+    }
+  );
+
+  test("the singular scene route surfaces it too — the route this was found on", async () => {
+    const SCENE_ID = 14303871;
+    const SCENE_PATH = `user/scene/${SCENE_ID}`;
+    const SCENE = {
+      id: SCENE_ID,
+      name: "Saugen+",
+      enabled: true,
+      type: "WORKFLOW",
+      param: JSON.stringify({
+        triggers: [
+          {
+            id: 7033889,
+            name: "TIMER",
+            type: "TIMER",
+            entityId: "",
+            param: JSON.stringify({
+              cron: "0 9 * * 3",
+              enabled: true,
+              timeZoneId: "Europe/Berlin",
+            }),
+          },
+        ],
+        action: { type: "S", items: [] },
+      }),
+    };
+
+    const adapter = makeAdapter({
+      client: makeClient({
+        [SCHEDULES_PATH]: { data: { result: [] } },
+        [SCENES_PATH]: { data: { result: [SCENE] } },
+        [SCENE_PATH]: () => {
+          throw refusal(400, { code: 20003, msg: "scene not found" });
+        },
+      }),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.scene).toMatchObject({
+      path: SCENE_PATH,
+      ok: false,
+      status: 400,
+      body: { code: 20003, msg: "scene not found" },
+    });
+    expect(
+      adapter.log.lines.debug.some(
+        (line) => line.includes(SCENE_PATH) && line.includes("scene not found")
+      )
+    ).toBe(true);
+    // Still a measurement, still not a fault.
+    expect(adapter.log.lines.error).toHaveLength(0);
+    expect(adapter.log.lines.warn).toHaveLength(0);
+  });
+
+  test("a refusal envelope is redacted like any other", async () => {
+    const adapter = makeAdapter({
+      client: clientRefusing(
+        SCENES_PATH,
+        refusal(401, {
+          code: 401,
+          msg: "token expired",
+          token: "should-never-be-printed",
+          localKey: "Ou8zmVYF6jHmkz96",
+        })
+      ),
+    });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    const logged = adapter.log.lines.debug.join("\n");
+    expect(logged).toContain("token expired");
+    expect(logged).not.toContain("should-never-be-printed");
+    expect(logged).not.toContain("Ou8zmVYF6jHmkz96");
+    expect(logged).toContain("[redacted]");
+  });
+
+  test("a refusal with no body does not invent one", async () => {
+    const adapter = makeAdapter({
+      client: clientRefusing(SCHEDULES_PATH, refusal(404)),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.schedules.status).toBe(404);
+    expect(result.schedules.body).toBeUndefined();
+    const line = adapter.log.lines.debug.find(
+      (entry) => entry.includes(SCHEDULES_PATH) && entry.includes("failed")
+    );
+    expect(line).toContain("HTTP 404");
+    expect(line).not.toContain("the server said");
+  });
+
+  test("a transport failure has no body to keep, and says so by omission", async () => {
+    const adapter = makeAdapter({
+      client: clientRefusing(SCHEDULES_PATH, new Error("socket hang up")),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.schedules).toMatchObject({
+      ok: false,
+      status: null,
+      error: "socket hang up",
+    });
+    expect(result.schedules.body).toBeUndefined();
+  });
+});

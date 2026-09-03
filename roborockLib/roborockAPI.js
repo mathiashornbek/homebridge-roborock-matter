@@ -4653,17 +4653,36 @@ class Roborock {
       const message =
         error instanceof Error ? error.message : String(error ?? "");
 
+      // The status alone does not measure the route, and the reporter's answer
+      // is why: `user/scene/{id}` came back `400`, not `404`. A 404 would have
+      // ruled the resource out; a 400 says the server routed the request and
+      // then rejected it, and only its own body says whether that is "no such
+      // route", "wrong method" or "that scene is not yours". Axios flattens all
+      // of it into `Request failed with status code 400`, which carries nothing.
+      //
+      // So keep the body. It goes through the same compaction and redaction as
+      // a successful answer, because an error envelope is no more ours to print
+      // blindly than a successful one.
+      const body = error?.response?.data;
+      const describedBody =
+        body === undefined ? undefined : this.compactDiagnosticPayload(body);
+
       results[route.label] = {
         path: route.path,
         ok: false,
         status: status ?? null,
         error: message,
+        body: describedBody,
       };
 
       this.log.debug(
         `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} failed${
           status ? ` with HTTP ${status}` : ""
-        }: ${message}`
+        }: ${message}${
+          describedBody === undefined
+            ? ""
+            : ` — the server said: ${JSON.stringify(describedBody)}`
+        }`
       );
     }
   }
