@@ -123,6 +123,16 @@ class localConnector {
      * @type {Promise<Record<string, string>>|null}
      */
     this.discoveryInFlight = null;
+    /**
+     * Tear down the listening discovery pass: close its socket and settle its
+     * promise. Set while a pass is in the air, cleared the moment it ends by
+     * any route, so shutdown can never reach for a pass that is already gone.
+     *
+     * A single slot is enough only because `getLocalDevices` is single-flight;
+     * two overlapping passes would clobber it and leak the first socket.
+     * @type {(() => void)|null}
+     */
+    this.closeDiscoveryPass = null;
   }
 
   /**
@@ -986,6 +996,7 @@ class localConnector {
       });
 
       server.on("error", (error) => {
+        this.closeDiscoveryPass = null;
         this.adapter.catchError(`Discover server error: ${error.stack}`);
         closeServer();
         reject(error);
@@ -993,7 +1004,23 @@ class localConnector {
 
       server.bind(PORT);
 
+      // Shutdown's only hook into this module clears the timer below, which
+      // used to be the sole route to `closeServer()` and `resolve()` — so a
+      // pass caught in the air leaked a bound UDP socket AND hung every
+      // caller awaiting it. Hand shutdown the pass's own teardown instead.
+      //
+      // It resolves rather than rejects: a rejection reaches `catchError` and
+      // would log an error line for an ordinary shutdown. The addresses heard
+      // so far are already-measured facts, written to diagnostics as they
+      // arrived, so they are handed over rather than discarded.
+      this.closeDiscoveryPass = () => {
+        this.closeDiscoveryPass = null;
+        closeServer();
+        resolve(devices);
+      };
+
       this.localDevicesTimeout = this.adapter.setTimeout(() => {
+        this.closeDiscoveryPass = null;
         closeServer();
 
         resolve(devices);
@@ -1055,7 +1082,17 @@ class localConnector {
   clearLocalDevicedTimeout() {
     if (this.localDevicesTimeout) {
       this.adapter.clearTimeout(this.localDevicesTimeout);
+      this.localDevicesTimeout = null;
     }
+
+    // Clearing that timer disarms the pass's own ending, so the pass has to be
+    // ended here instead: its socket closed and its promise settled. Dropping
+    // the single-flight claim while leaving the socket bound would be worse
+    // than the leak — the port is fixed (58866), so the next pass would fail
+    // to bind with EADDRINUSE and reject a discovery that had nothing wrong
+    // with it. No pass in flight (a cloud-only install never opens one) makes
+    // this a no-op by construction.
+    this.closeDiscoveryPass?.();
 
     // This is the only local-transport hook the adapter's
     // clearTimersAndIntervals calls on shutdown. Reconnect timers are armed as

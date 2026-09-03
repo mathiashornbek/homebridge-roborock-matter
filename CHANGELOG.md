@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.24.2
+
+**Shutting down while LAN discovery was listening left a UDP socket open and every caller waiting on it hung.**
+
+Discovery listens for the robots' broadcasts for a fixed five-second window. One timer ends that window: it closes the socket and hands back whatever was heard. Shutdown's only hook into the local transport cleared that timer — which disarmed the one thing that ended the pass.
+
+A pass caught in the air when Homebridge stopped therefore never closed its socket, leaving a bound handle holding the event loop open, and never settled its promise, so anything awaiting discovery waited until the process was killed. Shutdown already fixes exactly that hang for pending cloud requests; discovery was missing from the list. It also never released the single-flight claim added in 3.24.1, because that claim is released in the promise's own completion.
+
+Shutdown now ends the pass properly: socket closed, promise resolved with the addresses already heard. Resolved rather than rejected, because a rejection would log an error line for an ordinary shutdown, and those addresses were measured facts already recorded — there is no reason to throw them away. Forgetting the pass without closing its socket would have been worse than the leak: the port is fixed, so the next pass would fail to bind with `EADDRINUSE` and reject a discovery that had nothing wrong with it.
+
+Nobody would have noticed this as a fault. The process was being torn down anyway, so the leaked handle went with it. It is fixed because a shutdown that cannot finish cleanly is the thing that turns a restart into a kill.
+
 ## 3.24.1
 
 **A robot whose DHCP lease moved it stayed on the cloud until Homebridge was restarted.**
