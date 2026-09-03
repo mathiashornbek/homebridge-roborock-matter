@@ -23,6 +23,7 @@ const roborockCrypto = require("./lib/roborockCrypto");
 const { METHOD_REFUSED_CODE } = require("./lib/describeReplyRefusal");
 const {
   summariseCloudSceneSchedules,
+  parseCloudSceneSchedules,
 } = require("./lib/parseCloudSceneSchedules");
 const b01Q7Adapter = require("./lib/b01Q7Adapter");
 
@@ -4590,6 +4591,83 @@ class Roborock {
     }
   }
 
+  /**
+   * GET one candidate cloud schedule route, record it, and log what came back.
+   *
+   * Extracted so that every route — the two candidates and the singular scene
+   * resource probed after them — shares one error path. It never throws: this
+   * rides along on a live poll, and a route that does not exist is a
+   * measurement rather than a fault, so a failure is recorded and logged at
+   * debug level instead of surfacing.
+   *
+   * @param {string} duid robot the reading belongs to
+   * @param {{label: string, path: string}} route label to file it under, and
+   *   the path to read
+   * @param {Record<string, unknown>} results accumulator, written in place
+   * @returns {Promise<void>}
+   */
+  async probeOneCloudScheduleRoute(duid, route, results) {
+    try {
+      const response = await this.api.get(route.path);
+      // Roborock wraps most answers in `{api,result,status,success}`. Keep
+      // the envelope only when there is no `result` to unwrap, so the log
+      // shows the payload rather than the wrapper.
+      const payload =
+        response?.data?.result === undefined
+          ? response?.data
+          : response.data.result;
+
+      // Decode BEFORE compacting. `compactDiagnosticPayload` caps strings at
+      // 500 characters and arrays at 8 entries; measured on the real scenes
+      // answer, that cut every schedule mid-task and would drop a ninth
+      // schedule entirely. The raw answer is the only place the measurement
+      // is intact.
+      const decoded = this.describeCloudScheduleAnswer(payload);
+
+      results[route.label] = {
+        path: route.path,
+        ok: true,
+        response: payload,
+        schedules: decoded.length > 0 ? decoded : undefined,
+      };
+
+      this.log.debug(
+        `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} answered: ${JSON.stringify(
+          this.compactDiagnosticPayload(payload)
+        )}`
+      );
+
+      if (decoded.length > 0) {
+        const [headline, ...entries] = decoded;
+        this.log.debug(
+          `Roborock cloud schedule probe for ${this.describeDevice(duid)} — ${route.path} carries ${headline}:`
+        );
+        for (const entry of entries) {
+          this.log.debug(
+            `Roborock cloud schedule probe for ${this.describeDevice(duid)} —   ${entry}`
+          );
+        }
+      }
+    } catch (error) {
+      const status = error?.response?.status;
+      const message =
+        error instanceof Error ? error.message : String(error ?? "");
+
+      results[route.label] = {
+        path: route.path,
+        ok: false,
+        status: status ?? null,
+        error: message,
+      };
+
+      this.log.debug(
+        `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} failed${
+          status ? ` with HTTP ${status}` : ""
+        }: ${message}`
+      );
+    }
+  }
+
   async probeCloudScheduleRoutes(duid) {
     if (!duid || !this.config?.debug || !this.api) {
       return undefined;
@@ -4619,65 +4697,35 @@ class Roborock {
     const results = {};
 
     for (const route of routes) {
-      try {
-        const response = await this.api.get(route.path);
-        // Roborock wraps most answers in `{api,result,status,success}`. Keep
-        // the envelope only when there is no `result` to unwrap, so the log
-        // shows the payload rather than the wrapper.
-        const payload =
-          response?.data?.result === undefined
-            ? response?.data
-            : response.data.result;
+      await this.probeOneCloudScheduleRoute(duid, route, results);
+    }
 
-        // Decode BEFORE compacting. `compactDiagnosticPayload` caps strings at
-        // 500 characters and arrays at 8 entries; measured on the real scenes
-        // answer, that cut every schedule mid-task and would drop a ninth
-        // schedule entirely. The raw answer is the only place the measurement
-        // is intact.
-        const decoded = this.describeCloudScheduleAnswer(payload);
+    // A HomeKit switch over these schedules has to WRITE, and the only write
+    // route measured on this client is `user/scene/{id}/execute`, which RUNS a
+    // scene rather than enabling one. The reporter's off-and-on measurement
+    // narrowed what such a write would have to change — the `enabled` flag
+    // inside the TIMER trigger, not the scene-level one — but not where to
+    // send it, and a guessed write endpoint against a live account does not
+    // fail politely.
+    //
+    // So measure the one thing that costs nothing: whether the singular scene
+    // resource answers at all. A REST resource that answers GET is the only
+    // defensible candidate for a later write, its answer is the payload shape
+    // such a write would have to send back, and a 404 rules it out for free.
+    //
+    // Exactly one scene, deliberately: this is a shape measurement, not an
+    // inventory, and an account with nine schedules must not become nine
+    // requests. It stays inside the once-per-robot-per-session guard above.
+    const [firstSchedule] = parseCloudSceneSchedules(
+      /** @type {{response?: unknown}} */ (results.scenes)?.response
+    );
 
-        results[route.label] = {
-          path: route.path,
-          ok: true,
-          response: payload,
-          schedules: decoded.length > 0 ? decoded : undefined,
-        };
-
-        this.log.debug(
-          `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} answered: ${JSON.stringify(
-            this.compactDiagnosticPayload(payload)
-          )}`
-        );
-
-        if (decoded.length > 0) {
-          const [headline, ...entries] = decoded;
-          this.log.debug(
-            `Roborock cloud schedule probe for ${this.describeDevice(duid)} — ${route.path} carries ${headline}:`
-          );
-          for (const entry of entries) {
-            this.log.debug(
-              `Roborock cloud schedule probe for ${this.describeDevice(duid)} —   ${entry}`
-            );
-          }
-        }
-      } catch (error) {
-        const status = error?.response?.status;
-        const message =
-          error instanceof Error ? error.message : String(error ?? "");
-
-        results[route.label] = {
-          path: route.path,
-          ok: false,
-          status: status ?? null,
-          error: message,
-        };
-
-        this.log.debug(
-          `Roborock cloud schedule probe for ${this.describeDevice(duid)} — GET ${route.path} failed${
-            status ? ` with HTTP ${status}` : ""
-          }: ${message}`
-        );
-      }
+    if (firstSchedule) {
+      await this.probeOneCloudScheduleRoute(
+        duid,
+        { label: "scene", path: `user/scene/${firstSchedule.id}` },
+        results
+      );
     }
 
     await this.updateRoborockDiagnostics(

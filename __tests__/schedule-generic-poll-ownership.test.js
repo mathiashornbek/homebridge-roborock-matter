@@ -94,16 +94,23 @@ describe("generic timer poll ownership", () => {
     );
   });
 
-  test("the probe reads the two cloud schedule routes and only reads", () => {
+  test("the probe reads the cloud schedule routes and only reads", () => {
     expect(apiSource).toContain("`user/devices/${duid}/jobs`");
     expect(apiSource).toContain("`user/scene/device/${duid}`");
+    // The singular scene resource, read to find out whether a schedule is
+    // something the plugin could ever write to. See 3.25.0.
+    expect(apiSource).toContain("`user/scene/${firstSchedule.id}`");
 
-    const probeStart = apiSource.indexOf("async probeCloudScheduleRoutes(");
+    // The window spans BOTH probe methods: the per-route reader and the
+    // orchestrator that calls it. Reading only one of them would let a write
+    // move into the other and still pass.
+    const probeStart = apiSource.indexOf("async probeOneCloudScheduleRoute(");
     const probeEnd = apiSource.indexOf("async updateServerTimer(", probeStart);
     expect(probeStart).toBeGreaterThanOrEqual(0);
     expect(probeEnd).toBeGreaterThan(probeStart);
 
     const probeSource = apiSource.slice(probeStart, probeEnd);
+    expect(probeSource).toContain("async probeCloudScheduleRoutes(");
     expect(probeSource).toContain("await this.api.get(route.path)");
     // A write to any of these routes would change a user's schedule. The probe
     // exists to measure, and nothing in it may send one.

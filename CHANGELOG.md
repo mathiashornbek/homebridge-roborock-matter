@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.25.0
+
+**The schedule probe now measures whether a cloud schedule is a resource the plugin could ever write to.**
+
+Issue #22's reporter switched two of his three app schedules off, restarted, and sent the reading without saying which two. The log named them, and it named something more useful than that: every scene-level `enabled` stayed `true`, and the flag his app had actually flipped was `enabled` inside each schedule's own TIMER trigger, nested a level deeper. So a HomeKit switch over these schedules would have to rewrite that nested field — not the scene's own.
+
+Knowing what to write is not knowing where to send it. The only write route measured on this client is `user/scene/{id}/execute`, which runs a scene rather than enabling one, and a guessed write endpoint against somebody's live account does not fail politely — it edits or deletes a schedule they rely on.
+
+So this release measures the one remaining thing that costs nothing: whether the singular scene resource answers at all. When the device route reports a timer-driven scene, the probe reads that one scene by id. A resource that answers GET is the only defensible candidate for a later write, and its answer is the payload shape such a write would have to send back; a 404 rules it out for free.
+
+The constraints are unchanged, because they are what make shipping a measurement to thousands of installations defensible: debug logging only, GET only, once per robot per session, cannot throw, credential-shaped fields redacted. Exactly one scene is read rather than all of them — this is a shape measurement, not an inventory, and an account with nine schedules must not become nine requests.
+
+Still a diagnostic, still not a feature. Reading these schedules is solved; switching them is not, and it will not be built on a guess.
+
 ## 3.24.2
 
 **Shutting down while LAN discovery was listening left a UDP socket open and every caller waiting on it hung.**

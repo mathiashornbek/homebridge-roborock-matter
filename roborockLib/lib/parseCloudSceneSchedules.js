@@ -155,11 +155,25 @@ function describeCron(cron) {
  */
 
 /**
+ * Which of the two enable flags the app actually uses is MEASURED, not
+ * assumed, and it matters to anything that would ever write one back.
+ *
+ * The reporter in issue #22 switched two of his three schedules off in the
+ * Roborock app and sent the probe's reading. Every scene-level `enabled`
+ * stayed `true`; the flag that changed was `enabled` inside each TIMER
+ * trigger's own nested `param` string. So the app toggles the TRIGGER, and a
+ * schedule switch would have to rewrite that nested JSON rather than the
+ * scene's own field.
+ *
+ * Both flags are still modelled, because a scene disabled at scene level is a
+ * state the cloud can express and `active` has to account for it.
+ *
  * @typedef {object} CloudSceneSchedule
  * @property {string} id scene id
  * @property {string|null} name scene name as shown in the app
  * @property {string|null} type scene type, e.g. `WORKFLOW`
- * @property {boolean} enabled scene-level enable flag
+ * @property {boolean} enabled scene-level enable flag — measured to stay
+ *   `true` when the app switches a schedule off
  * @property {boolean} active scene enabled AND at least one timer enabled
  * @property {CloudSceneTrigger[]} triggers timer triggers on the scene
  * @property {CloudSceneAction[]} actions device actions the scene performs

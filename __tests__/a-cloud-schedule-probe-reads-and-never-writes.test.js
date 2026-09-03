@@ -490,3 +490,170 @@ describe("a cloud envelope is not ours to print blindly", () => {
     expect(logged).toContain("[redacted]");
   });
 });
+
+describe("the probe measures whether a scene is a resource it could write to", () => {
+  /**
+   * Issue #22, fourth act, and the reason this block exists.
+   *
+   * The reporter turned two of his three schedules off and asked whether the
+   * log could tell which. It could: the scene-level `enabled` stayed `true`
+   * on all three, and the flag his app actually flipped was the one inside
+   * the TIMER trigger. So a HomeKit switch over these schedules would have to
+   * write that nested flag — and the only write route measured so far is
+   * `user/scene/{id}/execute`, which RUNS a scene rather than enabling one.
+   *
+   * We are not going to guess a write endpoint against a live account. What
+   * can be measured without touching anything is whether the singular scene
+   * resource exists at all: a REST resource that answers GET is the only
+   * defensible candidate for a later write, and a 404 rules it out for free.
+   */
+  const TIMER_PARAM = JSON.stringify({
+    triggers: [
+      {
+        id: 7033889,
+        name: "TIMER",
+        type: "TIMER",
+        entityId: "",
+        param: JSON.stringify({
+          cron: "0 9 * * 3",
+          type: "NORMAL",
+          enabled: false,
+          repeated: true,
+          timeZoneId: "Europe/Berlin",
+        }),
+      },
+    ],
+    action: { type: "S", items: [] },
+  });
+
+  const SCENE_ID = 14303871;
+  const SCENE_PATH = `user/scene/${SCENE_ID}`;
+  const SCENE = {
+    id: SCENE_ID,
+    name: "Saugen+",
+    enabled: true,
+    type: "WORKFLOW",
+    param: TIMER_PARAM,
+  };
+
+  function withScene(sceneResponder) {
+    return makeClient({
+      [SCHEDULES_PATH]: { data: { result: [] } },
+      [SCENES_PATH]: { data: { result: [SCENE] } },
+      [SCENE_PATH]: sceneResponder ?? { data: { result: SCENE } },
+    });
+  }
+
+  test("a timer-driven scene is followed by a GET of that one scene", async () => {
+    const client = withScene();
+    const adapter = makeAdapter({ client });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(client.calls).toEqual([
+      { method: "get", path: SCHEDULES_PATH },
+      { method: "get", path: SCENES_PATH },
+      { method: "get", path: SCENE_PATH },
+    ]);
+    // The whole point is that measuring a write target is not writing.
+    expect(client.calls.every((call) => call.method === "get")).toBe(true);
+  });
+
+  test("nine schedules are still one request, not nine", async () => {
+    const many = Array.from({ length: 9 }, (_, index) => ({
+      ...SCENE,
+      id: 500 + index,
+      name: `Plan ${index}`,
+    }));
+    const client = makeClient({
+      [SCHEDULES_PATH]: { data: { result: [] } },
+      [SCENES_PATH]: { data: { result: many } },
+      "user/scene/500": { data: { result: many[0] } },
+    });
+    const adapter = makeAdapter({ client });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    // This is a shape measurement, not an inventory.
+    expect(
+      client.calls.filter((call) => call.path.startsWith("user/scene/5"))
+    ).toEqual([{ method: "get", path: "user/scene/500" }]);
+  });
+
+  test("the singular answer is recorded and logged, naming robot and route", async () => {
+    const adapter = makeAdapter({ client: withScene() });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.scene).toMatchObject({
+      path: SCENE_PATH,
+      ok: true,
+      response: SCENE,
+    });
+
+    const line = adapter.log.lines.debug.find(
+      (entry) => entry.includes(SCENE_PATH) && entry.includes("answered:")
+    );
+    expect(line).toContain("Rocky");
+  });
+
+  test("a 404 rules the resource out without disturbing the two readings", async () => {
+    const adapter = makeAdapter({
+      client: withScene(() => {
+        throw Object.assign(new Error("Request failed with status code 404"), {
+          response: { status: 404 },
+        });
+      }),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.scene).toMatchObject({ ok: false, status: 404 });
+    expect(result.scenes.ok).toBe(true);
+    expect(result.schedules.ok).toBe(true);
+    // A route that does not exist is a measurement, not a fault.
+    expect(adapter.log.lines.error).toHaveLength(0);
+    expect(adapter.log.lines.warn).toHaveLength(0);
+  });
+
+  test("no timer-driven scene means no third request at all", async () => {
+    const client = okBoth();
+    const adapter = makeAdapter({ client });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(client.calls).toHaveLength(2);
+    expect(result.scene).toBeUndefined();
+  });
+
+  test("the extra reading is still once per robot per session", async () => {
+    const client = withScene();
+    const adapter = makeAdapter({ client });
+
+    for (let poll = 0; poll < 20; poll += 1) {
+      await adapter.probeCloudScheduleRoutes("duid-a144");
+    }
+
+    expect(client.calls).toHaveLength(3);
+  });
+
+  test("credential-shaped keys in the singular answer are redacted too", async () => {
+    const adapter = makeAdapter({
+      client: withScene({
+        data: {
+          result: {
+            ...SCENE,
+            localKey: "Ou8zmVYF6jHmkz96",
+            token: "should-never-be-printed",
+          },
+        },
+      }),
+    });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    const logged = adapter.log.lines.debug.join("\n");
+    expect(logged).not.toContain("Ou8zmVYF6jHmkz96");
+    expect(logged).not.toContain("should-never-be-printed");
+  });
+});
