@@ -560,7 +560,7 @@ describe("the probe measures whether a scene is a resource it could write to", (
 
     await adapter.probeCloudScheduleRoutes("duid-a144");
 
-    expect(client.calls).toEqual([
+    expect(client.calls.slice(0, 4)).toEqual([
       { method: "get", path: SCHEDULES_PATH },
       { method: "get", path: SCENES_PATH },
       { method: "get", path: SCENE_PATH },
@@ -587,15 +587,17 @@ describe("the probe measures whether a scene is a resource it could write to", (
 
     await adapter.probeCloudScheduleRoutes("duid-a144");
 
-    // This is a shape measurement, not an inventory: one scene is questioned,
-    // and the two questions asked of it are both safe ones.
+    // This is a shape measurement, not an inventory: exactly one of the nine
+    // scene ids is questioned, however many questions are asked of it, and
+    // every one of them is asked with a safe method.
     const singular = client.calls.filter((call) =>
       call.path.startsWith("user/scene/5")
     );
-    expect(new Set(singular.map((call) => call.path))).toEqual(
-      new Set(["user/scene/500"])
-    );
-    expect(singular.map((call) => call.method)).toEqual(["get", "options"]);
+    const idsTouched = new Set(singular.map((call) => call.path.split("/")[2]));
+    expect(idsTouched).toEqual(new Set(["500"]));
+    expect(
+      singular.every((call) => ["get", "options"].includes(call.method))
+    ).toBe(true);
   });
 
   test("the singular answer is recorded and logged, naming robot and route", async () => {
@@ -653,7 +655,9 @@ describe("the probe measures whether a scene is a resource it could write to", (
       await adapter.probeCloudScheduleRoutes("duid-a144");
     }
 
-    expect(client.calls).toHaveLength(4);
+    // Two candidate GETs, the singular scene's GET and OPTIONS, then the two
+    // remaining candidates and the two controls — once, not twenty times.
+    expect(client.calls).toHaveLength(8);
   });
 
   test("credential-shaped keys in the singular answer are redacted too", async () => {
@@ -1071,5 +1075,268 @@ describe("a resource that refuses a verb is asked which verb it takes", () => {
     expect(result.scenes.ok).toBe(true);
     expect(adapter.log.lines.error).toHaveLength(0);
     expect(adapter.log.lines.warn).toHaveLength(0);
+  });
+});
+
+describe("a resource whose only write verb destroys is not the write we want", () => {
+  /**
+   * Issue #22, seventh act, and the reading that closed the sixth.
+   *
+   * 3.26.0 asked the singular scene resource which methods it takes. It
+   * answered:
+   *
+   *   OPTIONS user/scene/14303871 → "" — the resource allows: DELETE,OPTIONS
+   *
+   * So the thread's own decision rule met a case it had not written down. The
+   * rule said: an `Allow` naming a write verb means the next step is a
+   * promised no-op; an absent `Allow` means we are near the end of what can be
+   * measured from outside. What came back names exactly one method that
+   * changes anything, and it is the one that removes a schedule rather than
+   * toggling it. There is no write here to put behind a HomeKit switch, and
+   * the destructive verb is not one to try on a stranger's live account.
+   *
+   * That rules out the resource, not the feature: sub-resources under a scene
+   * id demonstrably exist, because the plugin's own `executeScene` reaches
+   * one. So the same safe question goes to the remaining candidates — and to
+   * TWO CONTROLS, because an `Allow` header on its own proves nothing. A
+   * route this run already read must answer (or the instrument is blind), and
+   * a route that cannot exist must stay silent (or the server answers
+   * everything). With both, this round either names a route or shows that no
+   * later round would.
+   */
+  const SCENE_ID = 14303871;
+  const SCENE_PATH = `user/scene/${SCENE_ID}`;
+  const COLLECTION_PATH = "user/scene";
+  const ENABLE_PATH = `${SCENE_PATH}/enable`;
+  const MAPPED_CONTROL_PATH = SCENES_PATH;
+  const ABSENT_CONTROL_PATH = `${SCENE_PATH}/no-such-subresource-control`;
+
+  const SCENE = {
+    id: SCENE_ID,
+    name: "Saugen+",
+    enabled: true,
+    type: "WORKFLOW",
+    param: JSON.stringify({
+      triggers: [
+        {
+          id: 7033921,
+          name: "TIMER",
+          type: "TIMER",
+          entityId: "",
+          param: JSON.stringify({
+            cron: "0 9 * * 3",
+            enabled: true,
+            timeZoneId: "Europe/Berlin",
+          }),
+        },
+      ],
+      action: { type: "S", items: [] },
+    }),
+  };
+
+  /** The reporter's own 3.26.0 reading, in shape. */
+  const ALLOWS_DELETE_ONLY = {
+    data: "",
+    headers: { allow: "DELETE,OPTIONS" },
+  };
+
+  function notFound() {
+    return Object.assign(new Error("Request failed with status code 404"), {
+      response: { status: 404, data: { status: "NOT_FOUND" } },
+    });
+  }
+
+  function client(optionsResponders = {}) {
+    return makeClient(
+      {
+        [SCHEDULES_PATH]: { data: { result: [] } },
+        [SCENES_PATH]: { data: { result: [SCENE] } },
+        [SCENE_PATH]: () => {
+          throw Object.assign(
+            new Error("Request failed with status code 400"),
+            {
+              response: {
+                status: 400,
+                data: { msg: "Request method 'GET' is not supported" },
+              },
+            }
+          );
+        },
+      },
+      { [SCENE_PATH]: ALLOWS_DELETE_ONLY, ...optionsResponders }
+    );
+  }
+
+  test("the remaining candidates and both controls are asked, with OPTIONS and in order", async () => {
+    const probe = client();
+    const adapter = makeAdapter({ client: probe });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(probe.calls.slice(4)).toEqual([
+      { method: "options", path: COLLECTION_PATH },
+      { method: "options", path: ENABLE_PATH },
+      { method: "options", path: MAPPED_CONTROL_PATH },
+      { method: "options", path: ABSENT_CONTROL_PATH },
+    ]);
+  });
+
+  test("the verb the resource does allow is never sent, however plainly it was offered", async () => {
+    const probe = client();
+    const adapter = makeAdapter({ client: probe });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    // The reading is kept in full — it is the whole point of the release
+    // before this one.
+    expect(result.sceneMethods.allow).toBe("DELETE,OPTIONS");
+    // And having been told which method would change something, the probe
+    // asks four more questions and still sends nothing that could.
+    expect(
+      probe.calls.every((call) => ["get", "options"].includes(call.method))
+    ).toBe(true);
+  });
+
+  test("the positive control is a route this run already read, never one that runs a robot", async () => {
+    const probe = client();
+    const adapter = makeAdapter({ client: probe });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    // A control has to be a route whose mapping is beyond doubt. This one's
+    // GET answered earlier in the same run, which is as certain as it gets —
+    // and unlike `user/scene/{id}/execute`, the verb behind it does not start
+    // a clean in someone's home.
+    expect(result.mappedRouteControl.path).toBe(MAPPED_CONTROL_PATH);
+    expect(result.scenes.ok).toBe(true);
+    expect(probe.calls.some((call) => call.path.endsWith("/execute"))).toBe(
+      false
+    );
+  });
+
+  test("each answer is filed under its own label, so the four are read apart", async () => {
+    const adapter = makeAdapter({
+      client: client({
+        [COLLECTION_PATH]: { data: "", headers: { allow: "POST,OPTIONS" } },
+        [ENABLE_PATH]: () => {
+          throw notFound();
+        },
+        [MAPPED_CONTROL_PATH]: {
+          data: "",
+          headers: { allow: "GET,OPTIONS" },
+        },
+        [ABSENT_CONTROL_PATH]: () => {
+          throw notFound();
+        },
+      }),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.sceneCollectionMethods).toMatchObject({
+      path: COLLECTION_PATH,
+      method: "OPTIONS",
+      ok: true,
+      allow: "POST,OPTIONS",
+    });
+    expect(result.sceneEnableMethods).toMatchObject({
+      path: ENABLE_PATH,
+      ok: false,
+      status: 404,
+    });
+    // Instrument proven: a route known to be mapped described itself.
+    expect(result.mappedRouteControl).toMatchObject({
+      ok: true,
+      allow: "GET,OPTIONS",
+    });
+    // Instrument bounded: a route that cannot exist stayed silent, so the
+    // positive above is a reading rather than an artefact.
+    expect(result.absentRouteControl).toMatchObject({
+      path: ABSENT_CONTROL_PATH,
+      ok: false,
+      status: 404,
+    });
+    expect(result.absentRouteControl.allow).toBeUndefined();
+  });
+
+  test("a server that answers everything is caught by the control, not believed", async () => {
+    // The failure mode this control exists for: a catch-all that hands back
+    // an Allow header for any path at all. Nothing here is a discovery, and
+    // the recorded readings have to make that legible.
+    const everything = { data: "", headers: { allow: "PUT,POST,OPTIONS" } };
+    const adapter = makeAdapter({
+      client: client({
+        [COLLECTION_PATH]: everything,
+        [ENABLE_PATH]: everything,
+        [MAPPED_CONTROL_PATH]: everything,
+        [ABSENT_CONTROL_PATH]: everything,
+      }),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.sceneEnableMethods.allow).toBe("PUT,POST,OPTIONS");
+    expect(result.absentRouteControl.allow).toBe("PUT,POST,OPTIONS");
+    // Same answer from a route that cannot exist: the pair is what says so.
+    expect(result.absentRouteControl.allow).toBe(
+      result.sceneEnableMethods.allow
+    );
+  });
+
+  test("the four extra questions cannot break the poll they ride on", async () => {
+    const adapter = makeAdapter({
+      client: client({
+        [COLLECTION_PATH]: () => {
+          throw new Error("socket hang up");
+        },
+        [ENABLE_PATH]: () => {
+          throw notFound();
+        },
+        [MAPPED_CONTROL_PATH]: () => {
+          throw notFound();
+        },
+        [ABSENT_CONTROL_PATH]: () => {
+          throw notFound();
+        },
+      }),
+    });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    expect(result.sceneCollectionMethods).toMatchObject({ ok: false });
+    expect(result.scenes.ok).toBe(true);
+    expect(adapter.log.lines.error).toHaveLength(0);
+    expect(adapter.log.lines.warn).toHaveLength(0);
+  });
+
+  test("the Allow of a candidate reaches the log, naming the robot and the route", async () => {
+    const adapter = makeAdapter({
+      client: client({
+        [ENABLE_PATH]: { data: "", headers: { allow: "POST,OPTIONS" } },
+      }),
+    });
+
+    await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    const line = adapter.log.lines.debug.find(
+      (entry) => entry.includes(ENABLE_PATH) && entry.includes("allows")
+    );
+    expect(line).toContain("Rocky");
+    expect(line).toContain("POST,OPTIONS");
+  });
+
+  test("no timer-driven scene means neither candidate nor control is asked", async () => {
+    const probe = okBoth();
+    const adapter = makeAdapter({ client: probe });
+
+    const result = await adapter.probeCloudScheduleRoutes("duid-a144");
+
+    // The candidates hang off a scene id. With no scene there is nothing to
+    // hang them on, and the collection is not worth a request on its own.
+    expect(probe.calls).toHaveLength(2);
+    expect(result.sceneCollectionMethods).toBeUndefined();
+    expect(result.sceneEnableMethods).toBeUndefined();
+    expect(result.mappedRouteControl).toBeUndefined();
+    expect(result.absentRouteControl).toBeUndefined();
   });
 });

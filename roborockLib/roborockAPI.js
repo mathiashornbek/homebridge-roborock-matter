@@ -299,6 +299,15 @@ const B01_STATUS_FORCED_GAP_MS = 1500;
 const B01_STATUS_ACTIVE_GAP_MS = 12000;
 const B01_STATUS_IDLE_GAP_MS = 25000;
 
+// The last path segment of the cloud schedule probe's negative control.
+//
+// The probe asks candidate routes which methods they take. An `Allow` header
+// coming back is only evidence if a route that CANNOT exist stays silent, so
+// one deliberately unmappable path is asked the same question. It is a fixed
+// literal rather than a random string so that the same reading is reproducible
+// across restarts and legible in a log a user pastes into an issue.
+const ABSENT_ROUTE_PROBE_SEGMENT = "no-such-subresource-control";
+
 // How many keys of an arbitrary diagnostic object survive compaction.
 const DIAGNOSTIC_KEY_LIMIT = 30;
 
@@ -4845,6 +4854,62 @@ class Roborock {
         { label: "sceneMethods", path: scenePath, method: "options" },
         results
       );
+
+      // And that question was answered: the resource allows DELETE and
+      // OPTIONS. It is an answer, and not one of the two the thread's own
+      // decision rule anticipated. The singular scene resource takes exactly
+      // one method that changes anything, and it destroys a schedule rather
+      // than toggling one — so there is no write here to put behind a HomeKit
+      // switch, and a destructive verb aimed at a stranger's live account to
+      // see what happens is not a measurement this project will take.
+      //
+      // That rules out the resource, not the feature. Our own `executeScene`
+      // reaches `user/scene/{id}/execute`, so sub-resources under a scene id
+      // demonstrably exist and carry verbs the scene itself does not. Whether
+      // one of them is the toggle is the last question this instrument can
+      // ask, and it is asked WITH CONTROLS, because on its own an `Allow`
+      // header proves nothing:
+      //
+      //   - `user/scene` — the collection, where a REST API most often keeps
+      //     an update;
+      //   - `user/scene/{id}/enable` — the literal candidate for the nested
+      //     flag the reporter's app flips;
+      //   - `user/scene/device/{duid}` — the POSITIVE control. This run has
+      //     ALREADY read it successfully, so it is mapped beyond doubt. If
+      //     OPTIONS cannot describe even that, the instrument does not see
+      //     routes and every other answer in this set is noise. It is also
+      //     why the control is this route and not `/execute`: a control must
+      //     not be a path whose real verb runs a robot.
+      //   - a path that cannot exist — the NEGATIVE control. If THAT comes
+      //     back with an Allow header, the server answers everything and no
+      //     positive here means anything.
+      //
+      // Together they bound the search rather than extend it: this round
+      // either names a route or shows that no later round would.
+      //
+      // Asking costs nothing that could alter a schedule, and that is
+      // measured rather than assumed: the OPTIONS of the scene resource came
+      // back with an EMPTY body and an Allow header, which is a servlet
+      // container answering the request itself instead of handing it to the
+      // handler behind the path.
+      for (const candidate of [
+        { label: "sceneCollectionMethods", path: "user/scene" },
+        { label: "sceneEnableMethods", path: `${scenePath}/enable` },
+        {
+          label: "mappedRouteControl",
+          path: `user/scene/device/${duid}`,
+        },
+        {
+          label: "absentRouteControl",
+          path: `${scenePath}/${ABSENT_ROUTE_PROBE_SEGMENT}`,
+        },
+      ]) {
+        await this.probeOneCloudScheduleRoute(
+          duid,
+          { ...candidate, method: "options" },
+          results
+        );
+      }
     }
 
     await this.updateRoborockDiagnostics(
