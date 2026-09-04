@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.26.0
+
+**The refused route answered, and what it said was that the route exists — just not for the verb we asked with. So this release asks it which verb it does take, without attempting one.**
+
+3.25.1 taught the schedule probe to keep the body of a refusal. Issue #22's reporter ran it, and the body was worth the release:
+
+```
+GET user/scene/<id> → 400
+{"code":"servlet.exception","msg":"Request method 'GET' is not supported", ...}
+```
+
+That is not "no such route". A servlet says that sentence when the path _is_ mapped and the method is not — so the singular scene resource exists, and something other than GET reaches it.
+
+Two releases have now established _what_ a HomeKit switch over these schedules would have to change: the `enabled` flag inside a scene's TIMER trigger, not the scene's own. Neither established _where_ to send it, and this thread has twice refused to guess, because a guessed write endpoint against somebody's live account does not fail politely.
+
+There is a way to ask a resource which methods it accepts without attempting any of them, and it is what OPTIONS is for. It is a safe method, it carries no body, and it cannot alter a schedule. When the probe finds a timer-driven scene, it now asks that one scene resource the question and records the `Allow` header that answers it.
+
+The probe was also dropping that header — on refusals and successes alike — which is the same defect 3.25.1 fixed one field over: a refusal saying "GET is not supported" names the verb that failed and not the ones that would work, and `Allow` is where a servlet puts those. It is now kept wherever it appears.
+
+Exactly one header is taken, deliberately. A response header block carries session material, and a diagnostic somebody pastes into a public issue must not leak their cookie to measure a verb.
+
+The constraints are otherwise unchanged and one of them is now stated more precisely: safe methods only — GET and OPTIONS — debug logging only, once per robot per session, cannot throw, credential-shaped fields redacted. Still a diagnostic, still not a feature.
+
 ## 3.25.1
 
 **The schedule probe kept the status code of a refused route and threw away the server's explanation of it — so the route it was built to measure came back saying nothing.**

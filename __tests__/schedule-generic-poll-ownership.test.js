@@ -111,9 +111,21 @@ describe("generic timer poll ownership", () => {
 
     const probeSource = apiSource.slice(probeStart, probeEnd);
     expect(probeSource).toContain("async probeCloudScheduleRoutes(");
-    expect(probeSource).toContain("await this.api.get(route.path)");
+
+    // The verb became a variable in 3.26.0, when the singular scene resource
+    // answered `"Request method 'GET' is not supported"` and the next question
+    // was which method it DOES take — asked with OPTIONS, a safe method. So
+    // pin the invariant rather than the call site: whatever reaches the client
+    // is narrowed to a safe verb one line earlier, and no mutating verb
+    // appears in the probe at all, as a call or as a string that could be
+    // dispatched through the index.
+    expect(probeSource).toContain("await this.api[method](route.path)");
+    expect(probeSource).toContain(
+      'const method = route.method === "options" ? "options" : "get";'
+    );
     // A write to any of these routes would change a user's schedule. The probe
     // exists to measure, and nothing in it may send one.
     expect(probeSource).not.toMatch(/this\.api\.(post|put|patch|delete)\(/);
+    expect(probeSource).not.toMatch(/["'`](post|put|patch|delete)["'`]/i);
   });
 });
