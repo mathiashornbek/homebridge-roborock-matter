@@ -165,7 +165,7 @@ describe("HomeKit schedule settings contract", () => {
     );
 
     expect(scheduleSource).toMatch(
-      /const readSchedules = \(\) =>[\s\S]*?getServerTimers\(api, this\.duid, \{/
+      /private async readServerTimers\([\s\S]*?getServerTimers\(api, this\.duid, \{/
     );
 
     expect(scheduleSource).not.toContain("SCHEDULE_POLL_INTERVAL_MS");
@@ -204,8 +204,14 @@ describe("HomeKit schedule settings contract", () => {
   });
 
   test("non-empty unparsable schedule responses are treated as untrusted", () => {
+    // The source-level check names the untrusted shape; the refresh that
+    // receives it (no earlier good reading to fall back on) records the
+    // failure and preserves what is there.
     expect(scheduleSource).toMatch(
-      /if \(raw\.length > 0 && schedules\.length === 0\) \{[\s\S]*?this\.recordRefreshFailure\(\);[\s\S]*?preserving existing schedules/
+      /if \(raw\.length > 0 && schedules\.length === 0\) \{[\s\S]*?parsed to zero schedules/
+    );
+    expect(scheduleSource).toMatch(
+      /if \(unrecoverable\) \{[\s\S]*?this\.recordRefreshFailure\(\);[\s\S]*?Preserving existing schedules/
     );
   });
 
@@ -345,7 +351,7 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain(
       ": await this.accountCoordinator.enqueue("
     );
-    expect(scheduleSource).toContain("return readSchedules();");
+    expect(scheduleSource).toContain("? await readAll()");
   });
 
   test("a caller holding the account queue cannot adopt a refresh that does not hold it", () => {
@@ -450,7 +456,7 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain(
       "await this.refreshDetailed(primaryStartedAt, true);"
     );
-    expect(scheduleSource).toContain("const fallback = primarySent.filter(");
+    expect(scheduleSource).toContain("const unconfirmed = primarySent.filter(");
     expect(scheduleSource).toContain(
       "await this.refreshDetailed(fallbackStartedAt, true);"
     );

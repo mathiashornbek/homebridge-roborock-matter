@@ -25,6 +25,7 @@ import RoborockStateSensorAccessory, {
   stateSensorUuidSeed,
 } from "./state_sensor_accessory";
 import RoborockHapScheduleAccessory, {
+  isHapRoutineAccessory,
   isHapScheduleAccessory,
   ScheduleAccountCoordinator,
 } from "./hap_schedule_accessory";
@@ -92,6 +93,9 @@ const { getModelNameWithoutBrand } =
   require("../roborockLib/lib/deviceFeatures") as {
     getModelNameWithoutBrand: (model: unknown) => string | null;
   };
+const { redactSecrets } = require("../roborockLib/lib/redactSecrets") as {
+  redactSecrets: (value: unknown) => unknown;
+};
 
 /**
  * Roborock App Platform Plugin for Homebridge
@@ -327,9 +331,13 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
 
   private dispatchDeviceUpdate(id: string, homeData: unknown): void {
     // HomeData payloads can be tens of kilobytes and arrive continuously.
-    // Only pay the JSON.stringify cost when debug logging is actually on.
+    // Only pay the JSON.stringify cost when debug logging is actually on —
+    // and never print the robots' localKeys or serials: this is the line
+    // people paste into GitHub issues, and until 3.29.0 it carried both.
     if (this.platformConfig?.debugMode) {
-      this.log.debug(`${id} notifyDeviceUpdater:${JSON.stringify(homeData)}`);
+      this.log.debug(
+        `${id} notifyDeviceUpdater:${JSON.stringify(redactSecrets(homeData))}`
+      );
     }
     if (
       typeof this.roborockAPI.recordRoborockDiagnosticMessage === "function"
@@ -612,12 +620,26 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     );
   }
 
+  /**
+   * Routine switches ride on the same coordinator and the same master
+   * setting as the schedules: one momentary switch per Routine in the app,
+   * grouped in a "<robot> Routines" accessory (#22).
+   */
+  private shouldExposeHapRoutines(): boolean {
+    return (
+      this.platformConfig.enableHomeKitActionSwitches === true &&
+      this.platformConfig.enableHomeKitRoutineSwitches === true
+    );
+  }
+
   private removeHapScheduleAccessories(): void {
-    const scheduleAccessories = this.accessories.filter((accessory) =>
-      isHapScheduleAccessory(accessory)
+    const scheduleAccessories = this.accessories.filter(
+      (accessory) =>
+        isHapScheduleAccessory(accessory) || isHapRoutineAccessory(accessory)
     );
 
     for (const schedule of this.hapScheduleAccessories.values()) {
+      schedule.removeRoutineServices();
       schedule.removeScheduleServices();
     }
 
@@ -639,8 +661,91 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  /** Unregister every "<robot> Routines" accessory and drop its switches. */
+  private removeHapRoutineAccessories(): void {
+    for (const schedule of this.hapScheduleAccessories.values()) {
+      schedule.removeRoutineServices();
+    }
+
+    const routineAccessories = this.accessories.filter((accessory) =>
+      isHapRoutineAccessory(accessory)
+    );
+    for (const accessory of routineAccessories) {
+      const index = this.accessories.indexOf(accessory);
+      if (index >= 0) {
+        this.accessories.splice(index, 1);
+      }
+    }
+    if (routineAccessories.length > 0) {
+      this.api.unregisterPlatformAccessories(
+        HAP_PLUGIN_IDENTIFIER,
+        PLATFORM_NAME,
+        routineAccessories
+      );
+    }
+  }
+
+  private routineAccessoryUuid(duid: string): string {
+    return this.api.hap.uuid.generate(`hap:roborock:routines:${duid}`);
+  }
+
+  /**
+   * Hand a robot's coordinator its "<robot> Routines" accessory — the cached
+   * one when Homebridge restored it, a fresh unregistered one otherwise — and
+   * let the coordinator say, after every scene reading, whether the accessory
+   * has switches. It is registered the first time it has one and unregistered
+   * when a trustworthy reading says the account has none, so an empty
+   * accessory never shows up as a tile with nothing on it.
+   */
+  private attachRoutineAccessory(
+    duid: string,
+    vacuumName: string,
+    schedule: RoborockHapScheduleAccessory
+  ): void {
+    const uuid = this.routineAccessoryUuid(duid);
+    let accessory = this.accessories.find(
+      (cached) => cached.UUID === uuid && isHapRoutineAccessory(cached)
+    );
+    if (!accessory) {
+      accessory = new this.api.platformAccessory(
+        `${vacuumName} Routines`,
+        uuid
+      );
+    }
+    const routineAccessory = accessory;
+
+    schedule.attachRoutineAccessory(routineAccessory, (count) => {
+      const registered = this.accessories.includes(routineAccessory);
+      if (count > 0 && !registered) {
+        this.accessories.push(routineAccessory);
+        this.log.info(
+          `Adding HAP routine accessory '${routineAccessory.displayName}' with ${count} switch${count === 1 ? "" : "es"}.`
+        );
+        this.api.registerPlatformAccessories(
+          HAP_PLUGIN_IDENTIFIER,
+          PLATFORM_NAME,
+          [routineAccessory]
+        );
+      } else if (count === 0 && registered) {
+        const index = this.accessories.indexOf(routineAccessory);
+        if (index >= 0) {
+          this.accessories.splice(index, 1);
+        }
+        this.log.info(
+          `Removing HAP routine accessory '${routineAccessory.displayName}': the account has no Routines for this robot.`
+        );
+        this.api.unregisterPlatformAccessories(
+          HAP_PLUGIN_IDENTIFIER,
+          PLATFORM_NAME,
+          [routineAccessory]
+        );
+      }
+    });
+  }
+
   private syncHapSchedules(devices: any[]): void {
     const exposeSchedules = this.shouldExposeHapSchedules();
+    const exposeRoutines = this.shouldExposeHapRoutines();
 
     // The master HAP-switch setting owns the entire HAP switch surface.
     // If it is disabled, schedule accessories must be completely removed
@@ -650,14 +755,21 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       return;
     }
 
+    if (!exposeRoutines) {
+      this.removeHapRoutineAccessories();
+    }
+
     // The schedules sub-setting only controls schedule exposure. Keep the
     // coordinator cached so schedules can be rebuilt when re-enabled.
     if (!exposeSchedules) {
       for (const schedule of this.hapScheduleAccessories.values()) {
+        schedule.setScheduleExposure(false);
         schedule.removeScheduleServices();
       }
 
-      return;
+      if (!exposeRoutines) {
+        return;
+      }
     }
 
     if (!this.schedulePolicyLogged) {
@@ -689,7 +801,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     // Remove schedule groups only when we have a trustworthy non-empty
     // account result and the robot genuinely disappeared.
     const obsolete = this.accessories.filter((accessory) => {
-      if (!isHapScheduleAccessory(accessory)) {
+      if (
+        !isHapScheduleAccessory(accessory) &&
+        !isHapRoutineAccessory(accessory)
+      ) {
         return false;
       }
 
@@ -702,7 +817,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         const duid = (accessory.context as { duid?: string }).duid;
 
         if (duid) {
-          this.hapScheduleAccessories.get(duid)?.removeScheduleServices();
+          const schedule = this.hapScheduleAccessories.get(duid);
+          schedule?.removeRoutineServices();
+          schedule?.removeScheduleServices();
           this.hapScheduleAccessories.delete(duid);
         }
 
@@ -723,6 +840,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       let schedule = this.hapScheduleAccessories.get(duid);
 
       if (schedule) {
+        schedule.setScheduleExposure(exposeSchedules);
+        if (exposeRoutines) {
+          this.attachRoutineAccessory(duid, target.vacuumName, schedule);
+        }
         void schedule
           .initialize(target.vacuumName)
           .then((result) => {
@@ -802,8 +923,13 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         duid,
         this.scheduleAccountCoordinator
       );
+      schedule.setScheduleExposure(exposeSchedules);
 
       this.hapScheduleAccessories.set(duid, schedule);
+
+      if (exposeRoutines) {
+        this.attachRoutineAccessory(duid, target.vacuumName, schedule);
+      }
 
       void schedule
         .initialize(target.vacuumName)
@@ -819,7 +945,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
               `Schedule startup restoration result for ${target.vacuumName}: restored=${restored}.`
             );
 
-            if (!restored) {
+            if (!restored && !this.coordinatorKeepsRoutines(schedule!)) {
               this.hapScheduleAccessories.delete(duid);
             }
 
@@ -827,7 +953,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
           }
 
           if (!result.hasSchedules) {
-            this.hapScheduleAccessories.delete(duid);
+            if (!this.coordinatorKeepsRoutines(schedule!)) {
+              this.hapScheduleAccessories.delete(duid);
+            }
             return;
           }
 
@@ -861,12 +989,26 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  /**
+   * A coordinator whose schedule half came back empty still has work when it
+   * drives a Routines accessory, so it must stay in the map — dropping it
+   * would orphan the routine switches' handlers.
+   */
+  private coordinatorKeepsRoutines(
+    schedule: RoborockHapScheduleAccessory
+  ): boolean {
+    return this.shouldExposeHapRoutines() && schedule.routineCount > 0;
+  }
+
   private removeHapScheduleAccessory(
     duid: string,
     accessory?: PlatformAccessory
   ): void {
-    this.hapScheduleAccessories.get(duid)?.removeScheduleServices();
-    this.hapScheduleAccessories.delete(duid);
+    const schedule = this.hapScheduleAccessories.get(duid);
+    schedule?.removeScheduleServices();
+    if (!schedule || !this.coordinatorKeepsRoutines(schedule)) {
+      this.hapScheduleAccessories.delete(duid);
+    }
 
     if (!accessory) {
       return;
@@ -937,7 +1079,8 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     return (
       isActionSwitchAccessory(accessory) ||
       isStateSensorAccessory(accessory) ||
-      isHapScheduleAccessory(accessory)
+      isHapScheduleAccessory(accessory) ||
+      isHapRoutineAccessory(accessory)
     );
   }
 

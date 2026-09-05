@@ -16,9 +16,16 @@
 // vacuum on the account until Homebridge restarts.
 
 jest.mock("../src/hap_schedule_api.ts", () => ({
+  // The pure helpers (id prefixes, scene decoding) are the real ones; only
+  // the calls that would reach the cloud are mocked. The scene reading
+  // answers "no routines" so these tests stay about the device-side timers.
+  ...jest.requireActual("../src/hap_schedule_api.ts"),
   getServerTimers: jest.fn(),
   updateServerTimer: jest.fn(),
   updateTimer: jest.fn(),
+  getCloudScenes: jest.fn(async () => []),
+  setCloudSceneScheduleEnabled: jest.fn(),
+  executeCloudScene: jest.fn(),
 }));
 
 const {
@@ -48,6 +55,7 @@ function makeCoordinator() {
 
   coordinator.duid = "device-1";
   coordinator.scheduleAccessories = new Map();
+  coordinator.routineSwitches = new Map();
   coordinator.managerAccessory = {};
   coordinator.vacuumName = "Test Vacuum";
   coordinator.managerRemoved = false;

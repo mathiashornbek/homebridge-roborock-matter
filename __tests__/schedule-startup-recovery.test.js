@@ -13,6 +13,10 @@ jest.mock("../src/hap_schedule_accessory", () => {
       this.restoreScheduleHandlersFromAccessory = jest
         .fn()
         .mockReturnValue(true);
+      this.setScheduleExposure = jest.fn();
+      this.attachRoutineAccessory = jest.fn();
+      this.removeRoutineServices = jest.fn();
+      this.routineCount = 0;
 
       instances.push(this);
     }
@@ -23,7 +27,10 @@ jest.mock("../src/hap_schedule_accessory", () => {
     default: FakeScheduleAccessory,
     isHapScheduleAccessory: (accessory) =>
       typeof accessory?.context?.duid === "string" &&
-      accessory.context.duid.length > 0,
+      accessory.context.duid.length > 0 &&
+      accessory.context.extension !== "routines",
+    isHapRoutineAccessory: (accessory) =>
+      accessory?.context?.extension === "routines",
     __instances: instances,
   };
 });

@@ -167,3 +167,178 @@ export async function updateTimer(
 
   throw new Error("Roborock timer command API is unavailable");
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * Cloud scenes — the app's Routines, and the schedules some robots keep there.
+ * ---------------------------------------------------------------------------
+ *
+ * A Saros 10R (`roborock.vacuum.a144`) refuses `get_server_timer` with
+ * `-10007 "Not FCC robot"` and answers `get_timer` with `[]`, while its owner
+ * has three daily schedules in the app (#22). Those live on the account, as
+ * timer-driven scenes under `user/scene/device/{duid}`, and so do every
+ * robot's manually run Routines. The shared API exposes them raw; this layer
+ * gives the HAP accessories the four calls they need, in the same shape as
+ * the server-timer calls above.
+ */
+
+const {
+  parseCloudSceneSchedules,
+  buildSceneParamWithTimersEnabled,
+  cloudSceneScheduleIsActive,
+} = require("../roborockLib/lib/parseCloudSceneSchedules") as {
+  parseCloudSceneSchedules: (payload: unknown) => CloudSceneSchedule[];
+  buildSceneParamWithTimersEnabled: (
+    scene: unknown,
+    enabled: boolean
+  ) => Record<string, unknown> | null;
+  cloudSceneScheduleIsActive: (scene: unknown) => boolean | null;
+};
+
+export interface CloudSceneTrigger {
+  id: string | null;
+  type: string;
+  cron: string | null;
+  schedule: string | null;
+  enabled: boolean;
+  repeated: boolean;
+  timeZoneId: string | null;
+}
+
+export interface CloudSceneSchedule {
+  id: string;
+  name: string | null;
+  type: string | null;
+  enabled: boolean;
+  active: boolean;
+  triggers: CloudSceneTrigger[];
+  actions: Array<{ method: string | null; segmentCount: number | null }>;
+}
+
+/** One scene as the cloud returns it, plus the decoded schedule when it has a timer. */
+export interface CloudScene {
+  id: string;
+  name: string;
+  raw: Record<string, unknown>;
+  schedule: CloudSceneSchedule | null;
+}
+
+interface RoborockCloudSceneApi {
+  getCloudScenes?: (duid: string) => Promise<unknown>;
+  updateCloudSceneParam?: (
+    sceneId: string | number,
+    param: Record<string, unknown>
+  ) => Promise<unknown>;
+  setCloudSceneEnabled?: (
+    sceneId: string | number,
+    enabled: boolean
+  ) => Promise<unknown>;
+  executeCloudScene?: (sceneId: string | number) => Promise<unknown>;
+}
+
+/** Prefix that keeps a scene's switch id apart from a server timer's. */
+export const CLOUD_SCENE_ID_PREFIX = "scene:";
+
+export function isCloudSceneScheduleId(id: string): boolean {
+  return id.startsWith(CLOUD_SCENE_ID_PREFIX);
+}
+
+export function cloudSceneIdFromScheduleId(id: string): string {
+  return isCloudSceneScheduleId(id)
+    ? id.slice(CLOUD_SCENE_ID_PREFIX.length)
+    : id;
+}
+
+/**
+ * Read a robot's scenes and decode the timer-driven ones.
+ *
+ * Throws when the API is missing or the read fails; a failed read is never
+ * an empty list, because callers remove switches on an empty list.
+ */
+export async function getCloudScenes(
+  api: RoborockCloudSceneApi,
+  duid: string
+): Promise<CloudScene[]> {
+  if (typeof api.getCloudScenes !== "function") {
+    throw new Error("Roborock cloud scene API is unavailable");
+  }
+
+  const raw = await api.getCloudScenes(duid);
+  if (!Array.isArray(raw)) {
+    throw new Error(`user/scene/device answered with ${typeof raw}`);
+  }
+
+  const scenes: CloudScene[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    if (record.id === undefined || record.id === null) continue;
+
+    const [schedule] = parseCloudSceneSchedules([record]);
+    const id = String(record.id);
+    scenes.push({
+      id,
+      name:
+        typeof record.name === "string" && record.name.trim()
+          ? record.name.trim()
+          : `Routine ${id}`,
+      raw: record,
+      schedule: schedule ?? null,
+    });
+  }
+
+  return scenes;
+}
+
+/**
+ * Switch a timer-driven scene's schedule on or off, the way the app does.
+ *
+ * Off: rewrite the scene's param with every TIMER trigger's nested `enabled`
+ * false — the flag the reporter's app flipped, measured in #22. On: the same
+ * with `true`, and if the scene itself had been disabled at scene level (a
+ * state the app can produce and the cloud can express), enable it too, since
+ * a scene disabled there never fires. Each write is gated by the shared API
+ * on the route's own `Allow` header.
+ */
+export async function setCloudSceneScheduleEnabled(
+  api: RoborockCloudSceneApi,
+  scene: CloudScene,
+  enabled: boolean
+): Promise<void> {
+  if (
+    typeof api.updateCloudSceneParam !== "function" ||
+    typeof api.setCloudSceneEnabled !== "function"
+  ) {
+    throw new Error("Roborock cloud scene API is unavailable");
+  }
+
+  const param = buildSceneParamWithTimersEnabled(scene.raw, enabled);
+  if (!param) {
+    throw new Error(
+      `Routine "${scene.name}" has no timer to switch; it can only be run.`
+    );
+  }
+
+  await api.updateCloudSceneParam(scene.id, param);
+
+  if (enabled && scene.raw.enabled === false) {
+    await api.setCloudSceneEnabled(scene.id, true);
+  }
+}
+
+/** Run a scene now. */
+export async function executeCloudScene(
+  api: RoborockCloudSceneApi,
+  sceneId: string
+): Promise<void> {
+  if (typeof api.executeCloudScene !== "function") {
+    throw new Error("Roborock cloud scene API is unavailable");
+  }
+
+  await api.executeCloudScene(sceneId);
+}
+
+/** The switch position a timer-driven scene shows, or null when it has no timer. */
+export function cloudSceneSwitchPosition(scene: CloudScene): boolean | null {
+  return cloudSceneScheduleIsActive(scene.raw);
+}

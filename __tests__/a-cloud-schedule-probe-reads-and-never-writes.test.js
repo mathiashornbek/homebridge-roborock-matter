@@ -655,9 +655,10 @@ describe("the probe measures whether a scene is a resource it could write to", (
       await adapter.probeCloudScheduleRoutes("duid-a144");
     }
 
-    // Two candidate GETs, the singular scene's GET and OPTIONS, then the two
-    // remaining candidates and the two controls — once, not twenty times.
-    expect(client.calls).toHaveLength(8);
+    // Two candidate GETs, the singular scene's GET and OPTIONS, then the
+    // three remaining candidates (`param` joined in 3.29.0) and the two
+    // controls — once, not twenty times.
+    expect(client.calls).toHaveLength(9);
   });
 
   test("credential-shaped keys in the singular answer are redacted too", async () => {
@@ -1108,6 +1109,7 @@ describe("a resource whose only write verb destroys is not the write we want", (
   const SCENE_PATH = `user/scene/${SCENE_ID}`;
   const COLLECTION_PATH = "user/scene";
   const ENABLE_PATH = `${SCENE_PATH}/enable`;
+  const PARAM_PATH = `${SCENE_PATH}/param`;
   const MAPPED_CONTROL_PATH = SCENES_PATH;
   const ABSENT_CONTROL_PATH = `${SCENE_PATH}/no-such-subresource-control`;
 
@@ -1176,6 +1178,7 @@ describe("a resource whose only write verb destroys is not the write we want", (
     expect(probe.calls.slice(4)).toEqual([
       { method: "options", path: COLLECTION_PATH },
       { method: "options", path: ENABLE_PATH },
+      { method: "options", path: PARAM_PATH },
       { method: "options", path: MAPPED_CONTROL_PATH },
       { method: "options", path: ABSENT_CONTROL_PATH },
     ]);

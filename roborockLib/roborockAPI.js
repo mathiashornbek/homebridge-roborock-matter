@@ -19,7 +19,7 @@ const supportsMaxPlusFanPower =
 const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
-const roborockCrypto = require("./lib/roborockCrypto");
+const hawkSignature = require("./lib/hawkSignature");
 const { METHOD_REFUSED_CODE } = require("./lib/describeReplyRefusal");
 const {
   summariseCloudSceneSchedules,
@@ -307,6 +307,23 @@ const B01_STATUS_IDLE_GAP_MS = 25000;
 // literal rather than a random string so that the same reading is reproducible
 // across restarts and legible in a log a user pastes into an issue.
 const ABSENT_ROUTE_PROBE_SEGMENT = "no-such-subresource-control";
+
+// The two cloud scene writes this project sends, and the verb each takes.
+//
+// Both were measured on the owner's own account on 5 Sep 2026 (see
+// lib/parseCloudSceneSchedules.js and lib/hawkSignature.js for the readings),
+// and both are still gated at runtime on the resource's own `Allow` header:
+// the cloud is asked which methods it takes before the first write of a
+// session, and a route that stops offering PUT stops being written to.
+//
+// `DELETE` is deliberately absent from anything here. The singular scene
+// resource offered it plainly — `Allow: DELETE,OPTIONS`, measured 4 Sep —
+// and the failure mode of accepting that offer against a stranger's account
+// is one of their schedules gone for good. A verb being available is not a
+// reason to use it.
+const CLOUD_SCENE_WRITE_VERB = "PUT";
+const CLOUD_SCENE_PARAM_ROUTE = "param";
+const CLOUD_SCENE_ENABLE_ROUTE = "enable";
 
 // How many keys of an arbitrary diagnostic object survive compaction.
 const DIAGNOSTIC_KEY_LIMIT = 30;
@@ -1929,34 +1946,16 @@ class Roborock {
     this.api = axios.create({
       baseURL: rriot.r.a,
     });
+    // Every request is signed over its path AND its body (see
+    // lib/hawkSignature.js for the measured formula). Until 3.29.0 the body
+    // slot was always signed empty, which was right for the bodiless GETs and
+    // POSTs this plugin made and silently ruled out every write that carries
+    // one — the cloud answers an unsigned body with 401.
     this.api.interceptors.request.use((config) => {
       try {
-        const timestamp = Math.floor(Date.now() / 1000);
-        const nonce = crypto
-          .randomBytes(6)
-          .toString("base64")
-          .substring(0, 6)
-          .replace("+", "X")
-          .replace("/", "Y");
-        let url;
         if (this.api) {
-          url = new URL(this.api.getUri(config));
-          const prestr = [
-            rriot.u,
-            rriot.s,
-            nonce,
-            timestamp,
-            roborockCrypto.md5hex(url.pathname),
-            /*queryparams*/ "",
-            /*body*/ "",
-          ].join(":");
-          const mac = crypto
-            .createHmac("sha256", rriot.h)
-            .update(prestr)
-            .digest("base64");
-
-          config.headers["Authorization"] =
-            `Hawk id="${rriot.u}", s="${rriot.s}", ts="${timestamp}", nonce="${nonce}", mac="${mac}"`;
+          const url = new URL(this.api.getUri(config));
+          hawkSignature.signAxiosRequest(rriot, url.pathname, config);
         }
       } catch (error) {
         this.log.error("Failed to initialize API. Error: " + error);
@@ -4716,10 +4715,12 @@ class Roborock {
    *
    * - **Debug only.** Silent for every installation that has not asked for it.
    * - **Safe methods only — GET and OPTIONS.** Nothing here can change a
-   *   schedule. The Hawk interceptor signs an empty body (`roborockAPI.js`
-   *   request interceptor), so a body-bearing write would not authenticate
-   *   anyway. OPTIONS carries no body either: it asks a resource which methods
-   *   it accepts, which is how you find a write target without attempting one.
+   *   schedule. OPTIONS carries no body: it asks a resource which methods it
+   *   accepts, which is how you find a write target without attempting one.
+   *   (Until 3.29.0 the Hawk interceptor also signed every body empty, so a
+   *   write could not even have authenticated; it signs bodies now, and the
+   *   writes live in `updateCloudSceneParam` / `setCloudSceneEnabled`, each
+   *   behind its own `Allow` gate.)
    * - **Once per robot per session,** so a poll cadence cannot turn it into
    *   traffic.
    * - **Never throws.** A probe that breaks startup would be worse than the
@@ -5038,9 +5039,15 @@ class Roborock {
       // back with an EMPTY body and an Allow header, which is a servlet
       // container answering the request itself instead of handing it to the
       // handler behind the path.
+      //
+      // `param` joined the list in 3.29.0, after the answer to the round above
+      // came back (PUT on `enable`, controls clean) and the owner's own
+      // account was used to measure what each verb does: `enable` flips the
+      // scene-level flag, `param` is where the app's schedule switch lives.
       for (const candidate of [
         { label: "sceneCollectionMethods", path: "user/scene" },
         { label: "sceneEnableMethods", path: `${scenePath}/enable` },
+        { label: "sceneParamMethods", path: `${scenePath}/param` },
         {
           label: "mappedRouteControl",
           path: `user/scene/device/${duid}`,
@@ -5080,6 +5087,269 @@ class Roborock {
       enabled,
       options
     );
+  }
+
+  /**
+   * Whether an `Allow` header names a given method.
+   *
+   * Parsed rather than string-matched: `Allow: DELETE,OPTIONS` contains the
+   * text "OPTIONS" and also the text "DELETE", and a substring test on a
+   * header like `PUT,OPTIONS` would answer yes to "UT". The gates that decide
+   * whether a write is sent are built on this, so it splits the list and
+   * compares whole tokens.
+   *
+   * @param {unknown} allow the header value, as `readAllowedMethods` returns it
+   * @param {string} verb method to look for, case-insensitively
+   * @returns {boolean} true only when the header is present and names it
+   */
+  allowHeaderNames(allow, verb) {
+    if (typeof allow !== "string" || allow === "") {
+      return false;
+    }
+
+    const wanted = verb.trim().toUpperCase();
+
+    return allow
+      .split(",")
+      .map((part) => part.trim().toUpperCase())
+      .includes(wanted);
+  }
+
+  /**
+   * Read the app's Routines ("scenes") that belong to one robot.
+   *
+   * `user/scene/device/{duid}` is the route the reporter's three schedules in
+   * #22 turned out to live on, the route python-roborock, openHAB, Hubitat and
+   * ioBroker all read, and the one this plugin's debug probe has read since
+   * 3.23.0. Timer-driven scenes are the app's schedules; the rest are its
+   * manually run Routines. Both come back here, raw, for the callers that
+   * know which they want.
+   *
+   * Throws rather than returning an empty list on failure: an empty answer is
+   * a fact ("no routines") that a caller may act on by removing switches, and
+   * a failed read must never look like that fact.
+   *
+   * @param {string} duid robot the scenes belong to
+   * @returns {Promise<Array<Record<string, unknown>>>} scenes, in cloud order
+   */
+  async getCloudScenes(duid) {
+    if (!this.api) {
+      throw new Error("The Roborock cloud API is not initialised yet.");
+    }
+    if (!duid) {
+      throw new Error("A robot id is required to read its routines.");
+    }
+
+    const response = await this.api.get(`user/scene/device/${duid}`);
+    const envelope = response?.data;
+
+    if (envelope?.success === false) {
+      throw new Error(
+        `user/scene/device answered ${JSON.stringify(this.compactDiagnosticPayload(envelope))}`
+      );
+    }
+
+    const result = envelope?.result;
+    if (!Array.isArray(result)) {
+      throw new Error(
+        `user/scene/device did not answer with a list (${typeof result}).`
+      );
+    }
+
+    return result.filter(
+      (scene) => scene && typeof scene === "object" && !Array.isArray(scene)
+    );
+  }
+
+  /**
+   * Ask a cloud scene sub-resource whether it takes the verb we are about to
+   * send, and remember a yes for the rest of the session.
+   *
+   * This is the runtime half of the gate promised in #22: no write is sent
+   * to a route until that route's own `Allow` header has named the verb.
+   * OPTIONS is a safe method with no body, so asking costs nothing that could
+   * alter a schedule. The answer is per route, not per scene — the servlet
+   * maps `user/scene/{id}/param` once — so one yes per sub-resource per
+   * session is enough, and a no is not cached: the next attempt asks again,
+   * because a transient failure to answer must not lock a route out for
+   * hours.
+   *
+   * @param {string | number} sceneId any scene on the account, used to form the path
+   * @param {string} subResource `param` or `enable`
+   * @param {string} verb the method the write will use
+   * @returns {Promise<{allowed: boolean, allow: string | undefined}>}
+   */
+  async cloudSceneRouteAllows(sceneId, subResource, verb) {
+    if (!this._cloudSceneRoutesAllowing) {
+      this._cloudSceneRoutesAllowing = new Map();
+    }
+
+    const cacheKey = `${subResource}:${verb.toUpperCase()}`;
+    const cached = this._cloudSceneRoutesAllowing.get(cacheKey);
+    if (cached) {
+      return { allowed: true, allow: cached };
+    }
+
+    if (!this.api) {
+      return { allowed: false, allow: undefined };
+    }
+
+    const path = `user/scene/${sceneId}/${subResource}`;
+    let allow;
+    try {
+      const response = await this.api.options(path);
+      allow = this.readAllowedMethods(response?.headers);
+    } catch (error) {
+      // A refusal still carries the header that matters, when it carries
+      // anything: `Allow` on a 4xx is how a servlet says "not that verb".
+      allow = this.readAllowedMethods(error?.response?.headers);
+    }
+
+    const allowed = this.allowHeaderNames(allow, verb);
+    if (allowed) {
+      this._cloudSceneRoutesAllowing.set(cacheKey, allow);
+    }
+
+    this.log.debug(
+      `Roborock cloud scene route ${path} ${
+        allowed ? "offers" : "does not offer"
+      } ${verb.toUpperCase()} (Allow: ${allow ?? "absent"}).`
+    );
+
+    return { allowed, allow };
+  }
+
+  /**
+   * Replace a cloud scene's `param` — the app's own edit, reproduced.
+   *
+   * Measured 5 Sep 2026 on the owner's account: a JSON body holding the param
+   * object answers `{"status":"ok","success":true}`, the server re-creates the
+   * triggers under new ids and leaves the action byte for byte. The caller
+   * builds the object with `buildSceneParamWithTimersEnabled`, which carries
+   * everything through except the one flag it changes, because this write
+   * REPLACES the param and anything not sent is gone.
+   *
+   * Gated on the route's `Allow` header first; throws a plain sentence when
+   * the route does not offer PUT, so a switch reverts with a reason instead
+   * of a stack trace.
+   *
+   * @param {string | number} sceneId
+   * @param {Record<string, unknown>} param the complete param object to store
+   * @returns {Promise<void>}
+   */
+  async updateCloudSceneParam(sceneId, param) {
+    if (!this.api) {
+      throw new Error("The Roborock cloud API is not initialised yet.");
+    }
+    if (!param || typeof param !== "object" || Array.isArray(param)) {
+      throw new Error("A scene param must be an object.");
+    }
+
+    const gate = await this.cloudSceneRouteAllows(
+      sceneId,
+      CLOUD_SCENE_PARAM_ROUTE,
+      CLOUD_SCENE_WRITE_VERB
+    );
+    if (!gate.allowed) {
+      throw new Error(
+        `The Roborock cloud does not offer ${CLOUD_SCENE_WRITE_VERB} on user/scene/{id}/${CLOUD_SCENE_PARAM_ROUTE} (Allow: ${gate.allow ?? "absent"}); the schedule was left as it is.`
+      );
+    }
+
+    const response = await this.api.put(
+      `user/scene/${sceneId}/${CLOUD_SCENE_PARAM_ROUTE}`,
+      JSON.stringify(param),
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    this.assertCloudWriteSucceeded(
+      response,
+      `user/scene/${sceneId}/${CLOUD_SCENE_PARAM_ROUTE}`
+    );
+  }
+
+  /**
+   * Switch a cloud scene on or off at scene level.
+   *
+   * Measured 5 Sep 2026 on the owner's account: `PUT user/scene/{id}/enable`
+   * with the FORM body `enabled=true|false` answers `success:true` and flips
+   * the scene's own `enabled` field, leaving the timer's nested flag alone.
+   * A JSON body on the same route answers `400 parameter.error`, which is
+   * why this one is a form.
+   *
+   * This is not the flag the app flips for its schedule switch (that is the
+   * TIMER trigger's, via `updateCloudSceneParam`), but a scene disabled here
+   * never fires, so enabling a schedule has to make sure this flag is on too.
+   *
+   * @param {string | number} sceneId
+   * @param {boolean} enabled
+   * @returns {Promise<void>}
+   */
+  async setCloudSceneEnabled(sceneId, enabled) {
+    if (!this.api) {
+      throw new Error("The Roborock cloud API is not initialised yet.");
+    }
+
+    const gate = await this.cloudSceneRouteAllows(
+      sceneId,
+      CLOUD_SCENE_ENABLE_ROUTE,
+      CLOUD_SCENE_WRITE_VERB
+    );
+    if (!gate.allowed) {
+      throw new Error(
+        `The Roborock cloud does not offer ${CLOUD_SCENE_WRITE_VERB} on user/scene/{id}/${CLOUD_SCENE_ENABLE_ROUTE} (Allow: ${gate.allow ?? "absent"}); the routine was left as it is.`
+      );
+    }
+
+    const response = await this.api.put(
+      `user/scene/${sceneId}/${CLOUD_SCENE_ENABLE_ROUTE}`,
+      hawkSignature.formBody({ enabled: Boolean(enabled) }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+
+    this.assertCloudWriteSucceeded(
+      response,
+      `user/scene/${sceneId}/${CLOUD_SCENE_ENABLE_ROUTE}`
+    );
+  }
+
+  /**
+   * Run a cloud scene now — the app's "Routine" play button.
+   *
+   * `POST user/scene/{id}/execute` is the one scene write every open-source
+   * client agrees on (python-roborock, Home Assistant, openHAB, Hubitat,
+   * ioBroker), and the one this plugin has carried since its ioBroker days.
+   * No `Allow` gate here: the route is established, and OPTIONS on it was
+   * measured to answer `POST,OPTIONS` on 5 Sep 2026.
+   *
+   * @param {string | number} sceneId
+   * @returns {Promise<void>}
+   */
+  async executeCloudScene(sceneId) {
+    if (!this.api) {
+      throw new Error("The Roborock cloud API is not initialised yet.");
+    }
+
+    const response = await this.api.post(`user/scene/${sceneId}/execute`);
+    this.assertCloudWriteSucceeded(response, `user/scene/${sceneId}/execute`);
+  }
+
+  /**
+   * The cloud wraps a write's answer as `{api,result,status,success}`; a 200
+   * with `success:false` is still a refusal and must not pass as done.
+   *
+   * @param {unknown} response axios response
+   * @param {string} path for the message
+   * @returns {void}
+   */
+  assertCloudWriteSucceeded(response, path) {
+    const envelope = /** @type {{data?: unknown}} */ (response)?.data;
+    const success = /** @type {{success?: unknown}} */ (envelope)?.success;
+    if (success === false) {
+      throw new Error(
+        `${path} answered ${JSON.stringify(this.compactDiagnosticPayload(envelope))}`
+      );
+    }
   }
 
   async getStatus(duid, options = {}) {

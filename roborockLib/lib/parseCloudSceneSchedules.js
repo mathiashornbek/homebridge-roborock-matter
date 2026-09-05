@@ -379,9 +379,86 @@ function summariseCloudSceneSchedules(payload) {
   return [headline, ...schedules.map(describeCloudSceneSchedule)];
 }
 
+/**
+ * Build the `param` object a schedule write sends, from the scene as the
+ * cloud returned it, with every TIMER trigger's nested `enabled` set.
+ *
+ * MEASURED, not designed, on 5 Sep 2026 against the owner's own account:
+ *
+ * - `PUT user/scene/{id}/param` takes the scene's `param` object — the
+ *   thing inside the `param` string, not the scene — as a JSON body, and
+ *   answers `{"status":"ok","success":true}`;
+ * - the server re-creates the triggers it is sent (each came back with a new
+ *   `id`), re-serialises every nested `param` string in its own style, drops
+ *   `matchType`, and keeps the action untouched byte for byte;
+ * - sending the object back unchanged changed nothing but those trigger ids;
+ * - sending it with the TIMER trigger's `enabled` flipped is exactly the
+ *   change the reporter's app made when he switched a schedule off (#22).
+ *
+ * So this is the app's own edit, reproduced. Everything but the one flag is
+ * carried through as received — the action, the other triggers, unknown
+ * fields — because the write REPLACES the param and anything left out here
+ * would be gone from the schedule.
+ *
+ * Every nested trigger param is re-serialised (compact); the server rewrites
+ * them in its own format anyway, so their exact bytes were never ours.
+ *
+ * @param {unknown} scene one entry of the `user/scene/device/{duid}` answer
+ * @param {boolean} enabled the state every TIMER trigger should end up in
+ * @returns {Record<string, unknown> | null} the param to send, or null when
+ *   the scene has no timer trigger or cannot be read — never a partial write
+ */
+function buildSceneParamWithTimersEnabled(scene, enabled) {
+  if (!scene || typeof scene !== "object" || Array.isArray(scene)) return null;
+
+  const sceneParam = parseNestedJson(
+    /** @type {Record<string, unknown>} */ (scene).param
+  );
+  if (!sceneParam || !Array.isArray(sceneParam.triggers)) return null;
+
+  let timers = 0;
+  const triggers = sceneParam.triggers.map((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+    const trigger = /** @type {Record<string, unknown>} */ (raw);
+    const type = trigger.type ?? trigger.name;
+    if (type !== "TIMER") return trigger;
+
+    const inner = parseNestedJson(trigger.param);
+    if (!inner || typeof inner.cron !== "string") return trigger;
+
+    timers += 1;
+    return {
+      ...trigger,
+      param: JSON.stringify({ ...inner, enabled }),
+    };
+  });
+
+  if (timers === 0) return null;
+
+  return { ...sceneParam, triggers };
+}
+
+/**
+ * The one boolean a HomeKit schedule switch shows for a cloud scene.
+ *
+ * A schedule fires when the scene is enabled AND its timer is enabled, so
+ * that conjunction is what the switch reads; it is the `active` field of
+ * {@link parseCloudSceneSchedules} for one scene.
+ *
+ * @param {unknown} scene one entry of the `user/scene/device/{duid}` answer
+ * @returns {boolean | null} the switch position, or null when the scene is
+ *   not a timer-driven scene
+ */
+function cloudSceneScheduleIsActive(scene) {
+  const [schedule] = parseCloudSceneSchedules([scene]);
+  return schedule ? schedule.active : null;
+}
+
 module.exports = {
   parseCloudSceneSchedules,
   describeCloudSceneSchedule,
   summariseCloudSceneSchedules,
   describeCron,
+  buildSceneParamWithTimersEnabled,
+  cloudSceneScheduleIsActive,
 };
