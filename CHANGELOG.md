@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.28.0
+
+**Startup and network traffic, measured rather than felt.**
+
+### The tiles no longer wait for readings no tile displays
+
+`initializeDeviceUpdates` awaited the whole first parameter cycle for every robot — 8 serial round-trips per classic robot — and only then did startup set `bInited`, fire the Homebridge callback and register the Matter accessories. Those 8 requests read consumable hours, timers, carpet mode and water-box mode. Not one of them reaches the tile; the tile displays `get_status`, which was not among them.
+
+Counted on the critical path between "Homebridge started the plugin" and "the vacuum exists in Apple Home": **up to 12 serial network waits before, 3 after.** The home snapshot was also fetched twice back to back — `v2/user/homes` to build the device list, then `user/homes` again inside `updateHomeData` — and the second one is now handed the first one's payload. The network probe and the first status run concurrently instead of one after the other.
+
+On my own network this was a few seconds. On a robot that does not answer locally — the case in [#22](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/22), where every local request runs its full 10-second timeout before falling back to the cloud — it kept the vacuum out of Apple Home for over a minute after every restart.
+
+### The first status is immediate, not 15 seconds away
+
+The classic poller is a plain interval, so its first tick landed 15 seconds after start and the tile showed the cloud snapshot until then. The B01 loop already fired its first read immediately for exactly this reason; the classic path now does too. Each robot's first status is awaited before registration, in parallel across robots and capped at 4 seconds, so the tile registers with fresh state but never waits on a robot that will not answer.
+
+### 160 requests an hour became 52
+
+Measured per classic robot: the periodic cycle issued 8 requests every 180 seconds — `get_multi_maps_list`, `get_room_mapping`, `get_consumable`, `get_server_timer`, `get_timer`, `get_carpet_mode`, `get_carpet_clean_mode`, `get_water_box_custom_mode` — for values that change roughly once a week. 3 robots in one house: about 280 requests an hour, 6,700 a day, at the Roborock cloud and the robots' local ports.
+
+The 6 slow-changing readings now move to a **30-minute lane**. Room mappings deliberately stay on every cycle: a room renamed in the Roborock app should reach Apple Home within minutes, and that refresh now serves from the persisted cache first — the same shape the B01 branch already had — so its 2 round-trips run behind the tile rather than in front of it.
+
+|               | before     | after      |
+| ------------- | ---------- | ---------- |
+| classic robot | 160 / hour | ~52 / hour |
+| Q7 (B01)      | 60 / hour  | ~6 / hour  |
+
+`get_status` is untouched — still every 15 seconds for a classic robot, still the dedicated B01 loop — because that is the one reading the tile lives on. A schedule written from Apple Home or a diagnostics export that wants fresh numbers can bring the slow lane forward with `requestSlowParameterPoll`.
+
+8 new tests, 6 of which fail against 3.27.0.
+
 ## 3.27.0
 
 **The scene resource named its one write verb, and it is the one that deletes. So the search moves off that resource and onto its siblings — asked safely, and this time with controls, so the round either finds the route or proves there is nothing left to find.**

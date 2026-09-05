@@ -340,6 +340,32 @@ const DIAGNOSTIC_PRIORITY_KEYS = new Set([
 // ~86k wake-ups per robot per day to serve at most 1440 polls.
 const CLASSIC_STATUS_TICK_MS = 15000;
 
+// HOW OFTEN THE SLOW-CHANGING PARAMETERS ARE RE-READ.
+//
+// Measured before this existed: a classic robot's periodic cycle issued 8
+// requests every 180 seconds - `get_multi_maps_list`, `get_room_mapping`,
+// `get_consumable`, `get_server_timer`, `get_timer`, `get_carpet_mode`,
+// `get_carpet_clean_mode`, `get_water_box_custom_mode` - 160 an hour, all
+// serial, for values that change roughly once a week. Consumable hours tick
+// over during a clean and nowhere else; timers change when the user edits a
+// schedule; carpet and water-box modes change when the user changes a setting.
+// None of them drives the Apple Home tile - that is `get_status`, on its own
+// 15-second tick and untouched by this.
+//
+// Room mappings are deliberately NOT in the slow lane: a room the user renames
+// or splits in the Roborock app should show up in Apple Home within minutes,
+// and the refresh already serves from cache first. Everything else waits.
+//
+// 30 minutes cuts a classic robot from 160 to about 52 requests an hour and a
+// Q7 from 60 to about 46. A diagnostics export still sees the last reading;
+// anything that needs a fresh one can ask for it.
+const SLOW_PARAMETER_POLL_INTERVAL_MS = 30 * 60 * 1000;
+
+// The longest startup will wait for a classic robot's first status before the
+// Matter accessories register. A robot that answers does so in well under a
+// second; one that does not must not hold the others' tiles hostage.
+const INITIAL_STATUS_WAIT_CAP_MS = 4000;
+
 // Persisted states whose disk flush is debounced (see setStateAsync): they
 // change on every received robot message, are served from memory, and only
 // need the on-disk copy for restart survival.
@@ -474,6 +500,8 @@ class Roborock {
     this.unsupportedPollCommands = new Set();
     this.loggedPollProfiles = new Set();
     this.skippedDialectPolls = new Set();
+    /** @type {Map<string, number>} duid -> when its slow lane last ran */
+    this.lastSlowParameterPollAt = new Map();
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -2051,7 +2079,7 @@ class Roborock {
                 return {};
               });
 
-          await this.updateHomeData(homeId);
+          await this.updateHomeData(homeId, homedataResult);
 
           await this.createDevices();
 
@@ -2070,8 +2098,14 @@ class Roborock {
           // createDevices() so the boot poll cannot precede the wait above.
           this.startB01StatusLoop();
 
-          await this.getNetworkInfo();
-          await this.initializeDeviceUpdates();
+          // Independent, so concurrent: the network probe feeds the LAN
+          // attach that runs later in the background, and the first status
+          // feeds the tile. Neither needs the other, and serially they were
+          // two full round-trip waits where one is enough.
+          await Promise.allSettled([
+            this.getNetworkInfo(),
+            this.initializeDeviceUpdates(),
+          ]);
 
           this.bInited = true;
           // A success ends the retry chain and forgets the backoff, so a
@@ -2613,9 +2647,51 @@ class Roborock {
         this.vacuums[duid].getStatusIntervall(); // actually start getStatusIntervall()
       }
 
-      initialPolls.push(
-        this.updateDataMinimumData(duid, this.vacuums[duid], robotModel)
-      );
+      // THE TILE WAITS FOR NONE OF THIS, SO IT MUST NOT WAIT FOR ANY OF IT.
+      //
+      // `initializeDeviceUpdates` used to await the whole first parameter
+      // cycle for every robot - 8 serial round-trips per classic robot, each
+      // able to spend its full 10-second timeout on a robot that does not
+      // answer locally - and only then did the caller set `bInited`, fire the
+      // Homebridge callback, and register the Matter accessories. On a home
+      // network that added a few seconds to startup. On a robot with a dead
+      // local link it kept the vacuum out of Apple Home for over a minute
+      // after every restart, for readings of consumable hours and carpet
+      // mode that no tile displays.
+      //
+      // The cycle still runs once at start; it just runs behind the tiles.
+      void this.updateDataMinimumData(
+        duid,
+        this.vacuums[duid],
+        robotModel
+      ).catch((error) => {
+        this.log.debug(
+          `Initial parameter cycle failed for ${this.describeDevice(duid)}: ${
+            /** @type {any} */ (error)?.message || error
+          }`
+        );
+      });
+
+      // What the tile IS waiting for is one real status. The classic poller
+      // is a plain interval, so its first tick used to land 15 seconds after
+      // start and the tile showed the cloud snapshot until then; the B01 loop
+      // already fires its first read immediately for exactly this reason.
+      // Each robot's first status is awaited, in parallel across robots and
+      // capped, so registration waits for fresh state but never for a robot
+      // that will not answer.
+      if (!this.isB01Device(duid)) {
+        initialPolls.push(
+          Promise.race([
+            this.getStatus(duid),
+            new Promise((resolve) => {
+              const timer = setTimeout(resolve, INITIAL_STATUS_WAIT_CAP_MS);
+              if (typeof timer?.unref === "function") {
+                timer.unref();
+              }
+            }),
+          ])
+        );
+      }
     }
 
     await Promise.allSettled(initialPolls);
@@ -3238,6 +3314,37 @@ class Roborock {
    * @param {boolean} isB01
    * @returns {Promise<any>}
    */
+  /**
+   * Is it time to re-read a robot's slow-changing parameters?
+   *
+   * The first cycle after start always qualifies (nothing recorded yet), so a
+   * fresh process still reads everything once - in the background, off the
+   * startup critical path.
+   *
+   * @param {string} duid
+   */
+  isSlowParameterPollDue(duid) {
+    const last = this.lastSlowParameterPollAt.get(duid) ?? 0;
+    return Date.now() - last >= SLOW_PARAMETER_POLL_INTERVAL_MS;
+  }
+
+  /** @param {string} duid */
+  markSlowParameterPoll(duid) {
+    this.lastSlowParameterPollAt.set(duid, Date.now());
+  }
+
+  /**
+   * Forget a robot's slow-lane stamp so the next cycle re-reads everything.
+   * Used when something the slow lane owns is known to have changed - a
+   * schedule written from Apple Home, a diagnostics export asking for fresh
+   * numbers.
+   *
+   * @param {string} duid
+   */
+  requestSlowParameterPoll(duid) {
+    this.lastSlowParameterPollAt.delete(duid);
+  }
+
   async pollParameter(duid, vacuum, method, isB01) {
     if (isB01 && !b01Q7Adapter.canAnswerV1Method(method)) {
       const key = `${duid}:${method}`;
@@ -3500,6 +3607,13 @@ class Roborock {
         await this.pollParameter(duid, vacuum, "get_room_mapping", isB01);
       }
 
+      // Everything below this line is the slow lane. See
+      // SLOW_PARAMETER_POLL_INTERVAL_MS for the measurement behind it.
+      if (!this.isSlowParameterPollDue(duid)) {
+        return;
+      }
+      this.markSlowParameterPoll(duid);
+
       await this.pollParameter(duid, vacuum, "get_consumable", isB01);
 
       await this.pollParameter(duid, vacuum, "get_server_timer", isB01);
@@ -3631,10 +3745,28 @@ class Roborock {
       }
     }
 
-    try {
+    // Same shape as the B01 branch above, for the same reason: with a room
+    // list already persisted from an earlier run, Service Area can expose it
+    // the moment the accessory registers, and the 2 round-trips that refresh
+    // it run behind the tile instead of in front of it. Only a robot the
+    // plugin has never seen rooms for is worth waiting on.
+    const refresh = async () => {
       await vacuum.getParameter(duid, "get_multi_maps_list");
       await vacuum.getParameter(duid, "get_room_mapping");
       await this.cacheMissingMatterServiceAreaRoomMappings(duid, vacuum);
+    };
+
+    if (this.getRoomMappingsForDevice(duid).length > 0) {
+      void refresh().catch((error) => {
+        this.log.debug(
+          `Background room refresh failed for ${duid}: ${error.message || error}`
+        );
+      });
+      return true;
+    }
+
+    try {
+      await refresh();
       return true;
     } catch (error) {
       this.log.debug(
@@ -3891,12 +4023,26 @@ class Roborock {
     this.log.debug(`Length of message queue: ${this.messageQueue.size}`);
   }
 
-  async updateHomeData(homeId) {
+  /**
+   * Refresh the home snapshot - devices, products, local keys - and let every
+   * robot's polling intervals re-check themselves against it.
+   *
+   * @param {string | number} homeId
+   * @param {Record<string, any>} [prefetched] a home payload already fetched
+   *   by the caller. Startup fetched `v2/user/homes/{id}` seconds earlier,
+   *   built the device list from it, and then called this, which fetched
+   *   `user/homes/{id}` again before the Matter accessories could register:
+   *   2 cloud round-trips for one snapshot, back to back, on the critical
+   *   path. With the payload handed in, this consumes it. The periodic
+   *   caller passes nothing and fetches fresh, as before.
+   */
+  async updateHomeData(homeId, prefetched) {
     this.log.debug(`Updating HomeData with homeId: ${homeId}`);
     if (this.api) {
       try {
-        const home = await this.api.get(`user/homes/${homeId}`);
-        const homedata = home.data.result;
+        const homedata = prefetched
+          ? prefetched
+          : (await this.api.get(`user/homes/${homeId}`)).data.result;
 
         if (homedata) {
           this.superviseDeviceIntervals();
