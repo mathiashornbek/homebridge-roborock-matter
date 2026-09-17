@@ -590,6 +590,40 @@ class vacuum {
             status: deviceStatus[0] || null,
           });
 
+          // MEASUREMENT, NOT A FEATURE — and deliberately so.
+          //
+          // Live-room tracking on a classic robot depends on `get_map_v1`,
+          // which on some robots is never answered: 95 timeouts in a row on
+          // my own a70, 40 on the a75 in #9. If the robot's own status
+          // carries the segment it is cleaning, the whole map round-trip is
+          // unnecessary on those robots.
+          //
+          // `cleaning_info` is documented in deviceFeatures.js as
+          // `{target_segment_id, segment_id, fan_power, water_box_mode, ...}`
+          // and a real capture from a Saros 10R (a144) in
+          // `__tests__/saros10-status-fields.test.js` shows
+          // `cleaning_info={"target_segment_id":-1,...}` — truncated at 60
+          // characters, which is exactly why nobody has ever seen the rest.
+          // Every poll receives this object and throws it away.
+          //
+          // So print it whole, once per distinct value, while the robot is
+          // cleaning. One clean answers the question: if `segment_id` tracks
+          // the room, classic live-room tracking needs no map at all. If it
+          // does not, this costs nothing and the line stops.
+          const cleaningInfo = deviceStatus[0]?.cleaning_info;
+          if (cleaningInfo && typeof cleaningInfo === "object") {
+            const rendered = JSON.stringify(cleaningInfo);
+            if (!this._lastCleaningInfo) {
+              this._lastCleaningInfo = new Map();
+            }
+            if (this._lastCleaningInfo.get(duid) !== rendered) {
+              this._lastCleaningInfo.set(duid, rendered);
+              this.adapter.log.debug(
+                `cleaning_info for ${describeDevice(this.adapter, duid)}: ${rendered}. Reported in full because this field may carry the room the robot is in, which would give live-room tracking a source that does not need the map. If you are reading this while a clean is running, the number to watch is segment_id.`
+              );
+            }
+          }
+
           // Collected across the whole poll and reported as one line. Eight
           // separate warnings, once a minute, was ~11,500 identical requests a
           // day to contact the dev about the same eight fields (#8).

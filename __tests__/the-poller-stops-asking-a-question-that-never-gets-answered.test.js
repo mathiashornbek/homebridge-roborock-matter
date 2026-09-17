@@ -178,10 +178,24 @@ describe("what must never be throttled", () => {
     "utf8"
   );
 
-  test("the breaker is consulted in exactly the three places it belongs", () => {
+  test("every optional poll goes through the register, and nothing else does", () => {
+    // Pinned as a rule rather than a count, because the count was wrong twice
+    // in one release. 3.30.0 asserted "exactly 3" and that number silently
+    // excluded the two polls in refreshMatterServiceAreaRoomMappings, which
+    // were calling getParameter directly — two of the seven methods named in
+    // the 647 suppressed timeouts the register was built for.
+    //
+    // The rule: an optional poll reaches the robot through pollParameter, and
+    // the only direct getParameter calls left are the ones pollParameter
+    // itself makes and the status/command paths that must never be throttled.
+    const direct = [
+      ...source.matchAll(/vacuum\.getParameter\(\s*duid,\s*"([a-z0-9_]+)"/g),
+    ].map((match) => match[1]);
+    expect(direct).toEqual([]);
+
     const uses = source.match(/unansweredMethods\.shouldSkip\(/g) || [];
-    // pollParameter, the B01 live-room fetch, the classic live-room fetch.
-    expect(uses).toHaveLength(3);
+    // pollParameter, both B01 live-room legs, the classic live-room fetch.
+    expect(uses.length).toBeGreaterThanOrEqual(3);
   });
 
   test("get_status is not one of them", () => {

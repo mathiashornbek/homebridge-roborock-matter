@@ -71,10 +71,41 @@ function isUnansweredRequest(error) {
   if (!/timed out after/i.test(message)) {
     return false;
   }
-  // A timeout raised while the link itself was down is the link's fault.
-  return !/(EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ECONNRESET|not connected|offline)/i.test(
-    message
-  );
+
+  // Other error shapes that name the transport outright.
+  if (
+    /(EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ECONNRESET|not connected|offline)/i.test(
+      message
+    )
+  ) {
+    return false;
+  }
+
+  // THE ONE THAT ACTUALLY FIRES, and the reason 3.30.0's exclusion was dead
+  // code. messageQueueHandler builds the two timeout messages with the
+  // connection state interpolated as a BOOLEAN:
+  //
+  //   `… timed out after 10 seconds. MQTT connection state: ${mqttConnectionState}`
+  //   `… timed out after 10 seconds Local connect state: ${localConnectionState}`
+  //
+  // so a link that was down while the request was pending reads
+  // "MQTT connection state: false" — which matches none of the names above.
+  // The whole exclusion had nothing left to exclude, and a four-minute
+  // network blip could therefore trip the breaker and suppress a perfectly
+  // healthy method for six hours, under a log line claiming this was "not a
+  // connection failure". Read the boolean instead.
+  if (/(MQTT connection state|Local connect state):\s*false/i.test(message)) {
+    return false;
+  }
+
+  // The cloud timeout also carries describeCloudSilence's verdict. When it
+  // says nothing at all is coming back over MQTT, the robot's silence is not
+  // distinguishable from the link's, and the link is the likelier of the two.
+  if (/nothing is coming back over MQTT at all/i.test(message)) {
+    return false;
+  }
+
+  return true;
 }
 
 class UnansweredMethodBreaker {
@@ -181,14 +212,24 @@ class UnansweredMethodBreaker {
     };
   }
 
-  /** Forget everything for one robot (re-login, re-discovery, shutdown). */
+  /**
+   * Forget everything for one robot (it came back online, re-login,
+   * re-discovery, shutdown).
+   *
+   * @param {string} duid
+   * @returns {number} how many counters were dropped, so the caller can stay
+   *   quiet when there was nothing to forget.
+   */
   forgetDevice(duid) {
     const prefix = `${duid}:`;
+    let forgotten = 0;
     for (const key of [...this.entries.keys()]) {
       if (key.startsWith(prefix)) {
         this.entries.delete(key);
+        forgotten += 1;
       }
     }
+    return forgotten;
   }
 
   /** Forget everything. */

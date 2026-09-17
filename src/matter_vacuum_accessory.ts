@@ -391,6 +391,17 @@ const DOCK_ERROR_CLEAN_WATER_TANK_EMPTY = 38;
  */
 const OPERATIONAL_STATE_CLUSTER = "rvcOperationalState";
 
+/**
+ * How many forced publishes (heartbeats) may pass before `operationalState`
+ * is re-written even though it has not changed.
+ *
+ * 10 heartbeats is about 10 minutes. That restores the self-healing the
+ * heartbeat provided before 3.30.0, at a rate far too low for the
+ * wipe/raise pair matter.js 0.17.9 performs to become a notification anyone
+ * notices — the fault cycle needed one every single minute.
+ */
+const RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES = 10;
+
 const RVC_OPERATIONAL_ERROR = {
   NO_ERROR: 0,
   UNABLE_TO_START_OR_RESUME: 1,
@@ -861,6 +872,10 @@ export default class RoborockMatterVacuumAccessory {
   // other inside matter.js. See writeOperationalStateCluster().
   private publishedOperationalState: number | undefined;
   private publishedOperationalError: number | undefined;
+  // How many forced publishes in a row have skipped operationalState. See
+  // writeOperationalStateCluster(): without this, a write matter.js rejects
+  // silently can never come back.
+  private forcedWritesSinceOperationalState = 0;
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
@@ -1478,6 +1493,7 @@ export default class RoborockMatterVacuumAccessory {
     this.lastPublishedClusterJson.clear();
     this.publishedOperationalState = undefined;
     this.publishedOperationalError = undefined;
+    this.forcedWritesSinceOperationalState = 0;
     // …and nothing has been stated about it either, so the evidence line is
     // restated for the new node instead of being suppressed as unchanged.
     this.lastLoggedMatterPublishLine = null;
@@ -2200,17 +2216,51 @@ export default class RoborockMatterVacuumAccessory {
    */
   private async writeOperationalStateCluster(
     matter: { updateAccessoryState: (...args: any[]) => Promise<unknown> },
-    attributes: Record<string, unknown>
+    attributes: Record<string, unknown>,
+    options: { force?: boolean } = {}
   ): Promise<void> {
     const { operationalState, operationalError, ...rest } = attributes;
 
     const first: Record<string, unknown> = { ...rest };
-    const stateChanged =
+    let stateChanged =
       operationalState !== undefined &&
       operationalState !== this.publishedOperationalState;
 
+    // THE HOLE 3.30.0 LEFT, AND WHY IT NEEDED CLOSING.
+    //
+    // Suppressing an unchanged `operationalState` is what stops the tank
+    // fault being cleared and re-raised every minute. But the whole dedup
+    // design rests on the heartbeat being a forced full write that self-heals
+    // any divergence within a minute — and a cluster write can be rejected by
+    // matter.js AFTER `updateAccessoryState` has already resolved. This file
+    // documents that elsewhere: `OperationalStateServer.#assertCurrentPhase`
+    // throws, and Homebridge swallows the throw, so the whole cluster write
+    // is silently rejected and the controller keeps what it last accepted.
+    //
+    // Believing such a write landed and then never writing that attribute
+    // again turns a one-off rejection into a permanently stale tile,
+    // recoverable only by the robot reaching a different state or a restart.
+    // Before 3.30.0 the heartbeat repaired it inside a minute.
+    //
+    // So: never on an ordinary publish, but a forced write re-asserts it once
+    // every RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES heartbeats.
+    if (
+      !stateChanged &&
+      options.force === true &&
+      operationalState !== undefined
+    ) {
+      this.forcedWritesSinceOperationalState += 1;
+      if (
+        this.forcedWritesSinceOperationalState >=
+        RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES
+      ) {
+        stateChanged = true;
+      }
+    }
+
     if (stateChanged) {
       first.operationalState = operationalState;
+      this.forcedWritesSinceOperationalState = 0;
     }
 
     if (Object.keys(first).length > 0) {
@@ -2253,7 +2303,8 @@ export default class RoborockMatterVacuumAccessory {
 
   private async updateMatterState(
     partialClusters: Record<string, Record<string, unknown>>,
-    reason = "state update"
+    reason = "state update",
+    options: { force?: boolean } = {}
   ): Promise<boolean> {
     if (!this.registered) {
       return false;
@@ -2285,7 +2336,9 @@ export default class RoborockMatterVacuumAccessory {
         clusterEntries.map(async ([cluster, attributes]) => {
           try {
             if (cluster === OPERATIONAL_STATE_CLUSTER) {
-              await this.writeOperationalStateCluster(matter, attributes);
+              await this.writeOperationalStateCluster(matter, attributes, {
+                force: options.force === true,
+              });
             } else {
               await matter.updateAccessoryState(
                 this.accessory.UUID,
@@ -2307,6 +2360,7 @@ export default class RoborockMatterVacuumAccessory {
               // re-assert them.
               this.publishedOperationalState = undefined;
               this.publishedOperationalError = undefined;
+              this.forcedWritesSinceOperationalState = 0;
             }
 
             failures.push(error);
@@ -2431,7 +2485,12 @@ export default class RoborockMatterVacuumAccessory {
       );
     }
 
-    const updated = await this.updateMatterState(clusters, reason);
+    // `force` is carried down so writeOperationalStateCluster can tell a
+    // heartbeat from an ordinary publish; it is the only cluster for which
+    // the distinction still means anything.
+    const updated = await this.updateMatterState(clusters, reason, {
+      force: options.force === true,
+    });
     if (updated) {
       this.logMatterPublishIfChanged(snapshot, reason);
     }

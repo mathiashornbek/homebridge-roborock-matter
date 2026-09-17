@@ -1,5 +1,76 @@
 # Changelog
 
+## 3.31.0
+
+**Six bugs, three of them mine from last week. And the oldest unexplained failure in this project finally has an instrument pointed at it.**
+
+### The give-up rule tripped on network trouble — the exact thing it promised not to do
+
+3.30.0 added a register that stops asking a robot a request it never answers, and said, in the source and in the line the user reads: it never trips on a transport error, because those come back on their own.
+
+It did. The exclusion was dead code.
+
+`messageQueueHandler` builds its two timeout messages with the connection state interpolated as a **boolean**:
+
+```
+… timed out after 10 seconds. MQTT connection state: false
+… timed out after 10 seconds Local connect state: false
+```
+
+The rule looked for `EAI_AGAIN`, `ENOTFOUND`, `ECONNREFUSED`, `ECONNRESET`, "not connected", "offline" — every one of which belongs to an error that never contains "timed out after" in the first place, and so had already been excluded a line earlier. The second gate had nothing left to exclude.
+
+A four-minute network blip during a clean is 24 failed live-room polls at 10-second intervals. Six is all it takes. Live-room tracking then died for six hours, under a log line telling you this was not a connection failure.
+
+It now reads the boolean, and also stands down when the cloud timeout reports that nothing is coming back over MQTT at all. The tests use the exact strings the plugin emits — 3.30.0's used hand-written messages the code cannot produce, which is precisely why they passed against a broken rule.
+
+### A robot was punished for a request it answered perfectly
+
+The B01/Q7 live-room fetch is two requests: `get_map_list` (cheap) and `service.upload_by_mapid` (the heavy map payload, with its own 20-second timeout). 3.30.0 wrapped both in one try, acknowledged `get_map_list` only after the second had been fetched, decoded and cached, and recorded every failure — including the upload leg's own timeout — against `get_map_list`.
+
+So a robot answering `get_map_list` in 200 ms every time, with a silent upload channel, had the wrong counter climb to six. The diagnostics then named `get_map_list`: the one channel that was working.
+
+Each leg is now counted on its own.
+
+### The heartbeat stopped healing a write that never landed
+
+Suppressing an unchanged `operationalState` is what stopped the tank notification repeating every 2 minutes. It also broke the safety net the whole publish-dedup design rests on.
+
+A cluster write can be rejected by matter.js **after** `updateAccessoryState` has resolved — this codebase has documented that for months: `#assertCurrentPhase` throws, Homebridge swallows the throw, and the controller keeps what it last accepted. From 3.30.0, one such rejection made the plugin believe a value was published that never was, and nothing wrote that attribute again. A permanently stale tile, recoverable only by the robot reaching a different state, or a restart. Before 3.30.0 the heartbeat repaired it inside a minute.
+
+A forced heartbeat now re-asserts `operationalState` once every 10 cycles — about once every 10 minutes. Measured: 6 re-assertions an hour instead of 60, the stale tile heals within 10 minutes, and the notification stays gone.
+
+### A map reply can be thrown away in silence — and now it says so
+
+This is the one I care most about.
+
+`get_map_v1` on a classic robot times out after 10 seconds, forever, while the same robot answers everything else. 95 times in a row on my own a70, 225 twelve days earlier, 40 on the a75 in #9. Nobody has ever been able to say why.
+
+Map replies do not come back on the ordinary reply path — they arrive as protocol 301 frames. The 301 handler had several ways to drop one, every one of them a bare `return`. No log, no counter, nothing. A dropped 301 leaves the request to die on its timer, which looks **exactly** like a robot that never answered. There was nothing to diagnose it with.
+
+One of those drops was also wrong:
+
+```js
+if (!endpoint.startsWith(data2.endpoint)) return;
+```
+
+`endpoint` is our own 8-character key. `data2.endpoint` is a 15-byte wire field with only _trailing_ nulls stripped. python-roborock, the reference implementation, compares it the other way round — `received.startswith(ours)`. As written, a robot that echoes our 8 characters followed by anything that is not a trailing null leaves a longer string, and an 8-character string can never `startsWith` a longer one. It failed closed, on a reply addressed to us, without a word.
+
+The comparison now matches the reference, and **every** 301 drop explains itself and names the robot. I am not claiming this is the cause of the a70's timeouts. I am saying that from this release, if it is, the log says so.
+
+### One robot's unfinished photo could swallow every other robot's map
+
+`photoGzipChunks` and `photoChunkID` were module-level variables shared by every robot on the account, cleared only when a photo transfer **completed**. A robot going offline between chunk 1 and chunk 2 left the id set forever — and from then on every 301 frame with `seq == 2`, from any robot, was swallowed into that stale buffer instead of being decoded as a map reply. A permanent, silent map outage on a multi-robot account, with no error anywhere.
+
+The buffer is now per robot, and one whose request is no longer waiting is discarded.
+
+### Smaller things
+
+- **A robot that comes back online starts with clean counters.** `forgetDevice` existed since 3.30.0 and was never called once. A robot offline for hours kept the counts it collected while unreachable, and because the rule deliberately keeps the counter when it lets one request through, a single probe timing out during the reconnect closed the method for another six hours.
+- **Three polls were bypassing the register entirely** — `get_multi_maps_list` and `get_room_mapping`, two of the seven methods named in the 647 suppressed timeouts that motivated the rule. The test that was supposed to catch this asserted "exactly 3 call sites", a number that silently excluded them. It now asserts the rule instead: no optional poll reaches the robot except through the register.
+- **`cleaning_info` is printed in full while a robot is cleaning.** Not a feature — a measurement. Every status poll already receives this object and throws it away, and it is documented as carrying `{target_segment_id, segment_id, …}`. If `segment_id` tracks the room, live-room tracking on classic robots needs no map at all, which would route around the timeout above entirely. One clean answers it.
+
+2031 tests, 33 of them new.
+
 ## 3.30.0
 
 **The water-tank notification that repeated every two minutes was us. Three people reported it, and for three releases this project told them it was Apple.**

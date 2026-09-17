@@ -41,8 +41,24 @@ let client;
 let endpoint;
 let rriot;
 
-let photoGzipChunks = [];
-let photoChunkID = 0;
+// Per robot, not per process. These were module-level `let`s shared by every
+// robot on the account until 3.31.0, and they are only cleared when a photo
+// transfer COMPLETES. One transfer that started and never finished — a robot
+// going offline between chunk 1 and chunk 2 is enough — left `photoChunkID`
+// set forever, and from then on every protocol 301 frame with `seq == 2`
+// from ANY robot was swallowed into that stale photo buffer instead of being
+// decoded as a map reply. On a multi-robot account that is a permanent,
+// silent map outage with no error anywhere.
+const photoBuffers = new Map();
+
+function photoBufferFor(duid) {
+  let entry = photoBuffers.get(duid);
+  if (!entry) {
+    entry = { chunks: [], chunkId: 0 };
+    photoBuffers.set(duid, entry);
+  }
+  return entry;
+}
 
 /**
  * True when a protocol-102 result is a bare "command accepted" acknowledgement
@@ -436,8 +452,9 @@ class roborock_mqtt_connector {
             if (this.adapter.pendingRequests.has(photoData.id)) {
               this.adapter.log.debug(`First photo gzip chunk detected!`);
 
-              photoGzipChunks.push(data.payload.slice(56));
-              photoChunkID = photoData.id;
+              const photoBuffer = photoBufferFor(duid);
+              photoBuffer.chunks.push(data.payload.slice(56));
+              photoBuffer.chunkId = photoData.id;
             }
           } else {
             this.adapter.log.debug(
@@ -456,27 +473,44 @@ class roborock_mqtt_connector {
             return;
           }
 
-          // `photoGzipChunks != []` compared against a fresh array literal
-          // and was therefore always true, so the guard it was written to be
-          // never guarded anything.
+          // The original guard compared `photoGzipChunks != []` against a
+          // fresh array literal and was therefore always true, so it never
+          // guarded anything. Both halves are now real: a non-empty buffer,
+          // and a request that is still waiting for it.
+          const photoBuffer = photoBufferFor(duid);
+          // The buffer must belong to a request that is STILL waiting. A
+          // stale chunkId — from a transfer that never completed — used to
+          // swallow every seq==2 frame from every robot, forever.
+          if (
+            photoBuffer.chunkId !== 0 &&
+            !this.adapter.pendingRequests.has(photoBuffer.chunkId)
+          ) {
+            this.adapter.log.debug(
+              `Discarding a stale photo chunk buffer for ${duid}: request ${photoBuffer.chunkId} is no longer waiting, so the transfer never completed.`
+            );
+            photoBuffer.chunks = [];
+            photoBuffer.chunkId = 0;
+          }
+
           if (
             data.seq == 2 &&
-            photoGzipChunks.length !== 0 &&
-            photoChunkID != 0
+            photoBuffer.chunks.length !== 0 &&
+            photoBuffer.chunkId != 0
           ) {
             this.adapter.log.debug(`Second photo gzip chunk detected!`);
-            photoGzipChunks.push(data.payload);
+            photoBuffer.chunks.push(data.payload);
 
-            if (this.adapter.pendingRequests.has(photoChunkID)) {
-              const { resolve, timeout } =
-                this.adapter.pendingRequests.get(photoChunkID);
+            if (this.adapter.pendingRequests.has(photoBuffer.chunkId)) {
+              const { resolve, timeout } = this.adapter.pendingRequests.get(
+                photoBuffer.chunkId
+              );
               this.adapter.clearTimeout(timeout);
-              this.adapter.pendingRequests.delete(photoChunkID);
+              this.adapter.pendingRequests.delete(photoBuffer.chunkId);
 
-              const finalPhotoGzip = Buffer.concat(photoGzipChunks);
+              const finalPhotoGzip = Buffer.concat(photoBuffer.chunks);
 
-              photoGzipChunks = [];
-              photoChunkID = 0;
+              photoBuffer.chunks = [];
+              photoBuffer.chunkId = 0;
 
               resolve(finalPhotoGzip);
             }
@@ -507,7 +541,32 @@ class roborock_mqtt_connector {
                 return;
               }
 
-              if (!endpoint.startsWith(data2.endpoint)) {
+              // THE COMPARISON IS THE OTHER WAY ROUND, and until 3.31.0 it
+              // was inverted AND silent — the worst possible pair.
+              //
+              // `endpoint` is our own 8-character key (md5bin(rriot.k)
+              // bytes 8..14, base64). The wire field is 15 bytes, so a robot
+              // that echoes our 8 characters followed by anything that is not
+              // a trailing NUL leaves `data2.endpoint` LONGER than 8 —
+              // and an 8-character string can never `startsWith` a longer
+              // one. python-roborock, the reference implementation, compares
+              // it the other way: received.startswith(ours).
+              //
+              // So this failed closed on a reply that was addressed to us,
+              // and it did it with `return` — no log, no counter, nothing.
+              // A dropped 301 leaves the pending request to die on its 10 s
+              // timer, which is indistinguishable from a robot that never
+              // answered. That is exactly the shape of the oldest open bug in
+              // this project: `get_map_v1` on a classic robot timing out 95
+              // and 225 times in a row while the same robot answers
+              // everything else (my own a70; #9's a75).
+              //
+              // Whether that IS the cause is not settled here — it is
+              // measured, because from 3.31.0 the drop says so.
+              if (!String(data2.endpoint || "").startsWith(endpoint)) {
+                this.adapter.log.debug(
+                  `Dropped a protocol 301 message for ${duid}: it is addressed to endpoint '${data2.endpoint}', and this plugin's endpoint is '${endpoint}'. The reply was received and decrypted but is not ours, so the request that is waiting will time out. If you are seeing map or live-room requests time out on a robot that answers everything else, this line is the reason — please report it.`
+                );
                 return;
               }
 
@@ -523,6 +582,16 @@ class roborock_mqtt_connector {
               ]);
               decrypted = zlib.gunzipSync(decrypted);
               // this.adapter.log.debug("raw 301: " + decrypted);
+
+              if (!this.adapter.pendingRequests.has(data2.id)) {
+                // The other silent drop on this path. An unsolicited map push
+                // lands here legitimately, but so does a reply whose id we
+                // failed to match — and the waiting request then times out
+                // with nothing in the log to say a reply had arrived.
+                this.adapter.log.debug(
+                  `Received a protocol 301 message for ${duid} with id ${data2.id}, but no request is waiting for that id. It was decrypted successfully, so the robot did answer something; either this is an unsolicited map push, or a reply arrived after its request had already timed out.`
+                );
+              }
 
               if (this.adapter.pendingRequests.has(data2.id)) {
                 const { resolve, timeout } = this.adapter.pendingRequests.get(
