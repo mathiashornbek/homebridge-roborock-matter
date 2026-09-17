@@ -691,6 +691,24 @@ export default class RoborockHapScheduleAccessory {
     return this.routineSwitches.size;
   }
 
+  /** How many schedule switches this coordinator currently owns. */
+  get scheduleCount(): number {
+    return this.scheduleAccessories.size;
+  }
+
+  /**
+   * The PlatformAccessory the schedule switches live in.
+   *
+   * The platform owns registration, so it has to be able to ask which object
+   * it is registering. Issue #22: turning schedules off unregistered nothing
+   * that Homebridge had restored from its own cache, and turning them back on
+   * had no way to put the accessory back, because the reuse path never had
+   * the object in hand.
+   */
+  get scheduleAccessory(): PlatformAccessory {
+    return this.managerAccessory;
+  }
+
   /**
    * Rebuild schedule child objects and attach their normal HAP handlers from
    * Switch services that Homebridge restored from its cached accessory state.
@@ -2117,6 +2135,7 @@ class RoborockHapRoutineSwitch {
     if (displayName === this.displayName) {
       return;
     }
+    const previous = this.displayName;
     this.displayName = displayName;
     const service = this.accessory.getServiceById(
       this.platform.Service.Switch,
@@ -2124,6 +2143,20 @@ class RoborockHapRoutineSwitch {
     );
     if (service) {
       this.applyName(service, displayName);
+    }
+
+    // SAY IT, because the one thing the plugin cannot do is the thing the
+    // user expects. Issue #22: a Routine renamed in the Roborock app kept its
+    // old name in the Home app. The new name IS sent — `Name` and, unless the
+    // user has renamed the switch themselves, `ConfiguredName` are both
+    // rewritten a line above. Apple Home keeps showing the name it stored
+    // when the switch first appeared, and a rename there takes a second and
+    // sticks. Without this line the user sees a stale name and no reason for
+    // it; with it, they know it reached Homebridge and where to change it.
+    if (previous) {
+      this.platform.log.info(
+        `Roborock routine "${previous}" is now called "${displayName}" in the Roborock app, and the switch has been updated. If Apple Home still shows the old name, rename it there once — the Home app keeps the name it stored when the switch first appeared, whatever the accessory reports afterwards.`
+      );
     }
   }
 

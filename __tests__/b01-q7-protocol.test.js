@@ -1,3 +1,7 @@
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -916,10 +920,7 @@ describe("Q7 charging tile (both status paths)", () => {
       ],
     });
 
-    const lastOpState = [...matterUpdates]
-      .reverse()
-      .find((update) => update.cluster === "rvcOperationalState");
-    expect(lastOpState.attributes.operationalState).toBe(65);
+    expect(operationalStateCluster(matterUpdates).operationalState).toBe(65);
   });
 });
 

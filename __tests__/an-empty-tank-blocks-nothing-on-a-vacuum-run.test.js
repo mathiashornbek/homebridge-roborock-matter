@@ -36,6 +36,10 @@
 // what the robot is going to do, and automations are built on it. Only the
 // Matter fault makes the blocking claim, so only the Matter fault is gated.
 
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 
@@ -128,12 +132,7 @@ function harness({ initialStatus = {}, cleanMode = true } = {}) {
     /** Publish a snapshot and return the fault that went out with it. */
     fault: async () => {
       await instance.updateMatterStateFromRoborock("test");
-      for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
-        if (matterUpdates[i].cluster === "rvcOperationalState") {
-          return matterUpdates[i].attributes.operationalError;
-        }
-      }
-      return undefined;
+      return operationalStateCluster(matterUpdates)?.operationalError;
     },
     lines: () =>
       platform.log.info.mock.calls

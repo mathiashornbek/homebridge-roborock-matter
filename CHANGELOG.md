@@ -1,5 +1,72 @@
 # Changelog
 
+## 3.30.0
+
+**The water-tank notification that repeated every two minutes was us. Three people reported it, and for three releases this project told them it was Apple.**
+
+### The bug, and the measurement that had been wrong since 3.14.0
+
+#5 (Wazza151, a70), #9 (vp-debug12, a75, with the screenshot and the Spanish wording) and #26 (n0rt0nthec4t, Q Revo S) all reported the same thing: with the clean-water tank empty, the Home app repeats _"fill the water tank — <robot> will start cleaning when the tank is filled"_ roughly every 2 minutes.
+
+The answer here was that Apple re-raises a standing block and nothing on this side can stop it. That answer had a measurement behind it, which is why it survived so long: writing the same `{ errorStateId: 68 }` three times in a row produces one change event, so the plugin could not be the source. The measurement was correct. **The premise was not.** It was taken against `@matter/main` **0.18.0-alpha**. Homebridge 2.4.0 ships **0.17.9**, and 0.17.9 does not behave the same way.
+
+Measured on 17 Sep 2026 against 0.17.9, one attribute at a time, with a standing `operationalError: 68`:
+
+```
+operationalState, same value (0x42) ....... 68 -> 0   WIPED
+operationalState, different value (0x41) .. 68 -> 0   WIPED
+currentPhase, same value .................. 68 -> 68  kept
+currentPhase, different value ............. 68 -> 68  kept
+phaseList ................................. 68 -> 68  kept
+operationalStateList ...................... 68 -> 68  kept
+```
+
+**Any write of `operationalState` clears `operationalError`, including a write of the value already stored.** This plugin's 60-second heartbeat re-writes the whole cluster as a self-healing safety net, so every minute it was clearing the tank fault and re-raising it — and matter.js emits the cluster's `OperationalError` event on the `0 -> 68` edge. Six heartbeats produced six attribute changes and three events: one roughly every two minutes.
+
+That is the notification. It was not Apple re-raising a block. It was the plugin raising it again, sixty times an hour.
+
+### The fix
+
+`operationalState` and `operationalError` are now written in separate transactions, error last, and **an unchanged `operationalState` is not written at all** — the one place where the forced heartbeat is deliberately overruled, because forcing it there can only wipe the fault. Re-measured with the rule in place: 20 heartbeats with a standing tank fault produce **0 attribute changes and 0 events**. Clearing the tank and emptying it again still produce exactly one each, and a genuine state change still re-asserts the fault, because matter.js really did clear it.
+
+If you turned `enableMatterTankFaultReporting` off to stop the notifications, you can turn it back on.
+
+### A robot that stops answering is left alone
+
+A Roborock request that draws no reply costs a full 10-second pending request, and nothing here noticed that the same request had failed the same way a hundred times before. Measured on robots that were otherwise working perfectly:
+
+- `Stueetage` (`a70`) on my own server: `get_map_v1` had failed **95 times in a row** when I looked, and 225 twelve days earlier. That robot has never answered the request; it was asked every ten seconds of every clean regardless.
+- #9 (`a75`): 40 in a row, while the robot answered everything else.
+- #22 (`a144`) and #24 (`a51`): **647** suppressed timeout warnings in a single session, across seven different methods.
+
+There is now one register that counts consecutive no-answers per robot per method. Six in a row and that one request is left alone for six hours, then tried once more; one answer puts it straight back. A permanently silent method costs **9 requests a day instead of 8,640**.
+
+Three things it deliberately never does. It never trips on a **refusal** — a robot that answers "I do not support that" has answered, and conflating the two would hide a real reply behind a silence. It never trips on a **transport error** — `EAI_AGAIN`, a dropped MQTT link or "not connected" is the network's problem and it comes back on its own. And it is **not wired to `get_status` or to the command path**: the Home tile lives on `get_status`, and a command you just pressed must always be sent.
+
+When it does give up it says so once, in full sentences, and writes it into the diagnostic report — so "this robot stopped answering X" survives in something you can paste, rather than only in a log line that scrolled past hours ago.
+
+### Unchecking the switch settings now actually removes the tiles
+
+From #22, in the reporter's words: _"When unchecking schedules / routines, the cache does not get deleted. So, although unchecked, tiles still appear in HomeKit."_
+
+He was right. The removal walked the coordinators that run had built — a list that is **empty at startup**, because they are built further down the same function, after the branch that handles the setting being off returns. So on the restart after unchecking the box, the only thing holding the tiles — the accessory Homebridge restored from its own cache — was never looked at. The switches went on working because Homebridge had restored them, and the setting appeared to do nothing.
+
+The other half of the same report: _"initially I had schedules checked. Then I checked routines and got the error. There were still only tiles for schedules. After that I reset the whole plugin and had tiles for both."_ Registration only ever happened on the path that **creates** a coordinator. One that survived took the reuse path on the next sync, and the reuse path registered nothing — switches were added to an accessory the bridge no longer knew about. Resetting the plugin worked because it emptied the cache and forced the creation path.
+
+Both halves are fixed, and both are pinned by tests that use a cached accessory rather than a fresh one, because that is the case that was broken.
+
+### iOS 27
+
+Released 14 September. The Home changes are cameras, Apple Intelligence summaries, 4K HomeKit Secure Video, energy monitoring, Apple TV, Thread 1.4 and a simplified Matter configuration interface. **Nothing documented touches robot vacuums, the RVC clusters or bridges.**
+
+Measured rather than assumed, on my own hardware after updating: `Subscription … reported invalid by peer` still fired nine times in three minutes on 16 September, and the only "reestablished" lines followed a Homebridge restart. So the hope in #7 that iOS 27 would fix the stuck "Updating…" tile is **not** supported by what my own controller does. Nothing in this release depends on iOS 27, and nothing in it is needed by it.
+
+### Smaller things
+
+- **Renaming a Routine in the Roborock app** now says, once, that the new name reached Homebridge and that the Home app keeps the name it stored when the switch first appeared — so a stale name in Apple Home has a visible reason and a one-second fix, instead of looking like the rename was lost (#22).
+- **"No room mappings returned"** now says what to do about it: the usual reason is that the rooms on the map have not been named yet. Open the Roborock app, edit the map, name each room. From #25, which the reporter closed himself with exactly that discovery.
+- **The Q7 fault list was left alone on purpose.** Eight days of measurement suggested widening the informational set from `{0, 407, 2100, 2102}` to eleven codes. Two guard tests refused it — one says 501 is not shared across B01 families, the other says codes upstream cannot explain must keep surfacing, because silencing them would be a guess. On inspection the unmapped-code notice already logs once per code per session, so the noise was a fraction of what it looked like, and the guards were right. The change was reverted. That is what those tests are for.
+
 ## 3.29.0
 
 **Schedules that live on your Routines, Routines you can run from Apple Home — and a debug log that is safe to paste.**

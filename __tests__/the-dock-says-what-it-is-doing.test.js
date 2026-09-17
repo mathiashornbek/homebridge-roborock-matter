@@ -26,6 +26,10 @@
 // does not: an unread attribute costs nothing, and drying is worth the attempt
 // because no other route to it exists.
 
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 const b01 = require("../roborockLib/lib/b01Q7Adapter");
@@ -98,14 +102,9 @@ function buildVacuum(options = {}) {
   return { vacuum, platform, matterUpdates };
 }
 
-function lastCluster(matterUpdates) {
-  for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
-    if (matterUpdates[i].cluster === "rvcOperationalState") {
-      return matterUpdates[i].attributes;
-    }
-  }
-  return undefined;
-}
+// Since 3.30.0 the cluster arrives in two writes, so what the store ends up
+// holding is the union of them. See the helper's own comment.
+const lastCluster = operationalStateCluster;
 
 async function publishWith(status, config) {
   const { vacuum, matterUpdates, platform } = buildVacuum({ status, config });

@@ -8,6 +8,10 @@
  * matter API. Asserts the full user-visible chain: battery follows the
  * robot, and the Apple Home tile switches between Charging and Docked.
  */
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -213,6 +217,14 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
         .find((u) => u.uuid === `uuid-${duid}` && u.cluster === cluster);
     }
 
+    // rvcOperationalState arrives in two writes since 3.30.0, so read what
+    // the store ends up holding rather than the last write alone.
+    function operationalStateFor(duid) {
+      return operationalStateCluster(
+        matterUpdates.filter((u) => u.uuid === `uuid-${duid}`)
+      );
+    }
+
     // Boot resync: the very first powerSource publishes are the nudge
     // (unknown) followed by the real value — this is what forces stuck
     // controller caches to receive a fresh report.
@@ -224,17 +236,13 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
 
     const garagePower = lastFor(GARAGE, "powerSource");
     expect(garagePower.attributes.batPercentRemaining).toBe(148); // 74% in half-percent units
-    expect(
-      lastFor(GARAGE, "rvcOperationalState").attributes.operationalState
-    ).toBe(
+    expect(operationalStateFor(GARAGE).operationalState).toBe(
       65 // Charging: status 4 at 74% under the 90% threshold
     );
 
     const firstFloorPower = lastFor(FIRST_FLOOR, "powerSource");
     expect(firstFloorPower.attributes.batPercentRemaining).toBe(176); // 88%
-    expect(
-      lastFor(FIRST_FLOOR, "rvcOperationalState").attributes.operationalState
-    ).toBe(0); // Stopped/Ready: waiting_for_orders
+    expect(operationalStateFor(FIRST_FLOOR).operationalState).toBe(0); // Stopped/Ready: waiting_for_orders
 
     // First-success visibility lines, one per robot, at INFO level.
     const infoLines = api.log.info.mock.calls.map((call) => call[0]);
@@ -252,9 +260,7 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
     expect(lastFor(GARAGE, "powerSource").attributes.batPercentRemaining).toBe(
       200 // 100%
     );
-    expect(
-      lastFor(GARAGE, "rvcOperationalState").attributes.operationalState
-    ).toBe(66); // Docked: still on charger, battery at/above the 90% threshold
+    expect(operationalStateFor(GARAGE).operationalState).toBe(66); // Docked: still on charger, battery at/above the 90% threshold
 
     // ---- Room clean from Matter: the progress pill gets real data ----
     const garageVacuum = accessories.get(GARAGE);

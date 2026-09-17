@@ -29,6 +29,10 @@
 // wanted "Report faults in Apple Home" for a robot stuck under the sofa. The
 // tank setting has its own file, an-empty-tank-can-reach-the-tile.
 
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 
@@ -90,14 +94,9 @@ function createAccessory(platform, isRegistered = true) {
   return { accessory, vacuum };
 }
 
-function lastOperationalStateCluster(matterUpdates) {
-  for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
-    if (matterUpdates[i].cluster === "rvcOperationalState") {
-      return matterUpdates[i].attributes;
-    }
-  }
-  return undefined;
-}
+// The cluster is written in two transactions since 3.30.0; what the store
+// ends up holding is what these tests mean. See the helper's own comment.
+const lastOperationalStateCluster = operationalStateCluster;
 
 async function publishSnapshot(vacuum) {
   await vacuum.updateMatterStateFromRoborock("test");

@@ -27,6 +27,10 @@
 //      snapshot. `error_code` had the same hole, including the dps frame that
 //      is the most likely way a fault arrives on a B01/Q7.
 
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 
@@ -93,14 +97,7 @@ function buildVacuum(options) {
   return { vacuum, platform, matterUpdates };
 }
 
-function lastCluster(matterUpdates) {
-  for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
-    if (matterUpdates[i].cluster === "rvcOperationalState") {
-      return matterUpdates[i].attributes;
-    }
-  }
-  return undefined;
-}
+const lastCluster = operationalStateCluster;
 
 async function publishWith(status, faults) {
   const { vacuum, platform, matterUpdates } = buildVacuum({ status, faults });

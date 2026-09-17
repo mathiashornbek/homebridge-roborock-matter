@@ -31,6 +31,10 @@
 //   4. It is its own config key, so it can be switched off without losing the
 //      Error state feature. Bundling those 2 is the mistake 3.3.0 made.
 
+const {
+  operationalStateCluster,
+} = require("../test-support/operational-state-writes");
+
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 
@@ -88,13 +92,7 @@ async function publishWith(status, tank) {
   );
   await vacuum.updateMatterStateFromRoborock("test");
 
-  let cluster;
-  for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
-    if (matterUpdates[i].cluster === "rvcOperationalState") {
-      cluster = matterUpdates[i].attributes;
-      break;
-    }
-  }
+  const cluster = operationalStateCluster(matterUpdates);
   return { cluster, platform, accessory };
 }
 
@@ -264,9 +262,9 @@ describe("the tank fields survive the journey from a live message", () => {
   }
 
   function lastCluster(matterUpdates) {
-    for (let i = matterUpdates.length - 1; i >= 0; i -= 1) {
-      if (matterUpdates[i].cluster === "rvcOperationalState") {
-        return matterUpdates[i].attributes;
+    {
+      {
+        return operationalStateCluster(matterUpdates);
       }
     }
     return undefined;

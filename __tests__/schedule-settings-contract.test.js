@@ -107,13 +107,38 @@ describe("HomeKit schedule settings contract", () => {
   });
 
   test("schedule-only disable preserves the cached coordinator", () => {
+    // The work moved into removeHapScheduleSwitchAccessories() in 3.30.0,
+    // because the old inline loop only walked the coordinators this run had
+    // built — empty at startup — and so never reached the accessory
+    // Homebridge had restored from its cache (#22). The two guarantees are
+    // unchanged and still pinned here: the switch services go, the
+    // coordinator does not.
     const disabledBlock = platformSource.match(
       /if \(!exposeSchedules\) \{([\s\S]*?)\n\s*return;/
     );
 
     expect(disabledBlock).not.toBeNull();
-    expect(disabledBlock[1]).toContain("schedule.removeScheduleServices()");
-    expect(disabledBlock[1]).not.toContain("hapScheduleAccessories.clear()");
+    expect(disabledBlock[1]).toContain("removeHapScheduleSwitchAccessories()");
+
+    const sweep = platformSource.match(
+      /private removeHapScheduleSwitchAccessories\(\): void \{([\s\S]*?)\n  \}/
+    );
+    expect(sweep).not.toBeNull();
+    expect(sweep[1]).toContain("schedule.removeScheduleServices()");
+    expect(sweep[1]).not.toContain("hapScheduleAccessories.clear()");
+    expect(sweep[1]).not.toContain("hapScheduleAccessories.delete(");
+  });
+
+  test("schedule-only disable unregisters what Homebridge restored from its cache", () => {
+    // The actual #22 fix: the sweep has to ask this.accessories, not just the
+    // live coordinators, or unchecking the box does nothing visible until the
+    // user resets the plugin.
+    const sweep = platformSource.match(
+      /private removeHapScheduleSwitchAccessories\(\): void \{([\s\S]*?)\n  \}/
+    );
+    expect(sweep[1]).toMatch(/this\.accessories\.filter/);
+    expect(sweep[1]).toContain("isHapScheduleAccessory");
+    expect(sweep[1]).toContain("unregisterPlatformAccessories");
   });
 
   test("schedule accessory Model is the unbranded name Schedules", () => {

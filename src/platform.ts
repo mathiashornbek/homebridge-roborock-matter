@@ -685,6 +685,105 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  /**
+   * Unregister every "<robot> schedules" accessory and drop its switches.
+   *
+   * ISSUE #22, IN THE REPORTER'S OWN WORDS: "When unchecking schedules /
+   * routines, the cache does not get deleted. So, although unchecked, tiles
+   * still appear in HomeKit."
+   *
+   * He was right, and the reason is that the old code walked
+   * `hapScheduleAccessories` — the coordinators this run has built. At
+   * startup that map is EMPTY: the coordinators are built further down this
+   * same function, after the early return this branch takes. So on the
+   * restart that follows unchecking the box, the only thing holding the
+   * tiles — the PlatformAccessory Homebridge restored from its own cache into
+   * `this.accessories` — was never looked at, let alone unregistered. The
+   * switches went on working, because Homebridge had restored them, and the
+   * setting appeared to do nothing.
+   *
+   * So this asks the cache, exactly the way removeHapRoutineAccessories()
+   * does. The two halves are separate accessories (…:schedules:<duid> and
+   * …:routines:<duid>) with mutually exclusive context markers, so turning
+   * schedules off can never take the Routines with it.
+   */
+  private removeHapScheduleSwitchAccessories(): void {
+    // The coordinator stays, as it always has: it may still be driving
+    // Routines, whose handlers would be orphaned by dropping it, and keeping
+    // it is what lets schedules be rebuilt when the setting comes back. Its
+    // (now switch-free) accessory is unregistered below all the same, and
+    // ensureScheduleAccessoryRegistered publishes it again when it has
+    // switches to show.
+    for (const schedule of this.hapScheduleAccessories.values()) {
+      schedule.setScheduleExposure(false);
+      schedule.removeScheduleServices();
+    }
+
+    const cached = this.accessories.filter((accessory) =>
+      isHapScheduleAccessory(accessory)
+    );
+
+    if (cached.length === 0) {
+      return;
+    }
+
+    for (const accessory of cached) {
+      const index = this.accessories.indexOf(accessory);
+      if (index >= 0) {
+        this.accessories.splice(index, 1);
+      }
+    }
+
+    this.log.info(
+      `Removing ${cached.length} HAP schedule accessor${cached.length === 1 ? "y" : "ies"}: schedule switches are switched off in the plugin settings.`
+    );
+    this.api.unregisterPlatformAccessories(
+      HAP_PLUGIN_IDENTIFIER,
+      PLATFORM_NAME,
+      cached
+    );
+  }
+
+  /**
+   * Make sure a coordinator with schedule switches is actually published.
+   *
+   * The other half of #22. A schedule accessory leaves the bridge for three
+   * different reasons — the setting was unchecked, a first refresh failed, an
+   * account read threw — and until now only the freshly created one could
+   * come back, because only the creation path registered anything. A
+   * coordinator that survived in `hapScheduleAccessories` took the reuse path
+   * on the next sync, and the reuse path never registered: switches were
+   * added to an accessory the bridge no longer knew about, so they existed in
+   * memory and nowhere else. That is why the reporter saw tiles for only one
+   * of the two kinds until he reset the plugin, and why a reset fixed it.
+   *
+   * Idempotent by construction: registering is driven by whether the
+   * accessory is in `this.accessories`, which is the same list Homebridge's
+   * cache restores into, so an accessory that is already published is left
+   * alone.
+   */
+  private ensureScheduleAccessoryRegistered(
+    vacuumName: string,
+    schedule: RoborockHapScheduleAccessory
+  ): void {
+    if (schedule.scheduleCount === 0) {
+      return;
+    }
+
+    const accessory = schedule.scheduleAccessory;
+    if (this.accessories.includes(accessory)) {
+      return;
+    }
+
+    this.accessories.push(accessory);
+    this.log.info(
+      `Adding HAP schedule accessory '${vacuumName} schedules' with ${schedule.scheduleCount} switch${schedule.scheduleCount === 1 ? "" : "es"}.`
+    );
+    this.api.registerPlatformAccessories(HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME, [
+      accessory,
+    ]);
+  }
+
   private routineAccessoryUuid(duid: string): string {
     return this.api.hap.uuid.generate(`hap:roborock:routines:${duid}`);
   }
@@ -762,10 +861,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     // The schedules sub-setting only controls schedule exposure. Keep the
     // coordinator cached so schedules can be rebuilt when re-enabled.
     if (!exposeSchedules) {
-      for (const schedule of this.hapScheduleAccessories.values()) {
-        schedule.setScheduleExposure(false);
-        schedule.removeScheduleServices();
-      }
+      this.removeHapScheduleSwitchAccessories();
 
       if (!exposeRoutines) {
         return;
@@ -848,6 +944,13 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
           .initialize(target.vacuumName)
           .then((result) => {
             if (result.success && result.hasSchedules) {
+              // #22: the switches may be sitting in an accessory the bridge
+              // does not know about — unregistered when the setting was off,
+              // or when an earlier refresh failed. Publishing is idempotent.
+              this.ensureScheduleAccessoryRegistered(
+                target.vacuumName,
+                schedule!
+              );
               return;
             }
 
@@ -861,6 +964,13 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
               this.log.info(
                 `Schedule restoration result for ${target.vacuumName}: restored=${restored}.`
               );
+
+              if (restored) {
+                this.ensureScheduleAccessoryRegistered(
+                  target.vacuumName,
+                  schedule!
+                );
+              }
 
               this.log.debug(
                 `Unable to refresh Roborock schedules for ${target.vacuumName}; preserving restored schedule accessories.`

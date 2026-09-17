@@ -823,7 +823,7 @@ class vacuum {
         // if no rooms have been named, processing them can't work
         if (!Array.isArray(mappedRooms) || mappedRooms.length < 1) {
           this.adapter.log.info(
-            `No room mappings returned for ${describeDevice(this.adapter, duid)}. Room-based controls will stay unavailable until the Roborock app exposes named rooms.`
+            `No room mappings returned for ${describeDevice(this.adapter, duid)}, so room-based controls stay unavailable. The usual reason is that the rooms on the map have not been given names yet: open the Roborock app, edit the map, name each room, and they show up in Apple Home on the next refresh. A robot that has never finished a mapping run has nothing to name yet.`
           );
         } else {
           let unnamedRooms = 0;

@@ -308,9 +308,56 @@ describe("Matter startup state updates", () => {
     await vacuum.updateMatterStateFromRoborock();
     expect(matterUpdates).toEqual([]);
 
-    // The heartbeat path (publishCurrentMatterState) forces a full write.
+    // The heartbeat path (publishCurrentMatterState) forces a full write —
+    // with exactly one carve-out, added in 3.30.0. `operationalState` is not
+    // re-written when it has not moved, because in @matter/main 0.17.9 any
+    // write of it clears `operationalError`, and the forced heartbeat was
+    // therefore clearing and re-raising a standing tank fault once a minute
+    // (#5, #9, #26). Everything else in the snapshot still goes out.
     await vacuum.publishCurrentMatterState("heartbeat test");
-    expect(matterUpdates).toEqual(firstBatch);
+
+    const withoutUnchangedState = firstBatch.map((update) => {
+      if (update.cluster !== "rvcOperationalState") {
+        return update;
+      }
+      const { operationalState, ...rest } = update.attributes;
+      return { ...update, attributes: rest };
+    });
+    expect(matterUpdates).toEqual(withoutUnchangedState);
+
+    // And the carve-out is only that: the rest of the cluster is still there.
+    const republished = matterUpdates.find(
+      (update) => update.cluster === "rvcOperationalState"
+    );
+    expect(republished.attributes.operationalStateList).toBeDefined();
+    expect(republished.attributes).not.toHaveProperty("operationalState");
+  });
+
+  test("a heartbeat re-asserts operationalState once the robot actually moves", async () => {
+    const matterUpdates = [];
+    const status = { state: 8, battery: 100 };
+    const platform = createPlatform({
+      enableMatterCleanMode: false,
+      enableMatterPowerSource: false,
+      enableMatterServiceArea: false,
+      matterUpdates,
+      status,
+    });
+    const { vacuum } = createAccessory(platform, true);
+
+    await vacuum.updateMatterStateFromRoborock();
+    matterUpdates.length = 0;
+
+    // The robot starts cleaning. The state is new, so it is written — the
+    // suppression above is about an UNCHANGED value, nothing else.
+    Object.assign(status, { state: 5 });
+    await vacuum.updateMatterStateFromRoborock();
+
+    const written = matterUpdates
+      .filter((update) => update.cluster === "rvcOperationalState")
+      .map((update) => update.attributes.operationalState)
+      .filter((value) => value !== undefined);
+    expect(written.length).toBeGreaterThan(0);
   });
 
   test("serializes concurrent publishes so an older snapshot cannot land after a newer one", async () => {
@@ -391,10 +438,18 @@ describe("Matter startup state updates", () => {
       matterUpdates.find((update) => update.cluster === "rvcRunMode").attributes
         .currentMode
     ).toBe(RUN_MODE_CLEANING);
+    // The robot has not moved since the message above, so the heartbeat does
+    // not re-write `operationalState` — that is the 3.30.0 rule, and it is
+    // what stops the tank fault being cleared and re-raised every minute
+    // (#5, #9, #26). The store still holds Running; the heartbeat just does
+    // not touch it.
     expect(
       matterUpdates.find((update) => update.cluster === "rvcOperationalState")
-        .attributes.operationalState
-    ).toBe(RVC_OPERATIONAL_STATE_RUNNING);
+        .attributes
+    ).not.toHaveProperty("operationalState");
+    expect(vacuum.publishedOperationalState).toBe(
+      RVC_OPERATIONAL_STATE_RUNNING
+    );
     expect(
       matterUpdates.find((update) => update.cluster === "rvcOperationalState")
         .attributes.currentPhase
