@@ -24,6 +24,11 @@ const path = require("path");
 const { Roborock } = require("../roborockLib/roborockAPI");
 const b01Q7Adapter = require("../roborockLib/lib/b01Q7Adapter");
 
+/** The live-room paths claim both legs before sending; stand in for that. */
+function govern(api, duid, method) {
+  api.unansweredMethods.govern(duid, method);
+}
+
 function createApi() {
   const log = {
     debug: jest.fn(),
@@ -44,6 +49,7 @@ const UPLOAD = b01Q7Adapter.B01_MAP_UPLOAD_METHOD;
 describe("each request is blamed for its own silence", () => {
   test("the map-upload timeout is not recorded against get_map_list", () => {
     const { api } = createApi();
+    govern(api, "duid-q7", UPLOAD);
     const error = new Error(
       "B01 map request timed out after 20s for Robot duid-q7."
     );
@@ -57,6 +63,8 @@ describe("each request is blamed for its own silence", () => {
 
   test("six upload timeouts close the upload leg, not the list leg", () => {
     const { api } = createApi();
+    govern(api, "duid-q7", UPLOAD);
+    govern(api, "duid-q7", "get_map_list");
     const error = () =>
       new Error("B01 map request timed out after 20s for Robot duid-q7.");
 
@@ -72,6 +80,7 @@ describe("each request is blamed for its own silence", () => {
 
   test("the diagnostics name the request that actually went unanswered", () => {
     const { api } = createApi();
+    govern(api, "duid-q7", UPLOAD);
     for (let i = 0; i < 6; i += 1) {
       api.noteMethodUnanswered(
         "duid-q7",

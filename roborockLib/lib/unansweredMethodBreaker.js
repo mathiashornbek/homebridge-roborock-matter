@@ -67,6 +67,28 @@ const COOLDOWN_MS = 6 * 60 * 60 * 1000;
  * @returns {boolean}
  */
 function isUnansweredRequest(error) {
+  // THE STRUCTURED ANSWER FIRST, because parsing prose has now been wrong
+  // twice in two releases.
+  //
+  // 3.30.0 excluded transport failures by looking for `EAI_AGAIN`, `offline`
+  // and friends — words the timeout message never contains. 3.31.0 replaced
+  // that with a regex for `MQTT connection state: false`, which cannot occur
+  // either: messageQueueHandler rejects a down link EARLIER, with a refusal
+  // that has no "timed out after" in it at all, so the timeout arm is only
+  // ever reached with the flag reading `true`. Both gates were dead code, and
+  // both had a green test built from a hand-written string the code cannot
+  // produce.
+  //
+  // So the timeout now carries what it knows as data. `transportWasUp` is
+  // read at REJECTION time, not at send time — a link that died mid-flight is
+  // the whole case the exclusion exists for.
+  if (error && typeof error === "object" && "unansweredRequest" in error) {
+    if (error.unansweredRequest !== true) {
+      return false;
+    }
+    return error.transportWasUp !== false;
+  }
+
   const message = error instanceof Error ? error.message : String(error ?? "");
   if (!/timed out after/i.test(message)) {
     return false;
@@ -118,6 +140,8 @@ class UnansweredMethodBreaker {
     this.now = options.now ?? (() => Date.now());
     /** @type {Map<string, {failures: number, openedAt: number, retryAt: number}>} */
     this.entries = new Map();
+    /** @type {Set<string>} pairs a skipping caller has claimed; see govern() */
+    this.governed = new Set();
   }
 
   /**
@@ -127,6 +151,37 @@ class UnansweredMethodBreaker {
    */
   key(duid, method) {
     return `${duid}:${method}`;
+  }
+
+  /**
+   * Declare that a request is one this register governs.
+   *
+   * WHY THIS EXISTS. From 3.32.0 the register is fed by the message layer —
+   * the only place that actually knows whether a request was answered — and
+   * that layer sees EVERY request, including `get_status` and every command.
+   * Counting those would break the promise this class is built on: the tile
+   * lives on `get_status`, and a button the user just pressed must always be
+   * sent.
+   *
+   * So a (robot, method) pair is counted only after the caller that CAN skip
+   * it has said so. `pollParameter` and the two live-room fetches call this
+   * before sending; nothing else does, so nothing else can ever be closed.
+   *
+   * @param {string} duid
+   * @param {string} method
+   * @returns {void}
+   */
+  govern(duid, method) {
+    this.governed.add(this.key(duid, method));
+  }
+
+  /**
+   * @param {string} duid
+   * @param {string} method
+   * @returns {boolean}
+   */
+  isGoverned(duid, method) {
+    return this.governed.has(this.key(duid, method));
   }
 
   /**
@@ -183,6 +238,10 @@ class UnansweredMethodBreaker {
    * @returns {{counted: boolean, failures: number, opened: boolean, retryInMs: number}}
    */
   recordFailure(duid, method, error) {
+    // Only requests a skipping caller has claimed. See govern().
+    if (!this.isGoverned(duid, method)) {
+      return { counted: false, failures: 0, opened: false, retryInMs: 0 };
+    }
     if (!isUnansweredRequest(error)) {
       return { counted: false, failures: 0, opened: false, retryInMs: 0 };
     }

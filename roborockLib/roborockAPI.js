@@ -26,6 +26,7 @@ const {
   parseCloudSceneSchedules,
 } = require("./lib/parseCloudSceneSchedules");
 const b01Q7Adapter = require("./lib/b01Q7Adapter");
+const { describeDroppedFrames } = require("./lib/roborock_mqtt_connector");
 const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
 
 // v1 states in which the robot is actively doing something and state
@@ -3365,14 +3366,48 @@ class Roborock {
       return undefined;
     }
 
-    try {
-      const answer = await vacuum.getParameter(duid, method);
-      this.noteMethodAnswered(duid, method);
-      return answer;
-    } catch (error) {
-      this.noteMethodUnanswered(duid, method, error);
-      throw error;
-    }
+    // Claim this request, then just send it.
+    //
+    // Until 3.32.0 this wrapped the call in a try/catch and reported the
+    // outcome itself. That never worked: `vacuum.getParameter` swallows its
+    // own errors — its catch calls `catchError`, which only logs — and
+    // resolves `undefined`. So the catch here was unreachable, every timeout
+    // looked like a success, and `noteMethodAnswered` actively RESET the
+    // counter on each failed poll. Measured: 20 consecutive timeouts produced
+    // 0 entries in the register, and a robot that had finally been left alone
+    // was told "answers get_room_mapping again" on the retry that timed out.
+    //
+    // The register is now fed by messageQueueHandler, the only place that
+    // knows whether a reply arrived. All this has to do is say which requests
+    // it is entitled to skip.
+    this.unansweredMethods.govern(duid, method);
+    return vacuum.getParameter(duid, method);
+  }
+
+  /**
+   * The message layer saw a reply. Called for EVERY request, including
+   * `get_status` and every command — the register ignores any pair no
+   * skipping caller has claimed with `govern()`, so those can never be closed.
+   *
+   * @param {string} duid
+   * @param {string} method
+   * @returns {void}
+   */
+  noteRequestAnswered(duid, method) {
+    this.noteMethodAnswered(duid, method);
+  }
+
+  /**
+   * The message layer saw a request die on its timer. Same filtering: only a
+   * claimed pair is counted.
+   *
+   * @param {string} duid
+   * @param {string} method
+   * @param {unknown} error
+   * @returns {void}
+   */
+  noteRequestUnanswered(duid, method, error) {
+    this.noteMethodUnanswered(duid, method, error);
   }
 
   /**
@@ -3420,9 +3455,37 @@ class Roborock {
           failures: entry.failures,
           retryInMinutes: Math.round(entry.retryInMs / 60000),
         })),
+      // Same question, in the report people paste: was the reply discarded
+      // here, or did it never arrive?
+      discardedReplyFrames: describeDroppedFrames(duid),
     });
+    // THE DIAGNOSIS, IN THE LINE PEOPLE ALREADY PASTE.
+    //
+    // 3.31.0 put the answer to "is the robot silent, or are we discarding its
+    // reply?" behind a DEBUG log line. Debug is off by default, so the
+    // measurement was invisible — on my own server it produced exactly
+    // nothing, and a user in #24 went looking for it and found nothing
+    // either. Both of us read that as evidence. It was not evidence; it was a
+    // log level.
+    //
+    // A map reply arrives as a protocol-301 frame, and a frame this plugin
+    // discards leaves the request to die on its timer — indistinguishable
+    // from a robot that never answered. So say which one it was, here, at
+    // info level, where the number cannot be missed.
+    const dropped = describeDroppedFrames(duid);
+    const verdict =
+      dropped.total > 0
+        ? ` NOTE: ${dropped.total} map reply frame(s) for this robot were received and then discarded by the plugin (${Object.entries(
+            dropped.byReason
+          )
+            .map(([reason, count]) => `${reason}: ${count}`)
+            .join(
+              ", "
+            )}), so the robot IS answering and this side is throwing it away. Please report this — it is a bug here, not on your robot.`
+        : " No reply frames for this robot were received and discarded, so the reply is not arriving at all rather than being lost on this side.";
+
     this.log.info(
-      `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. This is the robot or the Roborock cloud declining to reply, not a connection failure — those are reported separately.`
+      `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. This is the robot or the Roborock cloud declining to reply, not a connection failure — those are reported separately.${verdict}`
     );
     return true;
   }
@@ -6110,6 +6173,8 @@ class Roborock {
     ) {
       return liveState.current;
     }
+    this.unansweredMethods.govern(duid, "get_map_list");
+    this.unansweredMethods.govern(duid, b01Q7Adapter.B01_MAP_UPLOAD_METHOD);
     liveState.lastAttemptAt = Date.now();
 
     liveState.inflight = (async () => {
@@ -6436,6 +6501,7 @@ class Roborock {
     if (this.unansweredMethods.shouldSkip(duid, "get_map_v1")) {
       return liveState.current;
     }
+    this.unansweredMethods.govern(duid, "get_map_v1");
     liveState.lastAttemptAt = Date.now();
 
     liveState.inflight = (async () => {

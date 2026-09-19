@@ -94,6 +94,11 @@ describe("a network blip is not a silent robot", () => {
   test("a four-minute outage does not cost six hours of live-room tracking", () => {
     const clock = { now: 1_000_000 };
     const breaker = new UnansweredMethodBreaker({ now: () => clock.now });
+    const record = breaker.recordFailure.bind(breaker);
+    breaker.recordFailure = (duid, method, error) => {
+      breaker.govern(duid, method);
+      return record(duid, method, error);
+    };
 
     // 24 attempts at 10-second intervals: four minutes of a dropped link.
     for (let i = 0; i < 24; i += 1) {
@@ -113,6 +118,11 @@ describe("a network blip is not a silent robot", () => {
   test("a genuinely silent robot is still caught", () => {
     const clock = { now: 1_000_000 };
     const breaker = new UnansweredMethodBreaker({ now: () => clock.now });
+    const record = breaker.recordFailure.bind(breaker);
+    breaker.recordFailure = (duid, method, error) => {
+      breaker.govern(duid, method);
+      return record(duid, method, error);
+    };
 
     for (let i = 0; i < 6; i += 1) {
       clock.now += 10_000;
@@ -129,6 +139,11 @@ describe("a network blip is not a silent robot", () => {
   test("a blip in the middle of a silent streak does not advance it", () => {
     const clock = { now: 1_000_000 };
     const breaker = new UnansweredMethodBreaker({ now: () => clock.now });
+    const record = breaker.recordFailure.bind(breaker);
+    breaker.recordFailure = (duid, method, error) => {
+      breaker.govern(duid, method);
+      return record(duid, method, error);
+    };
 
     for (let i = 0; i < 5; i += 1) {
       clock.now += 10_000;

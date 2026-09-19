@@ -71,7 +71,12 @@ function collectRefusals() {
 /** Refusals that still reject with a plain Error, i.e. carry no reason. */
 function collectUntaggedRejections() {
   const source = fs.readFileSync(MESSAGE_QUEUE_HANDLER_SOURCE, "utf8");
-  const bare = /reject\(\s*new Error\(\s*`([^`]*)`/g;
+  // Both shapes: a bare `reject(new Error(...))`, and the timeout factory
+  // added in 3.32.0. The factory tags the error for the GIVE-UP register, not
+  // for the transient classifier this file is about, so its prose still has
+  // to stand on its own.
+  const bare =
+    /(?:reject\(\s*new Error\(|unansweredRequestError\(\s*)\s*`([^`]*)`/g;
   const found = [];
   let match;
 

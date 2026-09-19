@@ -31,10 +31,20 @@ const TIMEOUT = () =>
 
 function makeClock(start = 1_000_000) {
   const clock = { now: start };
-  return {
-    clock,
-    breaker: new UnansweredMethodBreaker({ now: () => clock.now }),
+  const breaker = new UnansweredMethodBreaker({ now: () => clock.now });
+
+  // From 3.32.0 the register is fed by the message layer, which sees EVERY
+  // request — including `get_status` and every command. So a (robot, method)
+  // pair is only counted once a caller that is entitled to skip it has said
+  // so. `recordFailure` on an unclaimed pair is a no-op by design; these
+  // tests stand in for `pollParameter`, which claims before it sends.
+  const recordFailure = breaker.recordFailure.bind(breaker);
+  breaker.recordFailure = (duid, method, error) => {
+    breaker.govern(duid, method);
+    return recordFailure(duid, method, error);
   };
+
+  return { clock, breaker };
 }
 
 describe("what counts as no answer", () => {

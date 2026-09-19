@@ -51,6 +51,42 @@ let rriot;
 // silent map outage with no error anywhere.
 const photoBuffers = new Map();
 
+// How many protocol-301 frames have been discarded per robot, and why.
+//
+// 3.31.0 added a log line for each drop — at DEBUG level, which is off by
+// default. So the measurement that was meant to answer this project's oldest
+// question (why `get_map_v1` times out forever on a robot that answers
+// everything else) could never appear in a log anyone would send. That is the
+// same mistake as the silent `return` it replaced: the information existed
+// and nobody could reach it.
+//
+// Counting it instead means the number rides along in the give-up message and
+// the diagnostic report, both of which are INFO level and both of which users
+// already paste.
+const droppedFrames = new Map();
+
+function noteDroppedFrame(duid, reason) {
+  let entry = droppedFrames.get(duid);
+  if (!entry) {
+    entry = { total: 0, byReason: {} };
+    droppedFrames.set(duid, entry);
+  }
+  entry.total += 1;
+  entry.byReason[reason] = (entry.byReason[reason] || 0) + 1;
+  return entry;
+}
+
+/**
+ * Protocol-301 frames discarded for one robot, for the give-up message and
+ * the diagnostic report.
+ *
+ * @param {string} duid
+ * @returns {{total: number, byReason: Record<string, number>}}
+ */
+function describeDroppedFrames(duid) {
+  return droppedFrames.get(duid) || { total: 0, byReason: {} };
+}
+
 function photoBufferFor(duid) {
   let entry = photoBuffers.get(duid);
   if (!entry) {
@@ -564,6 +600,7 @@ class roborock_mqtt_connector {
               // Whether that IS the cause is not settled here — it is
               // measured, because from 3.31.0 the drop says so.
               if (!String(data2.endpoint || "").startsWith(endpoint)) {
+                noteDroppedFrame(duid, "addressed-elsewhere");
                 this.adapter.log.debug(
                   `Dropped a protocol 301 message for ${duid}: it is addressed to endpoint '${data2.endpoint}', and this plugin's endpoint is '${endpoint}'. The reply was received and decrypted but is not ours, so the request that is waiting will time out. If you are seeing map or live-room requests time out on a robot that answers everything else, this line is the reason — please report it.`
                 );
@@ -584,6 +621,7 @@ class roborock_mqtt_connector {
               // this.adapter.log.debug("raw 301: " + decrypted);
 
               if (!this.adapter.pendingRequests.has(data2.id)) {
+                noteDroppedFrame(duid, "no-request-waiting");
                 // The other silent drop on this path. An unsolicited map push
                 // lands here legitimately, but so does a reply whose id we
                 // failed to match — and the waiting request then times out
@@ -839,6 +877,7 @@ function resolveB01PendingResponse(adapter, duid, dps) {
 }
 
 module.exports = {
+  describeDroppedFrames,
   resolveB01PendingResponse,
   roborock_mqtt_connector,
   parseProtocol301Header,

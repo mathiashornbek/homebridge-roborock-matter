@@ -1,5 +1,75 @@
 # Changelog
 
+## 3.32.0
+
+**The give-up register had never counted a single poll failure. Not one, in two releases that were built around it.**
+
+### What I shipped twice and never verified
+
+3.30.0 introduced a register that stops asking a robot a question it never answers. 3.31.0 routed three more polls into it and fixed how it attributed blame. Both releases described it — in the changelog, and in the log line you read — as the thing that ends the flood of repeated timeouts, naming the seven methods from #22 and #24 that motivated it.
+
+It could not have counted any of them. `pollParameter` decided the outcome from its own `try/catch`:
+
+```js
+try {
+  const answer = await vacuum.getParameter(duid, method);
+  this.noteMethodAnswered(duid, method); // ran on EVERY poll
+  return answer;
+} catch (error) {
+  this.noteMethodUnanswered(duid, method, error); // unreachable
+  throw error;
+}
+```
+
+`vacuum.getParameter` swallows its own errors. Its catch calls `catchError`, which only logs, and the function resolves `undefined`. So the catch here never ran. Every timeout looked like a success, and `noteMethodAnswered` **reset the counter on each failed poll**.
+
+Measured on the real classes before the fix: 20 consecutive timeouts produced **0 entries** in the register. And a robot that had somehow been left alone was told `answers get_room_mapping again; it is back in the normal poll cycle` on the retry that had just timed out.
+
+The only methods it ever governed were the three map requests, because those go through `sendRequest` directly rather than `getParameter`. Everything else — `get_room_mapping`, `get_multi_maps_list`, `get_consumable`, `get_carpet_mode`, `get_carpet_clean_mode`, `get_water_box_custom_mode`, `get_timer` — was untouched. 3.31.0's "three polls were bypassing the register" fix wired them to nothing.
+
+### The register now watches the wire
+
+A request is answered or it is not, and the only place that knows is the message layer. So that is where the register is fed from: `messageQueueHandler` reports a reply when one arrives and a timeout when one does not. `pollParameter` no longer guesses at the outcome — it just declares which requests it is entitled to skip.
+
+That declaration matters, because the message layer sees **every** request, including `get_status` and every command. A robot/method pair is counted only after a caller that can skip it has claimed it, so the two things this register must never touch cannot be reached by construction. There are tests that fire a hundred `get_status` timeouts and a hundred command timeouts and assert nothing closes.
+
+Measured after: 200 polls at a silent method send **6 requests**.
+
+### And the transport exclusion was dead code again
+
+3.30.0's version looked for `EAI_AGAIN`, `offline` and friends — words the timeout message never contains. 3.31.0 replaced it with a regex for `MQTT connection state: false`, and I wrote a checklist entry about building test fixtures from real strings. That regex cannot match either: a down link is rejected **earlier**, with a refusal that has no "timed out after" in it, so the timeout arm is only ever reached with the flag reading `true`. Two releases, two dead gates, two green tests built from strings the code cannot produce.
+
+The timeout now carries what it knows as data — `unansweredRequest` and `transportWasUp`, the latter read at **rejection** time rather than copied before the send, because a link that dies mid-flight is the entire case the exclusion exists for. The register reads the fields. No prose is parsed.
+
+### The measurement I hid behind a log level
+
+3.31.0 added a line for every discarded protocol-301 map frame, to answer why `get_map_v1` times out forever on a robot that answers everything else. I put it at **debug**, which is off by default. On my own server it produced nothing; a user in #24 went looking and found nothing. We both read that as evidence. It was not evidence — it was a log level.
+
+Discarded frames are now counted per robot, and the count rides along in the give-up message, at info level, where nobody has to know to go looking:
+
+```
+Stueetage has not answered get_map_v1 6 times in a row, so the plugin stops
+asking for about 6 hour(s)… No reply frames for this robot were received and
+discarded, so the reply is not arriving at all rather than being lost on this
+side.
+```
+
+or, if it is our fault:
+
+```
+…NOTE: 6 map reply frame(s) for this robot were received and then discarded by
+the plugin (addressed-elsewhere: 6), so the robot IS answering and this side is
+throwing it away. Please report this — it is a bug here, not on your robot.
+```
+
+The same figure is in the diagnostic report. Either way the question gets answered by a log you were going to send anyway.
+
+### Field notes from 3.31.0
+
+The give-up rule did fire correctly on my own a70: `get_map_v1`, 6 in a row, paused for 6 hours — where the same request used to fail 95 and 225 times. That part worked, because the map path was the one path the register could actually see.
+
+2045 tests, 14 of them new and all 14 red against 3.31.0.
+
 ## 3.31.0
 
 **Six bugs, three of them mine from last week. And the oldest unexplained failure in this project finally has an instrument pointed at it.**

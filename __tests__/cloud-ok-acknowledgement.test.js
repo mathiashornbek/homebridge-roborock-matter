@@ -97,8 +97,13 @@ describe("the secure flag reaches the pending request", () => {
     // shouldResolveOn102 is only correct if `secure` is actually recorded;
     // without it every secure request would resolve on its ack and the 301
     // payload would arrive with nobody waiting.
-    expect(source).toMatch(
-      /pendingRequests\.set\(\s*messageID,\s*\{[^}]*\bsecure\b/s
-    );
+    // Re-pinned in 3.32.0: `resolve` is now a wrapper that tells the give-up
+    // register a reply arrived, so the entry object contains a nested `}` and
+    // the old `[^}]*` window closed too early. Look at the whole call instead.
+    const at = source.indexOf("pendingRequests.set(messageID, {");
+    expect(at).toBeGreaterThan(-1);
+    const entry = source.slice(at, source.indexOf("});", at));
+    expect(entry).toMatch(/\bsecure\b/);
+    expect(entry).toMatch(/\bmethod\b/);
   });
 });

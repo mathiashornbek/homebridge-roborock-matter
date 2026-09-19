@@ -36,10 +36,38 @@ function createApi() {
   return { api, log };
 }
 
-const timeout = (method) =>
-  new Error(
-    `Cloud request with id 11 with method ${method} timed out after 10 seconds. MQTT connection state: true`
+/**
+ * A timeout exactly as messageQueueHandler now builds it: the prose, plus the
+ * structured fields the register actually reads.
+ */
+const timeout = (method, transportWasUp = true) =>
+  Object.assign(
+    new Error(
+      `Cloud request with id 11 with method ${method} timed out after 10 seconds. MQTT connection state: ${transportWasUp}`
+    ),
+    { unansweredRequest: true, transportWasUp }
   );
+
+/**
+ * A robot that never answers, modelled the way the real stack behaves.
+ *
+ * THIS IS THE CORRECTION AT THE HEART OF 3.32.0. The previous version of this
+ * harness had `getParameter` THROW. The real one never does: its catch calls
+ * `catchError`, which only logs, and it resolves `undefined`. Because this
+ * test invented a throw, it proved a failure path that could not run — and
+ * the register went two releases counting nothing at all.
+ *
+ * So the fake now does what the real one does: reports the timeout through
+ * the message layer (as messageQueueHandler does) and resolves undefined.
+ */
+function silentRobot(api, { transportWasUp = true } = {}) {
+  return {
+    getParameter: jest.fn(async (duid, method) => {
+      api.noteRequestUnanswered(duid, method, timeout(method, transportWasUp));
+      return undefined;
+    }),
+  };
+}
 
 async function pollUntilQuiet(api, vacuum, method, attempts) {
   let sent = 0;
@@ -60,11 +88,7 @@ async function pollUntilQuiet(api, vacuum, method, attempts) {
 describe("the poller stops asking a question that never gets answered", () => {
   test("an hour of polling a silent method costs six requests, not 360", () => {
     const { api } = createApi();
-    const vacuum = {
-      getParameter: jest.fn(async (duid, method) => {
-        throw timeout(method);
-      }),
-    };
+    const vacuum = silentRobot(api);
 
     // 360 attempts is one an hour at the ten-second poll interval — the real
     // shape of `Stueetage`'s 95-in-a-row.
@@ -76,26 +100,30 @@ describe("the poller stops asking a question that never gets answered", () => {
     });
   });
 
-  test("the caller still sees the failure it needs to handle", async () => {
+  test("pollParameter passes the robot's answer straight through", async () => {
+    // It used to be asserted here that a failed poll REJECTS. It does not,
+    // and never did: `vacuum.getParameter` swallows its own errors and
+    // resolves undefined. Asserting the fiction is what hid the bug for two
+    // releases, so this pins the truth instead — and the register no longer
+    // depends on it either way, because the message layer reports the timeout.
     const { api } = createApi();
-    const vacuum = {
-      getParameter: jest.fn(async (duid, method) => {
-        throw timeout(method);
-      }),
-    };
+    const vacuum = silentRobot(api);
 
     await expect(
       api.pollParameter("duid-a70", vacuum, "get_consumable", false)
-    ).rejects.toThrow(/timed out after/);
+    ).resolves.toBeUndefined();
+
+    const answering = {
+      getParameter: jest.fn(async () => ({ ok: true })),
+    };
+    await expect(
+      api.pollParameter("duid-a70", answering, "get_consumable", false)
+    ).resolves.toEqual({ ok: true });
   });
 
   test("a skipped poll resolves undefined rather than throwing a fake error", async () => {
     const { api } = createApi();
-    const vacuum = {
-      getParameter: jest.fn(async (duid, method) => {
-        throw timeout(method);
-      }),
-    };
+    const vacuum = silentRobot(api);
 
     await pollUntilQuiet(api, vacuum, "get_carpet_mode", 20);
     await expect(
@@ -109,14 +137,18 @@ describe("the poller stops asking a question that never gets answered", () => {
     const vacuum = {
       getParameter: jest.fn(async (duid, method) => {
         if (answer) {
+          // A real reply is reported by the message layer, not by the caller.
+          api.noteRequestAnswered(duid, method);
           return { ok: true };
         }
-        throw timeout(method);
+        api.noteRequestUnanswered(duid, method, timeout(method));
+        return undefined;
       }),
     };
 
     await pollUntilQuiet(api, vacuum, "get_room_mapping", 20);
     expect(api.unansweredMethods.describeOpen()).toHaveLength(1);
+    expect(answer).toBe(false);
 
     // The cooldown has not run out, so nudge it the way a real recovery does:
     // the robot answers the next request that does go out.
@@ -130,11 +162,7 @@ describe("the poller stops asking a question that never gets answered", () => {
 
   test("it says so once, not once per skipped poll", async () => {
     const { api, log } = createApi();
-    const vacuum = {
-      getParameter: jest.fn(async (duid, method) => {
-        throw timeout(method);
-      }),
-    };
+    const vacuum = silentRobot(api);
 
     await pollUntilQuiet(api, vacuum, "get_multi_maps_list", 200);
     const gaveUp = log.warn.mock.calls

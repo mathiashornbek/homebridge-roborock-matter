@@ -192,6 +192,23 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  */
 
 /**
+ * A request that was sent and drew no reply, carrying what the transport knew
+ * at the moment it gave up. The give-up register reads these fields instead of
+ * parsing the message text — twice now a prose-matching rule has turned out to
+ * be dead code against a string the plugin cannot produce.
+ *
+ * @param {string} message
+ * @param {boolean} transportWasUp whether the link was up AT REJECTION TIME
+ * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean}}
+ */
+function unansweredRequestError(message, transportWasUp) {
+  return Object.assign(new Error(message), {
+    unansweredRequest: true,
+    transportWasUp,
+  });
+}
+
+/**
  * @typedef {Object} MessageQueueAdapter
  * @property {RoborockConfig} [config]
  * @property {(duid: string) => Promise<boolean>} isRemoteDevice
@@ -208,6 +225,8 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @property {(duid: string, update: TransportDiagnosticsUpdate) => Promise<void>} updateTransportDiagnostics
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
+ * @property {(duid: string, method: string) => void} [noteRequestAnswered]
+ * @property {(duid: string, method: string, error: unknown) => void} [noteRequestUnanswered]
  * @property {(duid: string) => number} [getCloudMessageReceiptCount] How many
  *   decoded MQTT messages have been attributed to this robot since startup.
  *   Optional so an adapter that cannot count them keeps the old timeout text.
@@ -541,11 +560,20 @@ class messageQueueHandler {
             this.adapter.pendingRequests.delete(messageID);
             this.adapter.localConnector.clearChunkBuffer(duid);
             if (useCloudConnection) {
-              reject(
-                new Error(
-                  `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${mqttConnectionState}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}`
-                )
+              // The link state READ NOW, not the copy taken before the send.
+              // A link that died mid-flight is the entire case the give-up
+              // register's transport exclusion exists for, and both previous
+              // attempts at that exclusion were dead code because they read a
+              // value captured before the request even went out.
+              const transportWasUp = Boolean(
+                this.adapter.rr_mqtt_connector?.isConnected?.()
               );
+              const error = unansweredRequestError(
+                `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}`,
+                transportWasUp
+              );
+              this.adapter.noteRequestUnanswered?.(duid, method, error);
+              reject(error);
             } else {
               // A socket that keeps reporting itself connected while every
               // request dies of silence is not a transport worth retrying
@@ -556,11 +584,15 @@ class messageQueueHandler {
                   this.adapter.noteLocalRequestTimedOut(duid, method)
                 ).catch(() => {});
               }
-              reject(
-                new Error(
-                  `Local request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds Local connect state: ${localConnectionState}`
-                )
+              const transportWasUp = Boolean(
+                this.adapter.localConnector?.isConnected?.(duid)
               );
+              const error = unansweredRequestError(
+                `Local request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds Local connect state: ${transportWasUp}`,
+                transportWasUp
+              );
+              this.adapter.noteRequestUnanswered?.(duid, method, error);
+              reject(error);
             }
           }, requestTimeout);
 
@@ -571,7 +603,18 @@ class messageQueueHandler {
           // reply IS the result). It used to guess by comparing the result to
           // the string "ok", which silently never matched.
           this.adapter.pendingRequests.set(messageID, {
-            resolve,
+            // Wrapped so the give-up register learns of an answer HERE, in the
+            // one place that knows a reply arrived. Until 3.32.0 the register
+            // was told by `pollParameter`, whose try/catch never fired:
+            // `vacuum.getParameter` swallows its own errors (it calls
+            // catchError, which only logs) and resolves `undefined`. So every
+            // poll looked like a success, the failure branch was unreachable,
+            // and the register never counted a single one — including all
+            // seven methods in #22/#24 that it was built for.
+            resolve: (value) => {
+              this.adapter.noteRequestAnswered?.(duid, method);
+              resolve(value);
+            },
             reject,
             timeout,
             secure,
