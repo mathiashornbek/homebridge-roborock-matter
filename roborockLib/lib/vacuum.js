@@ -56,6 +56,33 @@ function buildForwardedRequestOptions(options = {}) {
 }
 
 /**
+ * The floor number the last `get_status` reported, or null if none has landed.
+ *
+ * The value in this state is ALREADY right-shifted — the status handler does
+ * `map_status >> 2` before storing it — so it is returned as-is. Shifting it a
+ * second time would file every room on floor 1 under floor 0.
+ *
+ * @param {{ getStateAsync?: (id: string) => {val?: unknown} | null | undefined }} adapter
+ * @param {string} duid
+ * @returns {number | null}
+ */
+function readCachedRoomFloor(adapter, duid) {
+  const cached = adapter.getStateAsync?.(
+    `Devices.${duid}.deviceStatus.map_status`
+  );
+  const floor = Number(cached?.val);
+
+  // `Number(null)` is 0 and `Number(undefined)` is NaN, so the emptiness test
+  // has to be on the value rather than on the conversion: a real floor of 0 is
+  // the common case for a home with one map.
+  if (cached?.val === undefined || cached?.val === null) {
+    return null;
+  }
+
+  return Number.isFinite(floor) ? floor : null;
+}
+
+/**
  * Render a `get_status` value for a log line. The old per-attribute warning
  * interpolated the raw value, so an object arrived as the useless
  * `[object Object]` — visible in skmzwanke's log for `cleaning_info`, which is
@@ -833,9 +860,9 @@ class vacuum {
         // Room data on B01/Q7 robots travels over the protobuf map channel,
         // and `get_room_mapping` itself is answered from the dialect's neutral
         // table without touching the network — so this branch looked free.
-        // It is not: it opens by fetching `get_status` to read `map_status`,
+        // It was not: it opened by fetching `get_status` to read `map_status`,
         // a v1-only field that Q7 status dictionaries have never carried, and
-        // on B01 `get_status` translates to a real `prop.get`. That is one
+        // on B01 `get_status` translates to a real `prop.get`. That was one
         // cloud round-trip per poll cycle per robot spent on an answer this
         // code cannot read — reported under the caller's label, which is why
         // #14's log line names `get_room_mapping` but times out on `prop.get`.
@@ -843,12 +870,36 @@ class vacuum {
           return;
         }
 
-        const deviceStatus = await sendParameterRequest("get_status", []);
-        const mapStatus = Array.isArray(deviceStatus)
-          ? deviceStatus[0]?.["map_status"]
-          : undefined;
-        // to get the currently selected map perform bitwise right shift
-        const roomFloor = typeof mapStatus === "number" ? mapStatus >> 2 : -1;
+        // On classic robots the request is answerable, so 3.11.0 left it in
+        // place. It still should not be made: the status poll runs on its own
+        // interval and has already stored this exact number, and
+        // `app_segment_clean` has always read the floor from there rather
+        // than asking again.
+        //
+        // AND IT COST MORE THAN A ROUND-TRIP. The give-up register counts the
+        // method that goes on the WIRE, and only for pairs a caller claimed
+        // with `govern()`. `pollParameter` claims `get_room_mapping`; the
+        // wire saw `get_status`, which the register must never govern. So the
+        // claimed pair recorded nothing and could never reach six strikes —
+        // the one method #22 and #24 name most often was the one the new
+        // register could not see. Worse, when `get_status` was the request
+        // timing out, this threw before `get_room_mapping` was ever sent, so
+        // the robot was not even asked the question it was failing.
+        let roomFloor = readCachedRoomFloor(this.adapter, duid);
+
+        if (roomFloor === null) {
+          // No status has landed yet — the first cycle after a restart starts
+          // both intervals together. Ask, rather than file the rooms under a
+          // floor we guessed: `app_segment_clean` looks them up under the
+          // real one and would not find them.
+          const deviceStatus = await sendParameterRequest("get_status", []);
+          const mapStatus = Array.isArray(deviceStatus)
+            ? deviceStatus[0]?.["map_status"]
+            : undefined;
+          // to get the currently selected map perform bitwise right shift
+          roomFloor = typeof mapStatus === "number" ? mapStatus >> 2 : -1;
+        }
+
         const mappedRooms = await sendParameterRequest("get_room_mapping", []);
         if (typeof this.adapter.updateRoomMappingCache === "function") {
           this.adapter.updateRoomMappingCache(duid, roomFloor, mappedRooms);

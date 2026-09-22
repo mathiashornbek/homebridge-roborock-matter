@@ -140,6 +140,12 @@ describe("the classic room-mapping flow stays off the wire on B01 robots", () =>
   test("a v1 robot still runs the full classic flow", async () => {
     // The control that keeps the guard load-bearing: the day this stops
     // reading map_status for the robots that do send it, this goes red.
+    //
+    // Since 3.33.0 this exercises the FALLBACK. The floor normally comes from
+    // the status the plugin already polled, and `get_status` is only asked for
+    // when nothing is cached yet — which is the case here, because this
+    // adapter has no `getStateAsync`. The steady state is pinned in
+    // `room-mapping-is-counted-under-its-own-name.test.js`.
     const { adapter, methods } = await roomMappingRequests({
       isB01: false,
       model: "roborock.vacuum.a08",

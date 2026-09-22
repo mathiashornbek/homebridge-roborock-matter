@@ -1,5 +1,52 @@
 # Changelog
 
+## 3.33.0
+
+**The one method users name most often was the one method the new register could not see.**
+
+### Two users asked the same question, and one of them had the answer
+
+[@DSimeone1989](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/22) and [@Marrand](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/24) run different robots — an `a144` and an `a51` — and both pasted a line with two method names in it that disagree. Marrand asked it outright: _"some messages say `Failed to execute get_room_mapping`, but the actual error underneath says `method get_status timed out`. I'm not sure whether that's expected, or whether the method name in that log line is misleading."_
+
+```
+Failed to execute get_room_mapping on robot Rocky (roborock.vacuum.a144):
+Error: Cloud request with id 5563 with method get_status timed out after 10
+seconds … 483 similar warning(s) across get_status (359), get_room_mapping
+(119) … were suppressed.
+```
+
+The name is not misleading. It is the diagnosis, and it is the same one [#14](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/14) produced on a B01 robot in 3.11.0: the classic room-mapping poll opens by fetching `get_status`, purely to read `map_status` and derive a floor number. `get_room_mapping` is the caller's label. `get_status` is what went on the wire.
+
+3.11.0 fixed that for B01 robots by returning early. On classic robots the request is answerable, so it was left alone as merely wasteful. It was not merely wasteful.
+
+### Why that put the poll permanently out of the register's reach
+
+3.32.0 moved the give-up register to the message layer, because that is the only place that knows whether a reply arrived. That layer sees **every** request, so a robot/method pair is counted only once a caller that can skip it has claimed it with `govern()`. `get_status` is never claimable — the tile lives on it.
+
+`pollParameter` claims `get_room_mapping`. The wire saw `get_status`. The register discarded the timeout, exactly as designed, and the claimed pair recorded nothing — not a failure, not an answer. **Six strikes were unreachable.**
+
+That is why Marrand's 3.32.0 report lists `get_multi_maps_list`, `get_consumable`, `get_server_timer`, `get_timer`, `get_carpet_mode`, `get_carpet_clean_mode` and `get_water_box_custom_mode` all reaching their cooldown — and not `get_room_mapping`, the method with 119 suppressed warnings in #22.
+
+And there is a second half I had not seen. When `get_status` is the request that times out — which is DSimeone1989's case, 359 of them — the branch threw at the first `await`. **`get_room_mapping` was never sent at all.** The robot was not being asked the question it was failing to answer; it was being asked a different one, and the failure was filed under a name the register was built to ignore.
+
+### The fix is to not make the request
+
+The floor number is already known. The status poll runs on its own interval and stores `map_status` — already right-shifted — and `app_segment_clean` has read the floor from there since long before any of this. The room-mapping poll now reads the same value.
+
+So on a classic robot the poll puts exactly one request on the wire, `get_room_mapping`, under its own name:
+
+- One fewer cloud round-trip per poll cycle per robot, each with its own ten-second timeout.
+- The register can count it. Six unanswered polls now stop the flood the same way they already stopped the other seven methods.
+- When the robot is silent, it is silent about the thing it was actually asked.
+
+`get_status` is still fetched when no status has landed yet — the first cycle after a restart starts both intervals together. Filing rooms under a guessed floor would hide them from `app_segment_clean`, which looks them up under the real one, so asking once is the lesser cost. A cached floor of `0`, the normal case for a home with one map, is a floor and not a missing value.
+
+### The rule, pinned
+
+The test is written against the class rather than this branch: **a poll that claims a method must put that method on the wire first.** Any future branch that fronts a governed poll with a different request re-opens this hole, and now fails in CI rather than in someone's log six weeks later.
+
+2054 tests, 9 new, all 5 of the behavioural ones red against 3.32.0.
+
 ## 3.32.0
 
 **The give-up register had never counted a single poll failure. Not one, in two releases that were built around it.**
