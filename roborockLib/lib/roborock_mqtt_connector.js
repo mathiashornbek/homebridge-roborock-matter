@@ -11,6 +11,9 @@ const {
   createRefusalError,
 } = require("./describeReplyRefusal");
 
+const { MqttSessionRecovery } = require("./mqttSessionRecovery");
+const { MqttSessionDiagnostics } = require("./mqttSessionDiagnostics");
+
 const PHOTO_MAGIC = "ROBOROCK";
 const PHOTO_HEADER_MIN_LENGTH = 9;
 const PROTOCOL_301_HEADER_LENGTH = 24;
@@ -34,12 +37,6 @@ const photoParser = new Parser()
     stripNull: true,
   })
   .uint8("id");
-
-let mqttUser;
-let mqttPassword;
-let client;
-let endpoint;
-let rriot;
 
 // Per robot, not per process. These were module-level `let`s shared by every
 // robot on the account until 3.31.0, and they are only cleared when a photo
@@ -164,7 +161,19 @@ function parseProtocol301Header(payload) {
 class roborock_mqtt_connector {
   constructor(adapter) {
     this.adapter = adapter;
+    this.recovery =
+      adapter.config?.enableMqttSessionRecovery === true
+        ? new MqttSessionRecovery(this)
+        : null;
 
+    this.sessionDiagnostics = new MqttSessionDiagnostics((snapshot) => {
+      Promise.resolve(
+        this.adapter.setStateAsync?.("MqttSessionDiagnostics", {
+          val: JSON.stringify(snapshot),
+          ack: true,
+        })
+      ).catch(() => {});
+    });
     this.connected = false;
     this.initialConnectTimeout = null;
 
@@ -175,23 +184,35 @@ class roborock_mqtt_connector {
   }
 
   async initUser(userdata) {
-    rriot = userdata.rriot;
+    this.rriot = userdata.rriot;
 
-    endpoint = roborockCrypto
-      .md5bin(rriot.k)
+    this.endpoint = roborockCrypto
+      .md5bin(this.rriot.k)
       .subarray(8, 14)
       .toString("base64"); // Could be a random but rather static string. The app generates it on first run.
-    mqttUser = roborockCrypto.md5hex(rriot.u + ":" + rriot.k).substring(2, 10);
-    mqttPassword = roborockCrypto.md5hex(rriot.s + ":" + rriot.k).substring(16);
-    client = mqtt.connect(rriot.r.m, {
-      clientId: mqttUser,
-      username: mqttUser,
-      password: mqttPassword,
+    this.mqttUser = roborockCrypto
+      .md5hex(this.rriot.u + ":" + this.rriot.k)
+      .substring(2, 10);
+    this.mqttPassword = roborockCrypto
+      .md5hex(this.rriot.s + ":" + this.rriot.k)
+      .substring(16);
+    this.createClient();
+  }
+
+  createClient() {
+    this.client = mqtt.connect(this.rriot.r.m, {
+      clientId: this.mqttUser,
+      username: this.mqttUser,
+      password: this.mqttPassword,
       keepalive: 30,
     });
   }
 
   async initMQTT_Subscribe() {
+    if (this.recovery) {
+      this.recovery.install(this.client);
+      return;
+    }
     // This used to invoke a `restart` method on the adapter, which the
     // Roborock class has never had — so on the one path it was written for
     // (the broker
@@ -214,15 +235,20 @@ class roborock_mqtt_connector {
       this.initialConnectTimeout.unref();
     }
 
-    await client.on("connect", (result) => {
+    await this.client.on("connect", (result) => {
       if (typeof result != "undefined") {
-        client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
-          if (err) {
-            this.logConnectionIssue(
-              `Failed to subscribe to the Roborock MQTT server: ${err} (granted: ${JSON.stringify(granted)}).`
-            );
+        const generation = this.sessionDiagnostics.onConnect();
+        this.client.subscribe(
+          `rr/m/o/${this.rriot.u}/${this.mqttUser}/#`,
+          (err, granted) => {
+            this.sessionDiagnostics.onSubscribe(generation, err, granted);
+            if (err) {
+              this.logConnectionIssue(
+                `Failed to subscribe to the Roborock MQTT server: ${err} (granted: ${JSON.stringify(granted)}).`
+              );
+            }
           }
-        });
+        );
         this.clearInitialConnectTimeout();
 
         this.connected = true;
@@ -244,34 +270,42 @@ class roborock_mqtt_connector {
     // instead of routing them through catchError (which used to produce the
     // misleading `Failed to execute client.on("error") on robot undefined`
     // spam twice per reconnect attempt during network outages).
-    await client.on("error", (error) => {
+    await this.client.on("error", (error) => {
       this.connected = false;
+      this.sessionDiagnostics.onDisconnect();
       this.logConnectionIssue(
         `Roborock MQTT connection error: ${error?.message || error}. The client keeps reconnecting automatically.`
       );
     });
 
-    await client.on("close", () => {
+    await this.client.on("close", () => {
       if (this.connected) {
         this.adapter.log.info(`MQTT connection closed; reconnecting.`);
       }
       this.connected = false;
+      this.sessionDiagnostics.onDisconnect();
     });
 
-    await client.on("reconnect", () => {
-      client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
-        if (err) {
-          this.logConnectionIssue(
-            `Failed to subscribe to the Roborock MQTT server after reconnect: ${err} (granted: ${JSON.stringify(granted)}).`
-          );
+    await this.client.on("reconnect", () => {
+      const generation = this.sessionDiagnostics.generation;
+      this.client.subscribe(
+        `rr/m/o/${this.rriot.u}/${this.mqttUser}/#`,
+        (err, granted) => {
+          this.sessionDiagnostics.onSubscribe(generation, err, granted);
+          if (err) {
+            this.logConnectionIssue(
+              `Failed to subscribe to the Roborock MQTT server after reconnect: ${err} (granted: ${JSON.stringify(granted)}).`
+            );
+          }
         }
-      });
+      );
       this.clearInitialConnectTimeout();
       this.adapter.log.debug(`MQTT connection reconnect attempt.`);
     });
 
-    await client.on("offline", () => {
+    await this.client.on("offline", () => {
       this.connected = false;
+      this.sessionDiagnostics.onDisconnect();
       this.logConnectionIssue(
         `Roborock MQTT connection is offline. The client keeps reconnecting automatically.`
       );
@@ -361,8 +395,12 @@ class roborock_mqtt_connector {
   async initMQTT_Message() {
     this.adapter.log.debug(`MQTT initialized.`);
 
-    client.on("message", (topic, message) => {
+    const candidate = this.client;
+    const endpoint = this.endpoint;
+    candidate.on("message", (topic, message) => {
+      if (candidate !== this.client || this.recovery?.stopped) return;
       try {
+        this.sessionDiagnostics.noteActivity("raw");
         const duid = this.resolveDuidFromTopic(topic);
         if (!duid) {
           // Counted, not just logged: this is the one inbound path that drops
@@ -379,10 +417,13 @@ class roborock_mqtt_connector {
           return;
         }
 
+        this.sessionDiagnostics.noteActivity("attributed");
         const data = this.adapter.message._decodeMsg(message, duid);
         if (!data) {
           return;
         }
+
+        this.sessionDiagnostics.noteActivity("decoded");
 
         // Counted here and nowhere else: past the topic match AND past
         // decryption, so the count means the link delivered something real
@@ -412,7 +453,11 @@ class roborock_mqtt_connector {
             dps = parsedPayload.dps;
           }
 
-          if (resolveB01PendingResponse(this.adapter, duid, dps)) {
+          if (
+            resolveB01PendingResponse(this.adapter, duid, dps, () =>
+              this.sessionDiagnostics.noteActivity("correlated")
+            )
+          ) {
             return;
           }
 
@@ -463,6 +508,7 @@ class roborock_mqtt_connector {
           // Those requests then sat until the 10 s timeout and failed in Apple
           // Home even though the robot had already carried them out.
           const pending = this.adapter.pendingRequests.get(dps.id);
+          if (pending) this.sessionDiagnostics.noteActivity("correlated");
           if (shouldResolveOn102(pending, dps.result)) {
             this.adapter.clearTimeout(pending.timeout);
             this.adapter.pendingRequests.delete(dps.id);
@@ -505,6 +551,7 @@ class roborock_mqtt_connector {
           if (pendingMap) {
             this.adapter.clearTimeout(pendingMap.timeout);
             this.adapter.pendingB01MapRequests.delete(duid);
+            this.sessionDiagnostics.noteActivity("correlated");
             pendingMap.resolve(data.payload);
             return;
           }
@@ -548,6 +595,7 @@ class roborock_mqtt_connector {
               photoBuffer.chunks = [];
               photoBuffer.chunkId = 0;
 
+              this.sessionDiagnostics.noteActivity("correlated");
               resolve(finalPhotoGzip);
             }
           } else {
@@ -566,6 +614,7 @@ class roborock_mqtt_connector {
                 this.adapter.log.debug(
                   `Cloud message with protocol 301 and photo id ${photoData.id} received.`
                 );
+                this.sessionDiagnostics.noteActivity("correlated");
                 resolve(data.payload.slice(56));
               }
             } else {
@@ -641,6 +690,7 @@ class roborock_mqtt_connector {
                 this.adapter.log.debug(
                   `Cloud message with protocol 301 and id ${data2.id} received.`
                 );
+                this.sessionDiagnostics.noteActivity("correlated");
                 resolve(decrypted);
               }
             }
@@ -709,22 +759,39 @@ class roborock_mqtt_connector {
         this.adapter.log.error(
           `client.on message failed for topic '${topic}': ${error.stack || error}`
         );
+      } finally {
+        this.sessionDiagnostics.emit();
       }
     });
   }
 
   getEndpoint() {
-    return endpoint;
+    return this.endpoint;
+  }
+
+  discardSessionFragments() {
+    for (const duid of this.getKnownDeviceDuids()) photoBuffers.delete(duid);
+  }
+
+  assertCanSend() {
+    this.recovery?.assertCanSend();
   }
 
   sendMessage(duid, roborockMessage) {
-    client.publish(`rr/m/i/${rriot.u}/${mqttUser}/${duid}`, roborockMessage, {
-      qos: 1,
-    });
+    this.assertCanSend();
+    this.client.publish(
+      `rr/m/i/${this.rriot.u}/${this.mqttUser}/${duid}`,
+      roborockMessage,
+      {
+        qos: 1,
+      }
+    );
   }
 
   isConnected() {
-    return this.connected;
+    return (
+      this.connected && !this.recovery?.recovering && !this.recovery?.stopped
+    );
   }
 
   /**
@@ -741,19 +808,22 @@ class roborock_mqtt_connector {
    * ack that will not come if the network is what is broken.
    */
   disconnect() {
+    this.recovery?.stop();
     this.clearInitialConnectTimeout();
-    if (!client) {
+    if (!this.client) {
       return;
     }
     try {
-      client.removeAllListeners();
-      client.end(true);
+      this.client.removeAllListeners();
+      if (this.recovery) this.client.on("error", () => {});
+      this.client.end(true);
     } catch (error) {
       this.adapter?.log?.debug?.(
         `Closing the MQTT client on shutdown failed: ${error?.message || error}`
       );
     }
     this.connected = false;
+    this.sessionDiagnostics.onDisconnect();
   }
 
   /**
@@ -789,7 +859,7 @@ class roborock_mqtt_connector {
   }
 
   async ensureConnected() {
-    if (client && this.connected) {
+    if (this.client && this.connected) {
       this.adapter.log.debug("MQTT health check passed. Reconnect skipped.");
       return false;
     }
@@ -799,7 +869,11 @@ class roborock_mqtt_connector {
   }
 
   async reconnectClient(force = false) {
-    if (client) {
+    if (this.recovery) {
+      if (!force && this.isConnected()) return false;
+      return this.recovery.recreate("connection-unavailable");
+    }
+    if (this.client) {
       try {
         if (!force && this.connected) {
           this.adapter.log.debug(
@@ -822,8 +896,8 @@ class roborock_mqtt_connector {
         // after the network was healthy, three retries that did nothing, and
         // an instant recovery on the same session once the child bridge was
         // restarted.
-        await client.endAsync(true);
-        client.reconnect();
+        await this.client.endAsync(true);
+        this.client.reconnect();
         return true;
       } catch (error) {
         this.adapter.catchError(
@@ -844,7 +918,12 @@ class roborock_mqtt_connector {
  * Robot-initiated B01 pushes (no matching request) trigger a status refresh
  * instead of guessing at undocumented event payload formats.
  */
-function resolveB01PendingResponse(adapter, duid, dps) {
+function resolveB01PendingResponse(
+  adapter,
+  duid,
+  dps,
+  onCorrelatedReply = () => {}
+) {
   if (!dps || dps.msgId === undefined || dps.id !== undefined) {
     return false;
   }
@@ -853,6 +932,7 @@ function resolveB01PendingResponse(adapter, duid, dps) {
   const pendingB01 = adapter.pendingRequests.get(b01Key);
 
   if (pendingB01) {
+    onCorrelatedReply();
     adapter.clearTimeout(pendingB01.timeout);
     adapter.pendingRequests.delete(b01Key);
     if (dps.code !== undefined && dps.code !== 0) {
