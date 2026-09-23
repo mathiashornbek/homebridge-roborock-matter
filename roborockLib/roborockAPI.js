@@ -6042,6 +6042,7 @@ class Roborock {
       );
     }
 
+    this.rr_mqtt_connector.assertCanSend?.();
     let entry;
     const promise = new Promise((resolve, reject) => {
       const timeout = this.setTimeout(() => {

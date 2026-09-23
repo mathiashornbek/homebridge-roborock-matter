@@ -11,6 +11,7 @@ const {
   createRefusalError,
 } = require("./describeReplyRefusal");
 
+const { MqttSessionRecovery } = require("./mqttSessionRecovery");
 const { MqttSessionDiagnostics } = require("./mqttSessionDiagnostics");
 
 const PHOTO_MAGIC = "ROBOROCK";
@@ -36,12 +37,6 @@ const photoParser = new Parser()
     stripNull: true,
   })
   .uint8("id");
-
-let mqttUser;
-let mqttPassword;
-let client;
-let endpoint;
-let rriot;
 
 // Per robot, not per process. These were module-level `let`s shared by every
 // robot on the account until 3.31.0, and they are only cleared when a photo
@@ -166,6 +161,10 @@ function parseProtocol301Header(payload) {
 class roborock_mqtt_connector {
   constructor(adapter) {
     this.adapter = adapter;
+    this.recovery =
+      adapter.config?.enableMqttSessionRecovery === true
+        ? new MqttSessionRecovery(this)
+        : null;
 
     this.sessionDiagnostics = new MqttSessionDiagnostics((snapshot) => {
       Promise.resolve(
@@ -185,23 +184,35 @@ class roborock_mqtt_connector {
   }
 
   async initUser(userdata) {
-    rriot = userdata.rriot;
+    this.rriot = userdata.rriot;
 
-    endpoint = roborockCrypto
-      .md5bin(rriot.k)
+    this.endpoint = roborockCrypto
+      .md5bin(this.rriot.k)
       .subarray(8, 14)
       .toString("base64"); // Could be a random but rather static string. The app generates it on first run.
-    mqttUser = roborockCrypto.md5hex(rriot.u + ":" + rriot.k).substring(2, 10);
-    mqttPassword = roborockCrypto.md5hex(rriot.s + ":" + rriot.k).substring(16);
-    client = mqtt.connect(rriot.r.m, {
-      clientId: mqttUser,
-      username: mqttUser,
-      password: mqttPassword,
+    this.mqttUser = roborockCrypto
+      .md5hex(this.rriot.u + ":" + this.rriot.k)
+      .substring(2, 10);
+    this.mqttPassword = roborockCrypto
+      .md5hex(this.rriot.s + ":" + this.rriot.k)
+      .substring(16);
+    this.createClient();
+  }
+
+  createClient() {
+    this.client = mqtt.connect(this.rriot.r.m, {
+      clientId: this.mqttUser,
+      username: this.mqttUser,
+      password: this.mqttPassword,
       keepalive: 30,
     });
   }
 
   async initMQTT_Subscribe() {
+    if (this.recovery) {
+      this.recovery.install(this.client);
+      return;
+    }
     // This used to invoke a `restart` method on the adapter, which the
     // Roborock class has never had — so on the one path it was written for
     // (the broker
@@ -224,17 +235,20 @@ class roborock_mqtt_connector {
       this.initialConnectTimeout.unref();
     }
 
-    await client.on("connect", (result) => {
+    await this.client.on("connect", (result) => {
       if (typeof result != "undefined") {
         const generation = this.sessionDiagnostics.onConnect();
-        client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
-          this.sessionDiagnostics.onSubscribe(generation, err, granted);
-          if (err) {
-            this.logConnectionIssue(
-              `Failed to subscribe to the Roborock MQTT server: ${err} (granted: ${JSON.stringify(granted)}).`
-            );
+        this.client.subscribe(
+          `rr/m/o/${this.rriot.u}/${this.mqttUser}/#`,
+          (err, granted) => {
+            this.sessionDiagnostics.onSubscribe(generation, err, granted);
+            if (err) {
+              this.logConnectionIssue(
+                `Failed to subscribe to the Roborock MQTT server: ${err} (granted: ${JSON.stringify(granted)}).`
+              );
+            }
           }
-        });
+        );
         this.clearInitialConnectTimeout();
 
         this.connected = true;
@@ -256,7 +270,7 @@ class roborock_mqtt_connector {
     // instead of routing them through catchError (which used to produce the
     // misleading `Failed to execute client.on("error") on robot undefined`
     // spam twice per reconnect attempt during network outages).
-    await client.on("error", (error) => {
+    await this.client.on("error", (error) => {
       this.connected = false;
       this.sessionDiagnostics.onDisconnect();
       this.logConnectionIssue(
@@ -264,7 +278,7 @@ class roborock_mqtt_connector {
       );
     });
 
-    await client.on("close", () => {
+    await this.client.on("close", () => {
       if (this.connected) {
         this.adapter.log.info(`MQTT connection closed; reconnecting.`);
       }
@@ -272,21 +286,24 @@ class roborock_mqtt_connector {
       this.sessionDiagnostics.onDisconnect();
     });
 
-    await client.on("reconnect", () => {
+    await this.client.on("reconnect", () => {
       const generation = this.sessionDiagnostics.generation;
-      client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
-        this.sessionDiagnostics.onSubscribe(generation, err, granted);
-        if (err) {
-          this.logConnectionIssue(
-            `Failed to subscribe to the Roborock MQTT server after reconnect: ${err} (granted: ${JSON.stringify(granted)}).`
-          );
+      this.client.subscribe(
+        `rr/m/o/${this.rriot.u}/${this.mqttUser}/#`,
+        (err, granted) => {
+          this.sessionDiagnostics.onSubscribe(generation, err, granted);
+          if (err) {
+            this.logConnectionIssue(
+              `Failed to subscribe to the Roborock MQTT server after reconnect: ${err} (granted: ${JSON.stringify(granted)}).`
+            );
+          }
         }
-      });
+      );
       this.clearInitialConnectTimeout();
       this.adapter.log.debug(`MQTT connection reconnect attempt.`);
     });
 
-    await client.on("offline", () => {
+    await this.client.on("offline", () => {
       this.connected = false;
       this.sessionDiagnostics.onDisconnect();
       this.logConnectionIssue(
@@ -378,7 +395,10 @@ class roborock_mqtt_connector {
   async initMQTT_Message() {
     this.adapter.log.debug(`MQTT initialized.`);
 
-    client.on("message", (topic, message) => {
+    const candidate = this.client;
+    const endpoint = this.endpoint;
+    candidate.on("message", (topic, message) => {
+      if (candidate !== this.client || this.recovery?.stopped) return;
       try {
         this.sessionDiagnostics.noteActivity("raw");
         const duid = this.resolveDuidFromTopic(topic);
@@ -746,17 +766,32 @@ class roborock_mqtt_connector {
   }
 
   getEndpoint() {
-    return endpoint;
+    return this.endpoint;
+  }
+
+  discardSessionFragments() {
+    for (const duid of this.getKnownDeviceDuids()) photoBuffers.delete(duid);
+  }
+
+  assertCanSend() {
+    this.recovery?.assertCanSend();
   }
 
   sendMessage(duid, roborockMessage) {
-    client.publish(`rr/m/i/${rriot.u}/${mqttUser}/${duid}`, roborockMessage, {
-      qos: 1,
-    });
+    this.assertCanSend();
+    this.client.publish(
+      `rr/m/i/${this.rriot.u}/${this.mqttUser}/${duid}`,
+      roborockMessage,
+      {
+        qos: 1,
+      }
+    );
   }
 
   isConnected() {
-    return this.connected;
+    return (
+      this.connected && !this.recovery?.recovering && !this.recovery?.stopped
+    );
   }
 
   /**
@@ -773,13 +808,15 @@ class roborock_mqtt_connector {
    * ack that will not come if the network is what is broken.
    */
   disconnect() {
+    this.recovery?.stop();
     this.clearInitialConnectTimeout();
-    if (!client) {
+    if (!this.client) {
       return;
     }
     try {
-      client.removeAllListeners();
-      client.end(true);
+      this.client.removeAllListeners();
+      if (this.recovery) this.client.on("error", () => {});
+      this.client.end(true);
     } catch (error) {
       this.adapter?.log?.debug?.(
         `Closing the MQTT client on shutdown failed: ${error?.message || error}`
@@ -822,7 +859,7 @@ class roborock_mqtt_connector {
   }
 
   async ensureConnected() {
-    if (client && this.connected) {
+    if (this.client && this.connected) {
       this.adapter.log.debug("MQTT health check passed. Reconnect skipped.");
       return false;
     }
@@ -832,7 +869,11 @@ class roborock_mqtt_connector {
   }
 
   async reconnectClient(force = false) {
-    if (client) {
+    if (this.recovery) {
+      if (!force && this.isConnected()) return false;
+      return this.recovery.recreate("connection-unavailable");
+    }
+    if (this.client) {
       try {
         if (!force && this.connected) {
           this.adapter.log.debug(
@@ -855,8 +896,8 @@ class roborock_mqtt_connector {
         // after the network was healthy, three retries that did nothing, and
         // an instant recovery on the same session once the child bridge was
         // restarted.
-        await client.endAsync(true);
-        client.reconnect();
+        await this.client.endAsync(true);
+        this.client.reconnect();
         return true;
       } catch (error) {
         this.adapter.catchError(
