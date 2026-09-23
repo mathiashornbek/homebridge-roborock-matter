@@ -149,6 +149,24 @@
           >
         </span>
       </label>
+      <label class="checkbox"
+        ><input id="enableMqttSessionRecovery" type="checkbox" /><span
+          >Enable experimental MQTT session recovery<small
+            >Recreates a correlated silent MQTT session. Off by default.
+            Commands are not replayed. Restart the child bridge after changing
+            this setting.</small
+          ></span
+        ></label
+      >
+      <label class="checkbox"
+        ><input id="enableMqttPreventiveRefresh" type="checkbox" /><span
+          >Enable preventive MQTT refresh<small
+            >Refreshes the MQTT session after four hours when idle. Requires
+            experimental MQTT session recovery. Off by default. Restart the
+            child bridge after changing this setting.</small
+          ></span
+        ></label
+      >
     </details>
 
     <div class="actions">
