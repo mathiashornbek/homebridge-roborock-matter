@@ -1,7 +1,7 @@
 "use strict";
 
 // Observations only. Nothing in this class reconnects, gates requests, or
-// changes the unanswered-method breaker. Silence while idle is normal.
+// makes breaker decisions. Silence while idle is normal.
 const SILENCE_WINDOW_MS = 60_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const MAX_ROBOTS = 128;
@@ -88,14 +88,15 @@ class MqttSessionDiagnostics {
     this.prune();
     // Only active, unanswered reads on an acknowledged, connected session
     // can contribute. A write may have succeeded even without its reply.
-    if (
+    const requestWasSilent = Boolean(
       this.connected &&
-      this.subscriptionAcknowledged &&
-      request &&
-      request.generation === this.generation &&
-      request.rawSequence === this.rawSequence &&
-      /^get_/.test(method)
-    ) {
+        this.subscriptionAcknowledged &&
+        request &&
+        request.generation === this.generation &&
+        request.rawSequence === this.rawSequence &&
+        /^get_/.test(method)
+    );
+    if (requestWasSilent) {
       if (!this.silentReads.has(duid) && this.silentReads.size >= MAX_ROBOTS) {
         const oldest = this.silentReads.keys().next().value;
         if (oldest !== undefined) this.silentReads.delete(oldest);
@@ -103,7 +104,9 @@ class MqttSessionDiagnostics {
       this.silentReads.set(duid, performance.now());
     }
     this.emit(true);
-    return this.snapshot();
+    // The account observation alone must not exempt a write, a request
+    // spanning generations, or one that saw inbound traffic while pending.
+    return { ...this.snapshot(), requestWasSilent };
   }
 
   prune() {

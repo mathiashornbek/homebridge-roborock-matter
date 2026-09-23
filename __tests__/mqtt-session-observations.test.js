@@ -310,7 +310,7 @@ test("local replies continue and are recorded separately during cloud silence", 
   });
 });
 
-test("breaker behavior is unchanged even when correlation is observed", async () => {
+test("correlated session silence is excluded from the per-method breaker", async () => {
   const breaker = new UnansweredMethodBreaker();
   for (const duid of ["robot-a", "robot-b"])
     breaker.govern(duid, "get_consumable");
@@ -322,8 +322,8 @@ test("breaker behavior is unchanged even when correlation is observed", async ()
     await timeout("robot-b", "get_consumable");
   }
   expect(snapshot().correlatedSilenceObserved).toBe(true);
-  expect(breaker.shouldSkip("robot-a", "get_consumable")).toBe(true);
-  expect(breaker.shouldSkip("robot-b", "get_consumable")).toBe(true);
+  expect(breaker.shouldSkip("robot-a", "get_consumable")).toBe(false);
+  expect(breaker.shouldSkip("robot-b", "get_consumable")).toBe(false);
 });
 
 test.each(["b01", "b01-map", "secure-ack", "refusal"])(
