@@ -58,6 +58,7 @@ function createAdapter({
   cachedMapStatus,
   roomMappingAnswers = true,
   statusAnswers = true,
+  statusReply,
 } = {}) {
   /** @type {Record<string, {val: unknown}>} */
   const states = {};
@@ -82,7 +83,7 @@ function createAdapter({
           // that reads the wrong source still gets a plausible number and
           // has to be caught by the wire assertions rather than by luck.
           return statusAnswers
-            ? Promise.resolve([{ map_status: 8 }])
+            ? Promise.resolve(statusReply ?? [{ map_status: 8 }])
             : Promise.reject(timeout("get_status"));
         }
         if (method === "get_room_mapping") {
@@ -177,9 +178,15 @@ describe("the classic room-mapping poll asks for room mappings", () => {
     // together, so the cache can genuinely be empty. Filing rooms under a
     // made-up floor would hide them from `app_segment_clean`, which looks
     // them up under the real one. Asking once is the lesser cost.
+    //
+    // THE ORDER IS THE POINT, AND IT CHANGED IN 3.34.0. 3.33.0 asked for the
+    // floor first and only then for the rooms, which put an unclaimable
+    // request in front of the claimed one on exactly the robots that needed
+    // the register most. The claimed method goes first; the floor is
+    // resolved afterwards.
     const { adapter, wireMethods } = await pollRoomMapping({});
 
-    expect(wireMethods).toEqual(["get_status", "get_room_mapping"]);
+    expect(wireMethods).toEqual(["get_room_mapping", "get_status"]);
     expect(adapter.updateRoomMappingCache).toHaveBeenCalledWith(DUID, 2, [
       [101, 55],
     ]);
@@ -188,30 +195,29 @@ describe("the classic room-mapping poll asks for room mappings", () => {
   test("a non-numeric cached value is treated as no value", async () => {
     const { wireMethods } = await pollRoomMapping({ cachedMapStatus: null });
 
-    expect(wireMethods).toEqual(["get_status", "get_room_mapping"]);
+    expect(wireMethods).toEqual(["get_room_mapping", "get_status"]);
   });
 });
 
-describe("a claimed poll is counted under the name it claimed", () => {
-  // The register keys on (robot, WIRE method) and ignores anything no
-  // skipping caller claimed. So "claimed name === first wire name" is not a
-  // stylistic preference — it is the precondition for the register working
-  // at all.
-  function feedRegisterFrom(wireMethods, { governed }) {
-    const breaker = new UnansweredMethodBreaker({ now: () => 1_000 });
-    breaker.govern(DUID, governed);
+// The register keys on (robot, WIRE method) and ignores anything no skipping
+// caller claimed. So "claimed name === first wire name" is not a stylistic
+// preference — it is the precondition for the register working at all.
+function feedRegisterFrom(wireMethods, { governed }) {
+  const breaker = new UnansweredMethodBreaker({ now: () => 1_000 });
+  breaker.govern(DUID, governed);
 
-    // Six poll cycles, every request timing out, exactly as the message
-    // layer would report them.
-    for (let cycle = 0; cycle < 6; cycle += 1) {
-      for (const method of wireMethods) {
-        breaker.recordFailure(DUID, method, new Error("timed out after 10"));
-      }
+  // Six poll cycles, every request timing out, exactly as the message layer
+  // would report them.
+  for (let cycle = 0; cycle < 6; cycle += 1) {
+    for (const method of wireMethods) {
+      breaker.recordFailure(DUID, method, new Error("timed out after 10"));
     }
-
-    return breaker;
   }
 
+  return breaker;
+}
+
+describe("a claimed poll is counted under the name it claimed", () => {
   test("the robot in #22 and #24 is asked the question it is failing", async () => {
     // Their exact case: `get_status` is the request that times out. Before
     // this change that killed the branch before `get_room_mapping` was ever
@@ -254,13 +260,114 @@ describe("a claimed poll is counted under the name it claimed", () => {
   test("a poll fronted by an unclaimable request can never be counted", async () => {
     // The old shape, kept as the control: when `get_status` goes first and
     // dies, `get_room_mapping` never reaches the wire at all, so the claimed
-    // pair records nothing and six strikes are unreachable. This is still
-    // true on the fallback path above, which is precisely why the fallback
-    // must stay rare rather than be the normal case.
+    // pair records nothing and six strikes are unreachable.
     const breaker = feedRegisterFrom(["get_status"], {
       governed: "get_room_mapping",
     });
 
     expect(breaker.shouldSkip(DUID, "get_room_mapping")).toBe(false);
+  });
+});
+
+// WHAT 3.33.0 STILL GOT WRONG, AND WHY IT IS THE SAME BUG TWICE.
+//
+// 3.33.0 moved the floor to the cached status and left a `get_status`
+// fallback for "no status has landed yet", reasoning that the status poll
+// runs on its own 60-second interval so the fallback would fire at most once
+// per restart. Marrand ran 3.33.0 overnight on his a51 and measured the
+// opposite (#24, 24 Sept): `get_room_mapping` STILL reported `get_status`
+// timing out, at 17:04, 23:04 and 05:04, and still never reached the
+// six-strike cooldown that seven other governed methods reached that same
+// night. DSimeone1989's a144 log says the same thing (#22, 23 Sept):
+// `get_status (248)`, `get_room_mapping (83)` suppressed side by side.
+//
+// The premise was wrong. `Devices.<duid>.deviceStatus.map_status` is written
+// by a SUCCESSFUL status poll — and on both of those robots `get_status` is
+// the method that never answers. So the cache is never written, the fallback
+// is not the first cycle but every cycle forever, and the branch went on
+// opening with a request the register must never govern.
+//
+// The rule below is the one that had to be stated outright, because "the
+// fallback stays rare" was an assumption about someone else's network:
+// THE CLAIMED METHOD GOES FIRST EVEN WHEN THE FLOOR IS UNKNOWN. A fallback
+// that needs the network is allowed to run second and allowed to fail; it is
+// never allowed to decide whether the claimed request happens at all.
+describe("the fallback cannot front the method the poll claimed", () => {
+  test("with nothing cached and the status poll dead, the rooms are asked for first", async () => {
+    // Marrand's and DSimeone1989's robots exactly: no `map_status` has ever
+    // been cached because `get_status` has never answered. Under 3.33.0 the
+    // wire saw `get_status` alone and the poll died there without ever
+    // asking for rooms. The floor lookup may still follow — it just may no
+    // longer come first, and may no longer decide whether the claimed
+    // request happens.
+    const { wireMethods } = await pollRoomMapping({ statusAnswers: false });
+
+    expect(wireMethods[0]).toBe("get_room_mapping");
+  });
+
+  test("and six such cycles finally reach the cooldown Marrand was missing", async () => {
+    // The whole point, in one assertion: when the rooms go unanswered too —
+    // which is what every other method on his a51 does — the register now
+    // sees six strikes under the name the caller claimed, and the flood
+    // stops. Under 3.33.0 this pair recorded nothing, ever.
+    const { wireMethods } = await pollRoomMapping({
+      statusAnswers: false,
+      roomMappingAnswers: false,
+    });
+    const breaker = feedRegisterFrom(wireMethods, {
+      governed: "get_room_mapping",
+    });
+
+    expect(wireMethods).toEqual(["get_room_mapping"]);
+    expect(breaker.shouldSkip(DUID, "get_room_mapping")).toBe(true);
+  });
+
+  test("rooms that arrived without a floor are returned, not filed under a guess", async () => {
+    // The other half. On a robot where the rooms answer and the status does
+    // not, 3.33.0 threw at the first `await` and lost the room list entirely.
+    // It is kept now — but it is NOT stamped with an invented floor:
+    // `updateRoomMappingCache` writes that number onto every room as its map
+    // id, and a working Matter service-area cache must not be overwritten
+    // with a map that does not exist. Unfiled for one cycle, correct on the
+    // next status poll.
+    const { adapter } = await pollRoomMapping({ statusAnswers: false });
+
+    expect(adapter.updateRoomMappingCache).not.toHaveBeenCalled();
+    expect(adapter.createStateObjectHelper).not.toHaveBeenCalledWith(
+      expect.stringContaining(`Devices.${DUID}.floors.`),
+      expect.anything(),
+      "boolean",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  test("a status reply with no map selected is an answer, and still files the rooms", async () => {
+    // The distinction the branch has to keep: a reply that carries no
+    // `map_status` says the robot has no map selected, and `-1` has been the
+    // sentinel for that for far longer than the register has existed. Only an
+    // UNANSWERED request means nothing was learnt.
+    const { adapter, wireMethods } = await pollRoomMapping({
+      statusReply: [{}],
+    });
+
+    expect(wireMethods).toEqual(["get_room_mapping", "get_status"]);
+    expect(adapter.updateRoomMappingCache).toHaveBeenCalledWith(DUID, -1, [
+      [101, 55],
+    ]);
+  });
+
+  test("the status poll is still never governed, however this branch fails", async () => {
+    // Unchanged guarantee: the tile lives on `get_status`, and nothing here
+    // may close it — not even now that `get_status` can fail in this branch.
+    const { wireMethods } = await pollRoomMapping({});
+    const breaker = feedRegisterFrom(wireMethods, {
+      governed: "get_room_mapping",
+    });
+
+    expect(breaker.shouldSkip(DUID, "get_status")).toBe(false);
   });
 });

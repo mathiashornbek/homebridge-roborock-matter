@@ -149,6 +149,11 @@ interface RoborockApi {
     segments: number[],
     options?: RoborockCommandOptions
   ): Promise<void>;
+  resume_segment_clean?(
+    duid: string,
+    options?: RoborockCommandOptions
+  ): Promise<void>;
+  supportsSegmentResume?(duid: string): boolean;
   getRoomMappingsForDevice?(duid: string): unknown;
   getMapListForDevice?(duid: string): unknown;
   getCurrentMapIdForDevice?(duid: string): unknown;
@@ -2016,8 +2021,50 @@ export default class RoborockMatterVacuumAccessory {
     );
   }
 
+  /**
+   * Whether the run this robot is paused in was aimed at specific rooms.
+   *
+   * `state` cannot answer this. A paused robot reports 10 (paused) and the
+   * clean type is simply gone from it — which is the whole reason Roborock
+   * carries `in_cleaning` as well: 0 for a whole-home run, non-zero when the
+   * robot was sent at selected areas. It survives the pause.
+   *
+   * Read from the robot rather than remembered here, deliberately. A flag set
+   * when Matter started the run would be wrong for a room clean started in
+   * the Roborock app, wrong after a Homebridge restart, and wrong the first
+   * time someone paused from a third surface — and being wrong in this
+   * particular place means sending a resume verb into a full clean.
+   *
+   * An absent or unreadable value is treated as a full clean, which is what
+   * every release before this one assumed for every robot.
+   */
+  private isPausedTargetedClean(): boolean {
+    const inCleaning = this.getNumberStatus("in_cleaning");
+
+    return typeof inCleaning === "number" && inCleaning !== 0;
+  }
+
   private async resumeCleaning(): Promise<void> {
-    this.platform.log.info(`Resuming ${this.getVacuumName()} from Matter.`);
+    // Matter's Resume has always been `app_start`. That is right for a paused
+    // FULL clean and wrong for a paused ROOM clean, where it starts a new
+    // whole-home run instead of continuing the one that was interrupted
+    // (#28). `resume_segment_clean` is Roborock's own verb for the second
+    // case; it is sent only when the robot itself says a targeted clean is
+    // what is paused, so the ordinary play button is untouched.
+    const resumeSegmentClean = this.api.resume_segment_clean;
+    const continuesRoomClean =
+      this.isPausedTargetedClean() &&
+      typeof resumeSegmentClean === "function" &&
+      this.api.supportsSegmentResume?.(this.getDuid()) !== false;
+
+    this.platform.log.info(
+      continuesRoomClean
+        ? `Resuming the paused room clean on ${this.getVacuumName()} from Matter.`
+        : `Resuming ${this.getVacuumName()} from Matter.`
+    );
+    this.platform.log.debug(
+      `Resume for ${this.getVacuumName()}: in_cleaning=${this.getNumberStatus("in_cleaning") ?? "unknown"}, sending ${continuesRoomClean ? "resume_segment_clean" : "app_start"}.`
+    );
     const state = {
       rvcRunMode: { currentMode: RUN_MODE_CLEANING },
       rvcOperationalState: {
@@ -2027,6 +2074,19 @@ export default class RoborockMatterVacuumAccessory {
     this.setAndScheduleOptimisticState(state, "resume");
     this.dispatchRoborockMatterCommand("resume", async () => {
       await this.applyCleanModeBeforeStarting();
+
+      if (continuesRoomClean) {
+        // No fallback to `app_start` if this fails. A failed resume leaves a
+        // paused robot paused, and the user presses play again; falling back
+        // would silently produce the exact whole-home run #28 is about.
+        await resumeSegmentClean.call(
+          this.api,
+          this.getDuid(),
+          this.getMatterCommandOptions()
+        );
+        return;
+      }
+
       await this.api.app_start(this.getDuid(), this.getMatterCommandOptions());
     });
   }

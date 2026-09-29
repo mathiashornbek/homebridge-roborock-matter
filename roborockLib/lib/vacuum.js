@@ -885,14 +885,58 @@ class vacuum {
         // register could not see. Worse, when `get_status` was the request
         // timing out, this threw before `get_room_mapping` was ever sent, so
         // the robot was not even asked the question it was failing.
+        //
+        // 3.33.0 read the floor from the cache and kept a `get_status`
+        // fallback for the one cycle after a restart where nothing has landed
+        // yet. That assumption is what it got wrong, and both reporters
+        // measured it: on #24's a51 and #22's a144 the STATUS POLL ITSELF
+        // never gets an answer, so `deviceStatus.map_status` is never written
+        // and the fallback is not a first cycle — it is every cycle, forever.
+        // The branch therefore still opened with `get_status`, still died
+        // there, and still never sent `get_room_mapping`. Marrand ran 3.33.0
+        // overnight and reported exactly that: seven other governed methods
+        // reached their six-strike cooldown and this one did not.
+        //
+        // So the claimed method goes on the wire FIRST, unconditionally. The
+        // floor is a filing detail; the request is the part the register has
+        // to see, and no fallback may be allowed to front it.
+        const mappedRooms = await sendParameterRequest("get_room_mapping", []);
+
         let roomFloor = readCachedRoomFloor(this.adapter, duid);
 
         if (roomFloor === null) {
-          // No status has landed yet — the first cycle after a restart starts
-          // both intervals together. Ask, rather than file the rooms under a
-          // floor we guessed: `app_segment_clean` looks them up under the
-          // real one and would not find them.
-          const deviceStatus = await sendParameterRequest("get_status", []);
+          // The first cycle after a restart on a healthy robot: both
+          // intervals start together, so the cache is genuinely empty. Asking
+          // once files the rooms under the real floor rather than a guess,
+          // which is what `app_segment_clean` looks them up under.
+          //
+          // On a robot whose `get_status` never answers, this request dies
+          // too. That must no longer take the whole branch down with it — but
+          // it must not be papered over either. A floor is what the rooms are
+          // FILED under: `updateRoomMappingCache` stamps every room with it
+          // and `app_segment_clean` looks them up by it. Inventing one here
+          // would stamp a working Matter service-area cache with a map id
+          // that does not exist. So the rooms are simply left unfiled for
+          // this cycle and the poll returns them; the next cycle after any
+          // status lands files them under the real floor.
+          //
+          // Note this is NOT the `-1` case below. A status reply that carries
+          // no `map_status` at all still answers the question — the robot has
+          // no map selected — and `-1` has been this branch's sentinel for
+          // that since long before the register existed. An unanswered
+          // request answers nothing.
+          let deviceStatus;
+
+          try {
+            deviceStatus = await sendParameterRequest("get_status", []);
+          } catch (error) {
+            this.adapter.log.debug(
+              `Could not read the active map for ${describeDevice(this.adapter, duid)}, so its ${Array.isArray(mappedRooms) ? mappedRooms.length : 0} room(s) stay unfiled until a status poll lands: ${error instanceof Error ? error.message : String(error)}`
+            );
+
+            return mappedRooms;
+          }
+
           const mapStatus = Array.isArray(deviceStatus)
             ? deviceStatus[0]?.["map_status"]
             : undefined;
@@ -900,7 +944,6 @@ class vacuum {
           roomFloor = typeof mapStatus === "number" ? mapStatus >> 2 : -1;
         }
 
-        const mappedRooms = await sendParameterRequest("get_room_mapping", []);
         if (typeof this.adapter.updateRoomMappingCache === "function") {
           this.adapter.updateRoomMappingCache(duid, roomFloor, mappedRooms);
         }

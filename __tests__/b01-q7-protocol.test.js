@@ -408,11 +408,17 @@ describe("Field-test regressions (2.0.0-matter.2)", () => {
     const adapter = {
       log: createLog(),
       messageQueueHandler: {
-        // B01 get_status returns a dict, not the v1 [{...}] array.
-        sendRequest: jest
-          .fn()
-          .mockResolvedValueOnce({ status: 4, quantity: 90 })
-          .mockResolvedValueOnce([]),
+        // Keyed by METHOD rather than by call order on purpose: the order the
+        // room-mapping branch makes these two requests in is a property under
+        // test elsewhere (3.34.0 swapped it), and a fixture that encodes it
+        // here would go red for a reason that has nothing to do with payload
+        // shapes.
+        sendRequest: jest.fn((duid, method) =>
+          Promise.resolve(
+            // B01 get_status returns a dict, not the v1 [{...}] array.
+            method === "get_status" ? { status: 4, quantity: 90 } : []
+          )
+        ),
       },
       updateRoomMappingCache: jest.fn(),
       getStateAsync: jest.fn(),

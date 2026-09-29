@@ -146,12 +146,17 @@ describe("the classic room-mapping flow stays off the wire on B01 robots", () =>
     // when nothing is cached yet — which is the case here, because this
     // adapter has no `getStateAsync`. The steady state is pinned in
     // `room-mapping-is-counted-under-its-own-name.test.js`.
+    //
+    // 3.34.0 moved that fallback BEHIND the room request. It had to: on the
+    // two robots that reported this, `get_status` never answers at all, so
+    // the fallback was every cycle rather than the first one, and it went on
+    // fronting the request the give-up register is supposed to count.
     const { adapter, methods } = await roomMappingRequests({
       isB01: false,
       model: "roborock.vacuum.a08",
     });
 
-    expect(methods).toEqual(["get_status", "get_room_mapping"]);
+    expect(methods).toEqual(["get_room_mapping", "get_status"]);
     expect(adapter.updateRoomMappingCache).toHaveBeenCalledWith(
       "duid-q10",
       2, // map_status 8 >> 2

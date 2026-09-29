@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.34.0
+
+**3.33.0 fixed the room poll for the robots that did not need it. Both reporters ran it and measured the same failure again.**
+
+### The premise was about someone else's network
+
+3.33.0 stopped the classic room-mapping poll from opening with `get_status`, so that the method the caller claims — `get_room_mapping` — is the method the give-up register actually sees. It kept one fallback: if no status has landed yet, ask for one. The reasoning was that the status poll runs on its own 60-second interval, so that branch could only fire on the first cycle after a restart.
+
+[@Marrand](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/24) ran 3.33.0 overnight on his `a51` and reported the opposite:
+
+```
+17:04  get_room_mapping → get_status timed out
+23:04  get_room_mapping → get_status timed out
+05:04  get_room_mapping → get_status timed out
+
+521 similar warning(s) across get_room_mapping (120), get_status (360), …
+```
+
+Seven other governed methods reached their six-strike cooldown that same night. `get_room_mapping` did not. [@DSimeone1989](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/22)'s `a144` log says the same thing — `get_status (248)`, `get_room_mapping (83)`, side by side.
+
+The cache the fix reads, `deviceStatus.map_status`, is written by a **successful** status poll. On both of those robots `get_status` is the method that never answers. So the cache is never written, the fallback is not the first cycle but **every** cycle forever, and the branch went on opening with the one request the register is forbidden to count — and still died there before `get_room_mapping` was ever sent.
+
+### The claimed method now goes first, whatever else happens
+
+The room request is sent before anything else, unconditionally. The floor is resolved afterwards, because a floor is a filing detail and the request is the part that has to be seen.
+
+- On a robot whose rooms go unanswered, six polls now reach the cooldown, under the name the caller claimed.
+- When the floor cannot be resolved because the status request died too, the rooms that **did** arrive are no longer thrown away — but they are not stamped with an invented floor either. `updateRoomMappingCache` writes that number onto every room as its map id, and a working Matter service-area cache must not be overwritten with a map that does not exist. They stay unfiled for that cycle and are filed correctly on the next one that has a floor.
+- A status reply that carries no `map_status` is still an answer — the robot has no map selected — and still files the rooms under the long-standing `-1`. Only an _unanswered_ request means nothing was learnt.
+
+The rule the tests pin is unchanged and now stated where it can be checked: a poll that claims a method must put that method on the wire first, and no fallback may decide whether the claimed request happens at all.
+
+### Pausing a room clean and pressing play no longer starts a new one
+
+[@CooperCGN](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/28) automates his house door: opening it pauses the robot, closing it resumes. Pause worked. Play started a whole new clean. Asked which kind of run had been interrupted, he tested both:
+
+> _"you're absolutely right, it happens during a room clean. While a full clean is continued as expected a paused room clean is restarted as a new full clean."_
+
+This is not a cosmetic complaint. He built the automation because he once left that door open, and the robot drove out of it and down a flight of stairs.
+
+Matter's Resume has always dispatched `app_start`. On a paused full clean that continues it; on a paused **room** clean it is a fresh whole-home start. Roborock's own verb for the second case, `resume_segment_clean`, has been sitting in `deviceFeatures.js` since the library was imported and had never been sent from anywhere.
+
+It is sent now — and only when the robot itself says a targeted clean is what is paused. `state` cannot answer that (a paused robot reports 10 and the clean type is gone from it), but `in_cleaning` survives the pause: 0 is whole-home, non-zero means selected areas. It is read from the robot rather than remembered, so a room clean started in the Roborock app resumes correctly too.
+
+Deliberately narrow, because a resume verb sent into a full clean breaks the play button for everyone:
+
+- `in_cleaning` absent or zero → `app_start`, exactly as before.
+- B01/Q7 robots → `app_start`, exactly as before. Room cleaning there is `service.set_room_clean` with a `ctrl_value`, and the only values read out of that protocol are STOP, START and PAUSE. There may well be a continue value; nobody has measured one, and a guessed control code is not worth the tile.
+- A continue that fails is **not** retried as `app_start`. That fallback would produce the exact unwanted whole-home run, at the moment the robot is least likely to be somewhere safe. A paused robot stays paused.
+
 ## 3.33.0
 
 **The one method users name most often was the one method the new register could not see.**
