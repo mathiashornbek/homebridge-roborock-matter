@@ -565,7 +565,7 @@ test.each(["before-connect", "after-connect", "after-connect-suback"])(
   }
 );
 
-test("production shutdown flush persists the latest observation before the debounce expires", async () => {
+test("explicit persistence flush saves the latest observation before the debounce expires", async () => {
   const storage = fs.mkdtempSync(path.join(os.tmpdir(), "mqtt-flush-"));
   const api = new Roborock({ storagePath: storage, log: adapter.log });
   adapter.setStateAsync = api.setStateAsync.bind(api);
@@ -578,6 +578,36 @@ test("production shutdown flush persists the latest observation before the debou
       JSON.parse(JSON.parse(fs.readFileSync(file, "utf8")).val)
     ).toMatchObject({ rawSilenceDuringRequest: true });
     expect(api._pendingPersistFlushes.size).toBe(0);
+  } finally {
+    api.flushPendingPersistedStates();
+    fs.rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test("shutdown persists the final disconnected MQTT snapshot without a pending write timer", async () => {
+  const storage = fs.mkdtempSync(path.join(os.tmpdir(), "mqtt-shutdown-"));
+  const api = new Roborock({ storagePath: storage, log: adapter.log });
+  adapter.setStateAsync = api.setStateAsync.bind(api);
+  api.rr_mqtt_connector = connector;
+  try {
+    await timeout();
+    const file = api.getPersistPath("MqttSessionDiagnostics");
+    expect(fs.existsSync(file)).toBe(false);
+    expect(JSON.parse(api.states.MqttSessionDiagnostics.val)).toMatchObject({
+      connected: true,
+      subscriptionAcknowledged: true,
+      rawSilenceDuringRequest: true,
+    });
+    await api.stopService();
+    expect(
+      JSON.parse(JSON.parse(fs.readFileSync(file, "utf8")).val)
+    ).toMatchObject({
+      connected: false,
+      subscriptionAcknowledged: false,
+      rawSilenceDuringRequest: null,
+    });
+    expect(api._pendingPersistFlushes.size).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
   } finally {
     api.flushPendingPersistedStates();
     fs.rmSync(storage, { recursive: true, force: true });
