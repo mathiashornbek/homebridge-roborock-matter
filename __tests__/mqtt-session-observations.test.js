@@ -2,7 +2,7 @@
 
 // Exercise the existing production MQTT callbacks, request timeout, UI route,
 // and report builder. No synthetic timeout Error objects or new helper calls:
-// this same file runs on v3.33.0 and fails on missing observable evidence.
+// this same file runs on v3.34.0 and fails on missing observable evidence.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -28,6 +28,8 @@ const {
 const {
   UnansweredMethodBreaker,
 } = require("../roborockLib/lib/unansweredMethodBreaker");
+
+const { Roborock } = require("../roborockLib/roborockAPI");
 
 let adapter, connector, queue, states, requestId;
 const topic = (duid = "robot-a") =>
@@ -215,7 +217,11 @@ test("two active silent robots are observed in the production timeout and persis
     silentReadRobotCount: 2,
     correlatedSilenceObserved: true,
   });
-  expect(second.message).toContain('"correlatedSilenceObserved":true');
+  expect(first.message).not.toContain("MQTT session:");
+  expect(second.message).toContain(
+    "MQTT session: correlated silence across 2 robots (generation 1)."
+  );
+  expect(second.message).not.toContain("capturedAt");
   expect(adapter.noteRequestUnanswered).toHaveBeenCalledWith(
     "robot-b",
     "get_status",
@@ -386,19 +392,28 @@ test("a diagnostics write failure cannot stop a real reply resolving", async () 
 });
 
 test("the persisted observation reaches the actual UI route and copied report without identities", async () => {
-  await timeout("robot-a");
-  await timeout("robot-b");
   const storage = fs.mkdtempSync(path.join(os.tmpdir(), "mqtt-observation-"));
+  const api = new Roborock({ storagePath: storage, log: adapter.log });
+  const persist = jest.spyOn(api, "writeSecurePersistFile");
+  adapter.setStateAsync = api.setStateAsync.bind(api);
   try {
-    for (const [key, value] of states)
-      fs.writeFileSync(
-        path.join(storage, `roborock.${key}`),
-        JSON.stringify(value)
-      );
-    fs.writeFileSync(
-      path.join(storage, "roborock.HomeData"),
-      JSON.stringify({ val: JSON.stringify({ devices: [], products: [] }) })
-    );
+    await api.setStateAsync("HomeData", {
+      val: JSON.stringify({ devices: [], products: [] }),
+      ack: true,
+    });
+    persist.mockClear();
+    await timeout("robot-a");
+    await timeout("robot-b");
+    // Repeated forced publications still use the real API's single flush.
+    await timeout("robot-a");
+    const file = path.join(storage, "roborock.MqttSessionDiagnostics");
+    expect(fs.existsSync(file)).toBe(false);
+    expect(persist).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(39_999);
+    expect(fs.existsSync(file)).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][0]).toBe(file);
     const handlers = new Map();
     class UiHost {
       constructor() {
@@ -437,6 +452,8 @@ test("the persisted observation reaches the actual UI route and copied report wi
     expect(result.mqttSession).toMatchObject({
       generation: 1,
       correlatedSilenceObserved: true,
+      rawSilenceDuringRequest: true,
+      lastReadTimeoutAgeMs: 0,
     });
     const browser = fs.readFileSync(
       path.join(__dirname, "../homebridge-ui/public/index.js"),
@@ -462,6 +479,107 @@ test("the persisted observation reaches the actual UI route and copied report wi
       /private-user|private-client|private-secret|private-key|robot-a|robot-b|rr\/m/
     );
   } finally {
+    api.flushPendingPersistedStates();
+    fs.rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test("one robot's timed-out read exposes raw silence without diagnosing the session", async () => {
+  expect(snapshot().rawSilenceDuringRequest).toBeNull();
+  expect(snapshot().lastReadTimeoutAgeMs).toBeNull();
+  await timeout();
+  expect(snapshot()).toMatchObject({
+    rawSilenceDuringRequest: true,
+    lastReadTimeoutAgeMs: 0,
+    correlatedSilenceObserved: false,
+  });
+  const request = await startRequest();
+  receive(null, "unknown-robot");
+  await jest.advanceTimersByTimeAsync(10_000);
+  await request.result;
+  expect(snapshot()).toMatchObject({
+    rawSilenceDuringRequest: false,
+    lastReadTimeoutAgeMs: 0,
+    correlatedSilenceObserved: false,
+  });
+  await jest.advanceTimersByTimeAsync(30_000);
+  receive(null);
+  expect(snapshot().lastReadTimeoutAgeMs).toBe(30_000);
+  mockHandlers.get("close")();
+  expect(snapshot().rawSilenceDuringRequest).toBeNull();
+  expect(snapshot().lastReadTimeoutAgeMs).toBeNull();
+});
+
+test.each(["app_start", "prop.get"])(
+  "%s cannot supply a get-read silence observation",
+  async (method) => {
+    await timeout("robot-a", method);
+    expect(snapshot().rawSilenceDuringRequest).toBeNull();
+    expect(snapshot().lastReadTimeoutAgeMs).toBeNull();
+  }
+);
+
+test("a previous generation's timeout cannot supply the latest read observation", async () => {
+  const request = await startRequest();
+  mockHandlers.get("close")();
+  mockHandlers.get("connect")({ sessionPresent: true });
+  acknowledge();
+  await jest.advanceTimersByTimeAsync(10_000);
+  await request.result;
+  expect(snapshot().rawSilenceDuringRequest).toBeNull();
+  expect(snapshot().lastReadTimeoutAgeMs).toBeNull();
+});
+
+test("an unacknowledged subscription produces a concise timeout summary", async () => {
+  mockHandlers.get("connect")({ sessionPresent: true });
+  const error = await timeout();
+  expect(error.message).toContain(
+    "MQTT session: subscription not acknowledged (generation 2)."
+  );
+  expect(error.message).not.toContain("capturedAt");
+  expect(snapshot().rawSilenceDuringRequest).toBeNull();
+});
+
+test.each(["before-connect", "after-connect", "after-connect-suback"])(
+  "reconnect SUBACK %s cannot acknowledge or revoke the connect generation",
+  (order) => {
+    mockHandlers.get("close")();
+    mockHandlers.get("reconnect")();
+    const legacy = mockSubscriptions.at(-1);
+    if (order === "before-connect") legacy(null, [{ qos: 1 }]);
+    expect(snapshot().subscriptionAcknowledged).toBe(false);
+    mockHandlers.get("connect")({ sessionPresent: true });
+    if (order === "after-connect") legacy(null, [{ qos: 1 }]);
+    expect(snapshot()).toMatchObject({
+      generation: 2,
+      subscriptionAcknowledged: false,
+    });
+    acknowledge();
+    if (order === "after-connect-suback")
+      legacy(new Error("late reconnect failure"), [{ qos: 128 }]);
+    expect(snapshot()).toMatchObject({
+      generation: 2,
+      subscriptionAcknowledged: true,
+    });
+    expect(mockClient.subscribe).toHaveBeenCalledTimes(3);
+  }
+);
+
+test("production shutdown flush persists the latest observation before the debounce expires", async () => {
+  const storage = fs.mkdtempSync(path.join(os.tmpdir(), "mqtt-flush-"));
+  const api = new Roborock({ storagePath: storage, log: adapter.log });
+  adapter.setStateAsync = api.setStateAsync.bind(api);
+  try {
+    await timeout();
+    const file = path.join(storage, "roborock.MqttSessionDiagnostics");
+    expect(fs.existsSync(file)).toBe(false);
+    api.flushPendingPersistedStates();
+    expect(
+      JSON.parse(JSON.parse(fs.readFileSync(file, "utf8")).val)
+    ).toMatchObject({ rawSilenceDuringRequest: true });
+    expect(api._pendingPersistFlushes.size).toBe(0);
+  } finally {
+    api.flushPendingPersistedStates();
     fs.rmSync(storage, { recursive: true, force: true });
   }
 });

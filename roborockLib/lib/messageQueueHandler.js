@@ -579,8 +579,13 @@ class messageQueueHandler {
                 method,
                 sessionRequest
               );
+              const sessionSummary = sessionHealth?.correlatedSilenceObserved
+                ? ` MQTT session: correlated silence across ${sessionHealth.silentReadRobotCount} robots (generation ${sessionHealth.generation}).`
+                : sessionHealth && !sessionHealth.subscriptionAcknowledged
+                  ? ` MQTT session: subscription not acknowledged (generation ${sessionHealth.generation}).`
+                  : "";
               const error = unansweredRequestError(
-                `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionHealth ? ` MQTT session observation: ${JSON.stringify(sessionHealth)}` : ""}`,
+                `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionSummary}`,
                 transportWasUp
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);

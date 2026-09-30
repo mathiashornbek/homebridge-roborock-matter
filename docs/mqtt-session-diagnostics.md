@@ -1,14 +1,18 @@
 # MQTT session observations
 
 The settings page's **Copy diagnostics** report includes an `mqttSession`
-snapshot. Cloud timeout messages include the same observation at rejection time.
+snapshot. Cloud timeout messages append a short summary only for correlated
+silence or an unacknowledged subscription; the full snapshot stays in diagnostics.
 This instrumentation does not change transport selection, subscription handling,
 request readiness, retries, the unanswered-method breaker, or reconnection.
 
 - `generation` increments on each MQTT connect event, including automatic
   reconnects. It restarts with the plugin process; it is not a broker session ID.
 - `connected` and `subscriptionAcknowledged` are separate observations. The latter
-  requires a successful SUBACK with granted QoS values. It does not gate sends.
+  requires a successful SUBACK with granted QoS values from that generation's
+  connect-handler subscription. Late callbacks from older connections and the
+  legacy reconnect-handler subscription cannot acknowledge or revoke it. The
+  existing subscribe calls remain unchanged; this does not gate sends.
 - Inbound ages distinguish the raw MQTT callback, attribution to a known robot,
   successful Roborock decoding, and correlation to a pending request. A correlated
   reply can be a refusal or a secure-map acknowledgement, not necessarily a
@@ -28,17 +32,32 @@ not a diagnosis of the client, broker, network, or robot-cloud path. B01 methods
 translated to `prop.get` and separate map-upload requests do not contribute to
 this first observation rule; their inbound replies are still measured.
 
+`rawSilenceDuringRequest` describes the latest eligible `get_*` cloud read
+that timed out on the current connected, acknowledged generation: `true` means
+no raw MQTT callback arrived between send and timeout, `false` means at least
+one did, and `null` means no eligible timeout has been observed. It is useful
+on single-robot accounts without relaxing the two-robot correlation rule.
+`lastReadTimeoutAgeMs` dates that observation at `capturedAt`; later traffic
+does not rewrite the historical result. Disconnect and connect reset both
+fields. Writes, B01 translated reads, and old-generation timeouts cannot
+supply this observation. An idle or non-answering robot can produce raw silence
+on a healthy session: this is evidence to inspect, not a session-fault verdict
+or a reason to change breaker/recovery policy in this PR.
+
 The snapshot contains ages and counts, not robot IDs, MQTT topics, credentials,
-or payloads. Activity-triggered persistence is limited to once per 30 seconds;
+or payloads. Activity-triggered publication is limited to once per 30 seconds;
 connection transitions, subscription results, and cloud timeouts publish
-immediately. Ages are measured with a monotonic clock **at `capturedAt`**, not
+immediately into memory. The production API debounces disk writes to at most
+once per 60 seconds and flushes pending values on shutdown. The UI reads this
+disk snapshot, so a new observation may take up to a minute to appear. Ages are measured with a monotonic clock **at `capturedAt`**, not
 at report-copy time. A quiet or stopped plugin can therefore have an older
 snapshot. A successful local-only workload can legitimately have no MQTT replies.
 The existing timeout log suppression still applies; this adds no polling timer
 or network probes.
 
 Tests drive production connect/SUBACK/message callbacks, actual request timeouts,
-the settings diagnostics route, and the copied report. Run:
+the real API persistence/debounce and shutdown flush, the settings diagnostics
+route, and the copied report. No diagnostics snapshot file is seeded by the test. Run:
 
 ```sh
 npm test -- --runInBand __tests__/mqtt-session-observations.test.js

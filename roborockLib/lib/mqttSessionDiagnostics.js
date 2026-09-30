@@ -29,6 +29,10 @@ class MqttSessionDiagnostics {
     this.silentReads = new Map();
     /** @type {number | null} */
     this.lastPublishedAt = null;
+    /** @type {boolean | null} */
+    this.rawSilenceDuringRequest = null;
+    /** @type {number | null} */
+    this.lastReadTimeoutAt = null;
   }
 
   onConnect() {
@@ -44,6 +48,8 @@ class MqttSessionDiagnostics {
       local: null,
     };
     this.silentReads.clear();
+    this.rawSilenceDuringRequest = null;
+    this.lastReadTimeoutAt = null;
     this.emit(true);
     return this.generation;
   }
@@ -52,6 +58,8 @@ class MqttSessionDiagnostics {
     this.connected = false;
     this.subscriptionAcknowledged = false;
     this.silentReads.clear();
+    this.rawSilenceDuringRequest = null;
+    this.lastReadTimeoutAt = null;
     this.emit(true);
   }
 
@@ -93,14 +101,20 @@ class MqttSessionDiagnostics {
       this.subscriptionAcknowledged &&
       request &&
       request.generation === this.generation &&
-      request.rawSequence === this.rawSequence &&
       /^get_/.test(method)
     ) {
-      if (!this.silentReads.has(duid) && this.silentReads.size >= MAX_ROBOTS) {
-        const oldest = this.silentReads.keys().next().value;
-        if (oldest !== undefined) this.silentReads.delete(oldest);
+      this.rawSilenceDuringRequest = request.rawSequence === this.rawSequence;
+      this.lastReadTimeoutAt = performance.now();
+      if (this.rawSilenceDuringRequest) {
+        if (
+          !this.silentReads.has(duid) &&
+          this.silentReads.size >= MAX_ROBOTS
+        ) {
+          const oldest = this.silentReads.keys().next().value;
+          if (oldest !== undefined) this.silentReads.delete(oldest);
+        }
+        this.silentReads.set(duid, performance.now());
       }
-      this.silentReads.set(duid, performance.now());
     }
     this.emit(true);
     return this.snapshot();
@@ -130,6 +144,10 @@ class MqttSessionDiagnostics {
       lastDecodedInboundAgeMs: age(this.activity.decoded),
       lastCorrelatedReplyAgeMs: age(this.activity.correlated),
       lastLocalReplyAgeMs: age(this.activity.local),
+      // Historical observation for the latest eligible read timeout, not
+      // a verdict on the current session or on a silent single robot.
+      rawSilenceDuringRequest: this.rawSilenceDuringRequest,
+      lastReadTimeoutAgeMs: age(this.lastReadTimeoutAt),
       silentReadRobotCount: this.silentReads.size,
       correlatedSilenceObserved: this.silentReads.size >= 2,
       observationWindowMs: SILENCE_WINDOW_MS,

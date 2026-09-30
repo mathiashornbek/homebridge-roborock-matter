@@ -391,6 +391,7 @@ const INITIAL_STATUS_WAIT_CAP_MS = 4000;
 const DEBOUNCED_PERSIST_IDS = new Set([
   "TransportDiagnostics",
   "RoborockDiagnostics",
+  "MqttSessionDiagnostics",
 ]);
 const PERSIST_FLUSH_DEBOUNCE_MS = 60000;
 
@@ -402,6 +403,7 @@ const PERSISTED_STATE_IDS = new Set([
   "B01Rooms",
   "TransportDiagnostics",
   "RoborockDiagnostics",
+  "MqttSessionDiagnostics",
 ]);
 
 const dockingStationStates = [
