@@ -38,6 +38,7 @@ const {
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
 
+const RVC_OPERATIONAL_STATE_RUNNING = 1;
 const RVC_OPERATIONAL_STATE_ERROR = 3;
 const RVC_ERROR_NONE = 0;
 const RVC_ERROR_WATER_TANK_EMPTY = 68;
@@ -148,9 +149,11 @@ describe("an empty clean-water tank reaches the Apple Home tile", () => {
     expect(cluster).not.toHaveProperty("operationalError");
   });
 
-  test("an empty tank never makes a working robot look unstartable", async () => {
-    // The load-bearing one. A docked robot with no water can still vacuum, and
-    // Apple may refuse a Start command to a robot in Error.
+  test("a docked robot gets the warning, and the plugin never writes Error for it", async () => {
+    // matter.js 0.17.9 shows the store as Error once 68 is written (issue
+    // #35), and that is the price of the warning. What the plugin itself
+    // sends is still the robot's real state, so the moment the fault goes the
+    // tile has something true to return to.
     const { cluster } = await publishWith({
       state: ROBOROCK_STATE_CHARGING,
       battery: 100,
@@ -164,7 +167,11 @@ describe("an empty clean-water tank reaches the Apple Home tile", () => {
     expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
   });
 
-  test("it holds mid-clean too, not only on the dock", async () => {
+  test("mid-clean it is held back, because a fault would stop the tile showing the clean (#35)", async () => {
+    // Until 3.35.0 this test pinned the opposite — "it holds mid-clean too".
+    // In matter.js 0.17.9 a fault forces the state to Error, so a robot
+    // mopping two rooms with an empty tank read "Refill the water tank" and
+    // nothing about the clean. The robot is working; the warning waits.
     const { cluster } = await publishWith({
       state: ROBOROCK_STATE_CLEANING,
       battery: 70,
@@ -172,9 +179,9 @@ describe("an empty clean-water tank reaches the Apple Home tile", () => {
     });
 
     expect(cluster.operationalError).toEqual({
-      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
+      errorStateId: RVC_ERROR_NONE,
     });
-    expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
+    expect(cluster.operationalState).toBe(RVC_OPERATIONAL_STATE_RUNNING);
   });
 
   test("`false` in config.json still switches it off completely", async () => {
@@ -336,7 +343,8 @@ describe("the tank fields survive the journey from a live message", () => {
 
     await vacuum.notifyDeviceUpdater("CloudMessage", [
       {
-        state: ROBOROCK_STATE_CLEANING,
+        state: ROBOROCK_STATE_CHARGING,
+        charge_status: 1,
         battery: 70,
         water_shortage_status: 1,
       },

@@ -2,52 +2,59 @@
 
 /**
  * 3.30.0 stopped the heartbeat re-writing an unchanged `operationalState`,
- * because in @matter/main 0.17.9 every such write clears `operationalError`
- * and the clear/raise pair became a push notification every 2 minutes.
+ * because in @matter/main 0.17.9 such a write wiped a standing
+ * `operationalError` and the clear/raise pair became a push notification
+ * every 2 minutes.
  *
  * That was right, and it left a hole. The whole publish-dedup design rests on
  * the heartbeat being a forced full write that self-heals any divergence
  * within a minute — and a cluster write can be REJECTED BY matter.js after
- * `updateAccessoryState` has already resolved. This codebase documents that
- * in buildOperationalStateCluster: `#assertCurrentPhase` throws, Homebridge
- * swallows the throw, "so the whole cluster write is silently rejected and
- * the controller keeps whatever it last accepted".
+ * `updateAccessoryState` has already resolved (`#assertCurrentPhase` throws,
+ * Homebridge swallows it). 3.31.0 therefore re-asserted `operationalState` on
+ * one forced write in ten.
  *
- * So from 3.30.0 a single silently-rejected write made the plugin believe a
- * value was published that never was, and nothing ever wrote that attribute
- * again — a permanently stale tile, recoverable only by the robot reaching a
- * different state or a Homebridge restart. Before 3.30.0 the heartbeat fixed
- * it inside a minute.
+ * 3.35.0 corrected the model under both halves (issue #35). In 0.17.9 a fault
+ * FORCES `operationalState` to Error; the wipe 3.30.0 measured was a write out
+ * of that Error. So:
  *
- * 3.31.0 re-asserts `operationalState` on one forced write in ten. These
- * tests pin both halves: the notification stays gone, and the tile heals.
+ *   - with no fault standing, the resync re-writes the state, which heals a
+ *     dropped write and costs nothing (the same value is a no-op);
+ *   - with a fault standing, the resync must NOT write the state — the store
+ *     reads Error anyway, and the write would wipe the fault and re-raise it,
+ *     one notification per resync. It re-asserts the fault instead, which is
+ *     a no-op when it landed and a repair when it did not.
+ *
+ * Every test runs against test-support/matter-0.17.9-store.js, a replay of the
+ * real 0.17.9 reactors, not against what the plugin believes.
  */
 
-const CLEANING = 0x42;
+const { createMatterStore } = require("../test-support/matter-0.17.9-store");
+
+const ERROR = 3;
+const CHARGING = 65;
+const DOCKED = 66;
+const NO_ERROR = 0;
 const TANK_EMPTY = 68;
 
-/** matter.js 0.17.9, as measured: a state write clears the error. */
-function makeStore() {
-  const store = {
-    operationalState: undefined,
-    operationalError: 0,
-    errorEvents: 0,
-    stateWrites: 0,
-  };
-  const updateAccessoryState = jest.fn(async (_uuid, cluster, attributes) => {
-    if (cluster !== "rvcOperationalState") return;
-    if (Object.prototype.hasOwnProperty.call(attributes, "operationalState")) {
-      store.stateWrites += 1;
-      store.operationalState = attributes.operationalState;
-      store.operationalError = 0;
-    }
-    if (Object.prototype.hasOwnProperty.call(attributes, "operationalError")) {
-      const next = attributes.operationalError?.errorStateId ?? 0;
-      if (store.operationalError === 0 && next !== 0) store.errorEvents += 1;
-      store.operationalError = next;
-    }
+const STATE_LIST = [0, 1, 2, 3, 64, 65, 66].map((operationalStateId) => ({
+  operationalStateId,
+}));
+
+function makeStore(initialState = DOCKED) {
+  const store = createMatterStore({
+    rvcOperationalState: {
+      phaseList: null,
+      currentPhase: null,
+      operationalStateList: STATE_LIST,
+      operationalState: initialState,
+      operationalError: { errorStateId: NO_ERROR },
+    },
   });
-  return { store, matter: { updateAccessoryState } };
+  const stateWrites = () =>
+    store.writes.filter((w) =>
+      Object.prototype.hasOwnProperty.call(w.attributes, "operationalState")
+    ).length;
+  return { store, stateWrites, matter: store };
 }
 
 function makeAccessory() {
@@ -63,146 +70,190 @@ function makeAccessory() {
 }
 
 const payload = (state, errorStateId) => ({
-  operationalStateList: [{ operationalStateId: 0 }],
+  operationalStateList: STATE_LIST,
   operationalState: state,
   operationalError: { errorStateId },
 });
 
+const read = (store, attribute) => store.read("rvcOperationalState", attribute);
+
 describe("the heartbeat heals a write matter.js threw away", () => {
-  test("an ordinary publish still never re-writes an unchanged state", async () => {
-    const { store, matter } = makeStore();
+  test("an ordinary publish never re-writes an unchanged state", async () => {
+    const { stateWrites, matter } = makeStore();
     const accessory = makeAccessory();
 
     await accessory.writeOperationalStateCluster(
       matter,
-      payload(CLEANING, TANK_EMPTY)
+      payload(DOCKED, NO_ERROR)
     );
-    const after = store.stateWrites;
+    const after = stateWrites();
 
     for (let i = 0; i < 30; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(CLEANING, TANK_EMPTY)
+        payload(DOCKED, NO_ERROR)
       );
     }
-    expect(store.stateWrites).toBe(after);
-    expect(store.errorEvents).toBe(1);
+    expect(stateWrites()).toBe(after);
   });
 
-  test("a forced heartbeat re-asserts it once every ten cycles, not every one", async () => {
-    const { store, matter } = makeStore();
+  test("with no fault standing, a forced heartbeat re-asserts the state once every ten cycles", async () => {
+    const { stateWrites, matter } = makeStore();
     const accessory = makeAccessory();
 
     await accessory.writeOperationalStateCluster(
       matter,
-      payload(CLEANING, TANK_EMPTY),
+      payload(DOCKED, NO_ERROR),
       { force: true }
     );
-    const baseline = store.stateWrites;
+    const baseline = stateWrites();
 
     // 60 heartbeats is an hour at the 60-second interval.
     for (let i = 0; i < 60; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(CLEANING, TANK_EMPTY),
+        payload(DOCKED, NO_ERROR),
         { force: true }
       );
     }
 
-    const extra = store.stateWrites - baseline;
-    expect(extra).toBe(6);
-    // The whole point: six re-assertions an hour, not sixty.
-    expect(extra).toBeLessThan(10);
+    expect(stateWrites() - baseline).toBe(6);
   });
 
-  test("an hour of heartbeats produces at most a handful of notifications", async () => {
-    const { store, matter } = makeStore();
+  test("with a fault standing, an hour of heartbeats raises it once and never writes the state", async () => {
+    const { store, stateWrites, matter } = makeStore();
     const accessory = makeAccessory();
+
+    await accessory.writeOperationalStateCluster(
+      matter,
+      payload(DOCKED, TANK_EMPTY),
+      { force: true }
+    );
+    const baseline = stateWrites();
 
     for (let i = 0; i < 60; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(CLEANING, TANK_EMPTY),
+        payload(DOCKED, TANK_EMPTY),
         { force: true }
       );
     }
 
-    // Before 3.30.0 this was 30 (one per two heartbeats). The re-assertion
-    // costs a few; the 2-minute repeat users reported is gone.
-    expect(store.errorEvents).toBeLessThanOrEqual(7);
-    expect(store.operationalError).toBe(TANK_EMPTY);
+    // 3.31.0's resync gave 7 here: one per re-assertion of the state.
+    expect(store.events).toEqual([{ errorStateId: TANK_EMPTY }]);
+    expect(stateWrites()).toBe(baseline);
+    expect(read(store, "operationalError")).toEqual({
+      errorStateId: TANK_EMPTY,
+    });
+    expect(read(store, "operationalState")).toBe(ERROR);
   });
 
-  test("a stale belief is corrected within ten heartbeats", async () => {
-    const { store, matter } = makeStore();
+  test("a stale state belief is corrected within ten heartbeats", async () => {
+    const { store, matter } = makeStore(CHARGING);
     const accessory = makeAccessory();
 
-    // The plugin believes it published Cleaning; the store never got it,
+    // The plugin believes it published Docked; the store never got it,
     // exactly as a silently-rejected write leaves things.
-    accessory.publishedOperationalState = CLEANING;
-    store.operationalState = 0;
+    accessory.publishedOperationalState = DOCKED;
+    accessory.publishedOperationalError = NO_ERROR;
 
     for (let i = 0; i < 10; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(CLEANING, TANK_EMPTY),
+        payload(DOCKED, NO_ERROR),
         { force: true }
       );
     }
 
-    expect(store.operationalState).toBe(CLEANING);
+    expect(read(store, "operationalState")).toBe(DOCKED);
+  });
+
+  test("a stale fault belief is corrected within ten heartbeats, with one event", async () => {
+    const { store, matter } = makeStore(DOCKED);
+    const accessory = makeAccessory();
+
+    // The plugin believes the fault landed; the store never got it.
+    accessory.publishedOperationalState = DOCKED;
+    accessory.publishedOperationalError = TANK_EMPTY;
+
+    for (let i = 0; i < 10; i += 1) {
+      await accessory.writeOperationalStateCluster(
+        matter,
+        payload(DOCKED, TANK_EMPTY),
+        { force: true }
+      );
+    }
+
+    expect(read(store, "operationalError")).toEqual({
+      errorStateId: TANK_EMPTY,
+    });
+    expect(store.events).toHaveLength(1);
   });
 
   test("a real state change is still immediate, not delayed by the counter", async () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await accessory.writeOperationalStateCluster(
-      matter,
-      payload(CLEANING, TANK_EMPTY),
-      { force: true }
-    );
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(CLEANING, TANK_EMPTY),
+        payload(DOCKED, NO_ERROR),
         { force: true }
       );
     }
 
     await accessory.writeOperationalStateCluster(
       matter,
-      payload(0x41, TANK_EMPTY)
+      payload(CHARGING, NO_ERROR)
     );
-    expect(store.operationalState).toBe(0x41);
-    expect(store.operationalError).toBe(TANK_EMPTY);
+    expect(read(store, "operationalState")).toBe(CHARGING);
   });
 
   test("the counter resets on a real change, so the clock starts again", async () => {
-    const { store, matter } = makeStore();
+    const { stateWrites, matter } = makeStore();
     const accessory = makeAccessory();
 
     for (let i = 0; i < 9; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(CLEANING, TANK_EMPTY),
+        payload(DOCKED, NO_ERROR),
         { force: true }
       );
     }
     await accessory.writeOperationalStateCluster(
       matter,
-      payload(0x41, TANK_EMPTY)
+      payload(CHARGING, NO_ERROR)
     );
     expect(accessory.forcedWritesSinceOperationalState).toBe(0);
 
-    const before = store.stateWrites;
+    const before = stateWrites();
     for (let i = 0; i < 5; i += 1) {
       await accessory.writeOperationalStateCluster(
         matter,
-        payload(0x41, TANK_EMPTY),
+        payload(CHARGING, NO_ERROR),
         { force: true }
       );
     }
-    expect(store.stateWrites).toBe(before);
+    expect(stateWrites()).toBe(before);
+  });
+
+  test("when the fault clears, the state the robot is really in comes straight back", async () => {
+    const { store, matter } = makeStore();
+    const accessory = makeAccessory();
+
+    await accessory.writeOperationalStateCluster(
+      matter,
+      payload(DOCKED, TANK_EMPTY)
+    );
+    expect(read(store, "operationalState")).toBe(ERROR);
+
+    await accessory.writeOperationalStateCluster(
+      matter,
+      payload(DOCKED, NO_ERROR)
+    );
+    expect(read(store, "operationalState")).toBe(DOCKED);
+    expect(read(store, "operationalError")).toEqual({
+      errorStateId: NO_ERROR,
+    });
   });
 });

@@ -4,7 +4,9 @@ const crypto = require("crypto");
 const Parser = require("binary-parser").Parser;
 const net = require("net");
 const dgram = require("dgram");
+const CRC32 = require("crc-32");
 const { describeDevice } = require("./describeDevice");
+const { noteLateReply } = require("./lateReplies");
 const {
   describeReplyRefusal,
   createRefusalError,
@@ -99,6 +101,44 @@ const shortMessageParser = new Parser()
   .uint32("timestamp")
   .uint16("protocol");
 
+/**
+ * The local hello, as python-roborock does it (devices/transport/
+ * local_channel.py). Protocol numbers from `RoborockMessageProtocol`.
+ */
+const HELLO_REQUEST = 0;
+const HELLO_RESPONSE = 1;
+const PING_RESPONSE = 3;
+/** python-roborock's `_TIMEOUT` for each hello attempt. */
+const HELLO_TIMEOUT_MS = 5000;
+/** The local protocols a hello can negotiate, in python-roborock's order. */
+const NEGOTIABLE_LOCAL_VERSIONS = ["1.0", "L01"];
+/** Local reply frames: GENERAL_REQUEST, GENERAL_RESPONSE, RPC_RESPONSE. */
+const LOCAL_REPLY_PROTOCOLS = new Set([4, 5, 102]);
+
+/**
+ * A hello request frame, byte for byte as python-roborock builds one:
+ * version, seq 1, random = our connect nonce, timestamp, protocol 0, no
+ * payload (so no length field), CRC32 over all of that. 21 bytes, behind the
+ * usual 4-byte length prefix.
+ *
+ * @param {string} version "1.0" or "L01"
+ * @param {number} connectNonce
+ * @param {number} timestamp seconds
+ * @returns {Buffer}
+ */
+function buildHelloFrame(version, connectNonce, timestamp) {
+  const body = Buffer.alloc(21);
+  body.write(version, 0, "latin1");
+  body.writeUInt32BE(1, 3);
+  body.writeUInt32BE(connectNonce >>> 0, 7);
+  body.writeUInt32BE(timestamp >>> 0, 11);
+  body.writeUInt16BE(HELLO_REQUEST, 15);
+  body.writeUInt32BE(CRC32.buf(body.subarray(0, 17)) >>> 0, 17);
+  const prefix = Buffer.alloc(4);
+  prefix.writeUInt32BE(body.length, 0);
+  return Buffer.concat([prefix, body]);
+}
+
 class localConnector {
   constructor(adapter) {
     this.adapter = adapter;
@@ -111,7 +151,31 @@ class localConnector {
      * @type {Set<string>}
      */
     this.pendingClientConnects = new Set();
-    this.l01HandshakeWaiters = new Map();
+    /**
+     * The hello in flight per robot: which version was asked, and how to
+     * settle it. See negotiateLocalProtocol().
+     * @type {Map<string, {version: string, timeout: any, settle: (ackNonce: number | null) => void}>}
+     */
+    this.helloWaiters = new Map();
+    /**
+     * The hello in flight per robot, and the socket it belongs to — a
+     * reconnect must not inherit the previous socket's hello.
+     * @type {Map<string, {client: any, promise: Promise<string | null>}>}
+     */
+    this.negotiations = new Map();
+    /**
+     * The local protocol the robot answered a hello in, for the CURRENT
+     * connection. Cleared when the socket goes; message.js reads it.
+     * @type {Map<string, string>}
+     */
+    this.negotiatedVersions = new Map();
+    /**
+     * The last version that worked, kept across reconnects so the next hello
+     * asks it first. @type {Map<string, string>}
+     */
+    this.preferredVersions = new Map();
+    /** @type {Map<string, string>} the last negotiation outcome logged */
+    this.reportedNegotiations = new Map();
     this.reconnectTimers = new Map();
     this.connectPromises = new Map();
     // Consecutive failed local connects per duid, used to back the retry delay
@@ -336,18 +400,7 @@ class localConnector {
       delete this.localClients[duid];
     }
 
-    const waiter = this.l01HandshakeWaiters.get(duid);
-    if (waiter) {
-      this.adapter.clearTimeout(waiter.timeout);
-      this.l01HandshakeWaiters.delete(duid);
-      waiter.reject(
-        new Error(
-          `TCP client reset during L01 handshake for ${describeDevice(this.adapter, duid)}`
-        )
-      );
-    }
-
-    this.adapter.localL01Nonces.delete(duid);
+    this.forgetNegotiation(duid);
     client.destroy();
     await this.adapter.updateTransportDiagnostics(duid, {
       tcpConnectionState: "disconnected",
@@ -452,11 +505,6 @@ class localConnector {
         .connect(58867, ip, async () => {
           this.adapter.log.debug(`tcp client for ${duid} connected`);
           await this.markLocalConnected(duid);
-          this.ensureL01Handshake(duid).catch((error) => {
-            this.adapter.log.debug(
-              `L01 handshake on connect failed for ${duid}: ${error.message}`
-            );
-          });
           finish(resolve);
         })
         .on("error", (error) => {
@@ -504,17 +552,7 @@ class localConnector {
         lastTransport: "cloud",
         lastTransportReason: "tcp-disconnected",
       });
-      const waiter = this.l01HandshakeWaiters.get(duid);
-      if (waiter) {
-        this.adapter.clearTimeout(waiter.timeout);
-        this.l01HandshakeWaiters.delete(duid);
-        waiter.reject(
-          new Error(
-            `TCP client closed during L01 handshake for ${describeDevice(this.adapter, duid)}`
-          )
-        );
-      }
-      this.adapter.localL01Nonces.delete(duid);
+      this.forgetNegotiation(duid);
       this.scheduleReconnect(duid, ip, this.nextReconnectDelay(duid));
       client.connected = false;
     });
@@ -530,6 +568,18 @@ class localConnector {
     });
 
     this.localClients[duid] = client;
+
+    if (!connectFailed) {
+      // Started only now, with the socket current and its `data` listener
+      // attached — the answer has to land somewhere. Every local request
+      // awaits it (awaitLocalNegotiation), so nothing goes out on the socket
+      // before the robot has said which protocol it speaks.
+      this.negotiateLocalProtocol(duid).catch((error) => {
+        this.adapter.log.debug(
+          `Local hello on connect failed for ${duid}: ${error?.message || error}`
+        );
+      });
+    }
 
     if (connectFailed) {
       // The close/error listeners above are attached only now, after the
@@ -657,35 +707,42 @@ class localConnector {
    * @param {Buffer} currentBuffer
    */
   processLocalSegment(duid, segmentLength, currentBuffer) {
-    // length of 17 does not contain any useful data.
-    // It seems to be protocol handshake metadata.
-    if (segmentLength == 17) {
+    // A hello or ping answer: a bare header (17 bytes), or a header with a
+    // CRC (21). It carries no payload, so it is settled here and never
+    // decoded. Until 3.36.0 only an L01 hello answer was recognised, and only
+    // at exactly 17 bytes.
+    if (segmentLength === 17 || segmentLength === 21) {
       try {
         const shortMessage = shortMessageParser.parse(currentBuffer);
-        if (shortMessage.version == "L01" && shortMessage.protocol == 1) {
-          const currentNonces = this.adapter.localL01Nonces.get(duid) || {};
-          this.adapter.localL01Nonces.set(duid, {
-            connectNonce: currentNonces.connectNonce,
-            ackNonce: shortMessage.random,
-          });
-
-          const waiter = this.l01HandshakeWaiters.get(duid);
-          if (waiter) {
-            this.adapter.clearTimeout(waiter.timeout);
-            this.l01HandshakeWaiters.delete(duid);
-            waiter.resolve(true);
-          }
+        if (shortMessage.protocol === HELLO_RESPONSE) {
+          this.settleHello(duid, shortMessage.version, shortMessage.random);
+          return;
+        }
+        if (shortMessage.protocol === PING_RESPONSE) {
+          return;
         }
       } catch (error) {
         this.adapter.log.debug(
           `Failed parsing short local message for ${duid}: ${error.message}`
         );
       }
-      return;
+      if (segmentLength === 17) {
+        return;
+      }
     }
 
     const data = this.adapter.message._decodeMsg(currentBuffer, duid);
-    if (!data || data.protocol != 4) {
+    if (!data) {
+      return;
+    }
+    // python-roborock matches a reply by the `102` datapoint on ANY protocol.
+    // This plugin accepted protocol 4 only, so a robot that answers on 5
+    // (GENERAL_RESPONSE) or 102 had every reply dropped here in silence — on
+    // the wire, exactly a socket that "connected but answered nothing".
+    if (!LOCAL_REPLY_PROTOCOLS.has(Number(data.protocol))) {
+      this.adapter.log.debug(
+        `Ignored a local frame with protocol ${data.protocol} from ${describeDevice(this.adapter, duid)}.`
+      );
       return;
     }
 
@@ -711,8 +768,8 @@ class localConnector {
       const refusal = describeReplyRefusal(parsed_102);
       this.adapter.log.debug(
         typeof result === "undefined"
-          ? `Local message with protocol 4 and id ${id} received. No result; reply was ${JSON.stringify(parsed_102)}`
-          : `Local message with protocol 4 and id ${id} received. Result: ${JSON.stringify(result)}`
+          ? `Local message with protocol ${data.protocol} and id ${id} received. No result; reply was ${JSON.stringify(parsed_102)}`
+          : `Local message with protocol ${data.protocol} and id ${id} received. Result: ${JSON.stringify(result)}`
       );
       const { resolve, reject, timeout, method } =
         this.adapter.pendingRequests.get(id);
@@ -741,6 +798,13 @@ class localConnector {
           payload: result,
         });
       }
+    } else {
+      // Until 3.35.0 a reply with no request waiting was dropped here without
+      // a word. One that answers a request which already timed out is the
+      // robot being slow, and is now said and counted (lib/lateReplies.js).
+      // It deliberately does NOT reset the mute-socket counter: a socket on
+      // which every reply comes too late is no more usable than a silent one.
+      noteLateReply(this.adapter, duid, id, "local");
     }
   }
 
@@ -809,70 +873,247 @@ class localConnector {
     }
   }
 
-  async ensureL01Handshake(duid) {
-    const version = await this.adapter.getRobotVersion(duid);
-    if (version != "L01") {
-      return;
-    }
-
+  /**
+   * Ask the robot which local protocol it speaks, the way python-roborock
+   * does on every connect: a hello in "1.0", and if that goes unanswered for
+   * 5 seconds, a hello in "L01". The answer decides how local frames are
+   * encrypted (message.js reads getNegotiatedVersion) and, for L01, carries
+   * the nonce the session key is built from.
+   *
+   * WHY 3.36.0 ADDED IT. This plugin sent no hello for a "1.0" robot at all
+   * and trusted home data's `pv` for the local protocol, which python-roborock
+   * says outright is "different from vacuum protocol versions". A robot whose
+   * firmware has moved to L01 on the LAN, or that wants a hello before it
+   * answers, accepts the TCP connection and then ignores every frame — the
+   * "connected but answered nothing" two S8 owners reported (#24, #28) while
+   * python-roborock answered them. Its own L01 handshake was a protocol-1
+   * frame (the robot's ANSWER type) with a running sequence number, which
+   * nothing answers.
+   *
+   * If neither hello is answered, nothing else changes: local requests go out
+   * exactly as before, so a robot that never needed a hello keeps working.
+   *
+   * @param {string} duid
+   * @returns {Promise<string | null>} the version, or null when not negotiated
+   */
+  negotiateLocalProtocol(duid) {
     const client = this.localClients[duid];
-    if (!client || !client.connected) {
-      return;
+    const inFlight = this.negotiations.get(duid);
+    if (inFlight && inFlight.client === client) {
+      return inFlight.promise;
     }
+    const entry = {
+      client,
+      promise: Promise.resolve(/** @type {string | null} */ (null)),
+    };
+    entry.promise = this.runNegotiation(duid).finally(() => {
+      if (this.negotiations.get(duid) === entry) {
+        this.negotiations.delete(duid);
+      }
+    });
+    this.negotiations.set(duid, entry);
+    return entry.promise;
+  }
 
-    const existingNonces = this.adapter.localL01Nonces.get(duid);
+  /**
+   * What a local request waits for before it is built: an in-flight hello.
+   * Resolves at once when none is running.
+   *
+   * @param {string} duid
+   * @returns {Promise<void>}
+   */
+  async awaitLocalNegotiation(duid) {
+    // A robot that answered no hello last time is not made to wait 10 s on
+    // every reconnect for the same answer; its requests go out as they always
+    // did while the hello is retried alongside them.
+    // Not for a robot listed as L01: without the hello's nonces no local
+    // frame can be built at all, so it always waits (found in final
+    // verification).
     if (
-      existingNonces &&
-      typeof existingNonces.connectNonce == "number" &&
-      typeof existingNonces.ackNonce == "number"
+      this.reportedNegotiations.get(duid) === "none" &&
+      (await this.adapter.getRobotVersion(duid)) !== "L01"
     ) {
       return;
     }
+    const inFlight = this.negotiations.get(duid);
+    if (inFlight && inFlight.client === this.localClients[duid]) {
+      await inFlight.promise.catch(() => null);
+    }
+  }
 
-    const timestamp = Math.floor(Date.now() / 1000);
-    const handshakeMessage = await this.adapter.message.buildRoborockMessage(
-      duid,
-      1,
-      timestamp,
-      Buffer.alloc(0)
-    );
-    if (!handshakeMessage) {
-      throw new Error(
-        `Failed to build protocol 1 handshake message for ${describeDevice(this.adapter, duid)}`
+  /**
+   * @param {string} duid
+   * @returns {string | undefined} the local protocol this connection agreed
+   */
+  getNegotiatedVersion(duid) {
+    return this.negotiatedVersions.get(duid);
+  }
+
+  /**
+   * @param {string} duid
+   * @returns {Promise<string | null>}
+   */
+  async runNegotiation(duid) {
+    const robotVersion = await this.adapter.getRobotVersion(duid);
+    if (!NEGOTIABLE_LOCAL_VERSIONS.includes(robotVersion)) {
+      return null;
+    }
+    const client = this.localClients[duid];
+    if (!client || !client.connected) {
+      return null;
+    }
+
+    const preferred = this.preferredVersions.get(duid) || robotVersion;
+    const order =
+      preferred === "L01" ? ["L01", "1.0"] : [...NEGOTIABLE_LOCAL_VERSIONS];
+    const startedAt = Date.now();
+
+    const socketIsCurrent = () =>
+      this.localClients[duid] === client && Boolean(client.connected);
+
+    for (const version of order) {
+      if (!socketIsCurrent()) {
+        return null;
+      }
+      const answer = await this.sendHello(duid, client, version);
+      // A socket that closed mid-hello answers nothing, and that says
+      // nothing about the robot: no next attempt, no "answered no hello".
+      if (!socketIsCurrent()) {
+        return null;
+      }
+      if (answer) {
+        this.negotiatedVersions.set(duid, version);
+        this.preferredVersions.set(duid, version);
+        if (version === "L01") {
+          this.adapter.localL01Nonces.set(duid, answer);
+        }
+        this.reportNegotiation(duid, version, robotVersion, startedAt);
+        return version;
+      }
+    }
+
+    this.negotiatedVersions.delete(duid);
+    this.reportNegotiation(duid, null, robotVersion, startedAt);
+    return null;
+  }
+
+  /**
+   * One hello, settled by the robot's answer or after HELLO_TIMEOUT_MS.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} version
+   * @returns {Promise<{connectNonce: number, ackNonce: number} | null>}
+   */
+  sendHello(duid, client, version) {
+    return new Promise((resolve) => {
+      // python-roborock: get_next_int(10000, 32767).
+      const connectNonce = crypto.randomInt(10000, 32768);
+      let settled = false;
+      const settle = (/** @type {number | null} */ ackNonce) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.adapter.clearTimeout(timeout);
+        if (this.helloWaiters.get(duid)?.settle === settle) {
+          this.helloWaiters.delete(duid);
+        }
+        resolve(ackNonce === null ? null : { connectNonce, ackNonce });
+      };
+      const timeout = this.adapter.setTimeout(
+        () => settle(null),
+        HELLO_TIMEOUT_MS
       );
-    }
-
-    const connectNonce = handshakeMessage.readUInt32BE(7);
-    this.adapter.localL01Nonces.set(duid, {
-      connectNonce,
-      ackNonce: undefined,
-    });
-
-    if (this.l01HandshakeWaiters.has(duid)) {
-      const waiter = this.l01HandshakeWaiters.get(duid);
-      this.adapter.clearTimeout(waiter.timeout);
-      this.l01HandshakeWaiters.delete(duid);
-    }
-
-    const handshakePromise = new Promise((resolve, reject) => {
-      const timeout = this.adapter.setTimeout(() => {
-        this.l01HandshakeWaiters.delete(duid);
-        reject(
-          new Error(
-            `Timed out waiting for L01 handshake response for ${describeDevice(this.adapter, duid)}`
-          )
+      this.helloWaiters.set(duid, { version, timeout, settle });
+      try {
+        client.write(
+          buildHelloFrame(version, connectNonce, Math.floor(Date.now() / 1000))
         );
-      }, 3000);
-
-      this.l01HandshakeWaiters.set(duid, { resolve, reject, timeout });
+      } catch (error) {
+        this.adapter.log.debug(
+          `Could not send the local hello to ${duid}: ${error?.message || error}`
+        );
+        settle(null);
+      }
     });
+  }
 
-    const lengthBuffer = Buffer.alloc(4);
-    lengthBuffer.writeUInt32BE(handshakeMessage.length, 0);
-    const fullMessage = Buffer.concat([lengthBuffer, handshakeMessage]);
-    client.write(fullMessage);
+  /**
+   * A hello answer arrived. It settles the waiting hello only when it is in
+   * the version that was asked; an answer in another version is said and
+   * ignored, and the next attempt follows.
+   *
+   * @param {string} duid
+   * @param {string} version
+   * @param {number} random the robot's nonce
+   * @returns {void}
+   */
+  settleHello(duid, version, random) {
+    const waiter = this.helloWaiters.get(duid);
+    if (!waiter) {
+      return;
+    }
+    if (waiter.version !== version) {
+      this.adapter.log.debug(
+        `${describeDevice(this.adapter, duid)} answered a ${waiter.version} hello in ${version}; trying the next protocol.`
+      );
+      return;
+    }
+    waiter.settle(random);
+  }
 
-    await handshakePromise;
+  /**
+   * Say what the hello found, once per change. A robot answering in its
+   * home-data protocol is the normal case: said at info once, then debug.
+   * Anything else is the evidence #24 and #28 needed, so it is said at info
+   * whenever it changes.
+   *
+   * @param {string} duid
+   * @param {string | null} version
+   * @param {string} robotVersion
+   * @param {number} startedAt
+   * @returns {void}
+   */
+  reportNegotiation(duid, version, robotVersion, startedAt) {
+    const outcome = version ?? "none";
+    const first = !this.reportedNegotiations.has(duid);
+    const changed = this.reportedNegotiations.get(duid) !== outcome;
+    this.reportedNegotiations.set(duid, outcome);
+    const elapsed = Date.now() - startedAt;
+    if (version === robotVersion) {
+      // Once at info per start, so a support log shows the hello worked;
+      // every reconnect after that at debug.
+      (first ? this.adapter.log.info : this.adapter.log.debug).call(
+        this.adapter.log,
+        `${describeDevice(this.adapter, duid)} answered the local hello in ${version} (${elapsed} ms).`
+      );
+      return;
+    }
+    if (!changed) {
+      return;
+    }
+    this.adapter.log.info(
+      version
+        ? `${describeDevice(this.adapter, duid)} speaks the ${version} protocol on the LAN, not the ${robotVersion} its Roborock account lists; local requests now use ${version}.`
+        : `${describeDevice(this.adapter, duid)} accepted the local connection but answered no hello, in 1.0 or L01 (5 seconds each). Local requests go out as before; if they go unanswered too, the plugin moves this robot to the Roborock cloud by itself.`
+    );
+  }
+
+  /**
+   * The socket is gone: settle any hello waiting on it and drop what this
+   * connection agreed. The preferred version is kept for the next hello.
+   *
+   * @param {string} duid
+   * @returns {void}
+   */
+  forgetNegotiation(duid) {
+    const waiter = this.helloWaiters.get(duid);
+    if (waiter) {
+      waiter.settle(null);
+    }
+    this.negotiatedVersions.delete(duid);
+    this.adapter.localL01Nonces?.delete?.(duid);
   }
 
   /**
@@ -1123,11 +1364,7 @@ class localConnector {
     for (const duid of Object.keys(this.localClients)) {
       const client = this.localClients[duid];
       delete this.localClients[duid];
-      const waiter = this.l01HandshakeWaiters.get(duid);
-      if (waiter) {
-        this.adapter.clearTimeout(waiter.timeout);
-        this.l01HandshakeWaiters.delete(duid);
-      }
+      this.forgetNegotiation(duid);
       try {
         client?.removeAllListeners?.();
         client?.destroy?.();
@@ -1139,11 +1376,12 @@ class localConnector {
         );
       }
     }
-    this.l01HandshakeWaiters.clear();
+    this.helloWaiters.clear();
     this.pendingClientConnects.clear();
   }
 }
 
 module.exports = {
   localConnector,
+  buildHelloFrame,
 };

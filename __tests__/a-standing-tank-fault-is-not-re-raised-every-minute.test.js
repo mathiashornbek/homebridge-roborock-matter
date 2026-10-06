@@ -35,47 +35,48 @@ const SOURCE = fs.readFileSync(
   "utf8"
 );
 
+const { createMatterStore } = require("../test-support/matter-0.17.9-store");
+
+const ERROR = 3;
+const CHARGING = 0x41;
+const DOCKED = 0x42;
+const TANK_EMPTY = 68;
+
 /**
- * A stand-in for matter.js 0.17.9's measured behaviour: a write carrying
- * `operationalState` clears `operationalError`, whatever it was, and an
- * OperationalError event fires on every 0 -> non-zero edge.
+ * The real 0.17.9 store (test-support/matter-0.17.9-store.js), seen through
+ * the few numbers these tests read. Until 3.35.0 this file carried its own
+ * stand-in that knew only "a state write clears the error" — the half of the
+ * behaviour that was measured — and not the half that explains it: a fault
+ * FORCES the state to Error. That stand-in let a test assert "Charging with
+ * fault 68", a store 0.17.9 can never hold (issue #35).
  */
 function makeStore() {
-  const store = {
-    operationalState: undefined,
-    operationalError: 0,
-    writes: [],
-    errorEvents: 0,
-    errorChanges: 0,
-  };
-
-  const updateAccessoryState = jest.fn(async (_uuid, cluster, attributes) => {
-    store.writes.push({ cluster, attributes });
-    if (cluster !== "rvcOperationalState") {
-      return;
-    }
-
-    if (Object.prototype.hasOwnProperty.call(attributes, "operationalState")) {
-      store.operationalState = attributes.operationalState;
-      if (store.operationalError !== 0) {
-        store.operationalError = 0;
-        store.errorChanges += 1;
-      }
-    }
-
-    if (Object.prototype.hasOwnProperty.call(attributes, "operationalError")) {
-      const next = attributes.operationalError?.errorStateId ?? 0;
-      if (next !== store.operationalError) {
-        if (store.operationalError === 0 && next !== 0) {
-          store.errorEvents += 1;
-        }
-        store.operationalError = next;
-        store.errorChanges += 1;
-      }
-    }
+  const real = createMatterStore({
+    rvcOperationalState: {
+      phaseList: null,
+      currentPhase: null,
+      operationalStateList: [0, 1, 2, 3, 64, 65, 66].map(
+        (operationalStateId) => ({ operationalStateId })
+      ),
+      operationalState: DOCKED,
+      operationalError: { errorStateId: 0 },
+    },
   });
-
-  return { store, matter: { updateAccessoryState } };
+  const store = {
+    get operationalState() {
+      return real.read("rvcOperationalState", "operationalState");
+    },
+    get operationalError() {
+      return real.read("rvcOperationalState", "operationalError").errorStateId;
+    },
+    get writes() {
+      return real.writes;
+    },
+    get errorEvents() {
+      return real.events.length;
+    },
+  };
+  return { store, matter: real };
 }
 
 /** The accessory's writer, with only what it touches. */
@@ -90,13 +91,11 @@ function makeAccessory() {
   return accessory;
 }
 
-const CLEANING = 0x42;
-const PAUSED = 0x41;
-const TANK_EMPTY = 68;
-
 async function publish(accessory, matter, operationalState, errorStateId) {
   await accessory.writeOperationalStateCluster(matter, {
-    operationalStateList: [{ operationalStateId: 0 }],
+    operationalStateList: [0, 1, 2, 3, 64, 65, 66].map(
+      (operationalStateId) => ({ operationalStateId })
+    ),
     operationalState,
     operationalError: { errorStateId },
   });
@@ -107,29 +106,29 @@ describe("a standing tank fault is not re-raised every minute", () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await publish(accessory, matter, CLEANING, TANK_EMPTY);
+    await publish(accessory, matter, DOCKED, TANK_EMPTY);
     expect(store.operationalError).toBe(TANK_EMPTY);
     expect(store.errorEvents).toBe(1);
 
     // 60 heartbeats: one an hour at the heartbeat interval.
     for (let i = 0; i < 60; i += 1) {
-      await publish(accessory, matter, CLEANING, TANK_EMPTY);
+      await publish(accessory, matter, DOCKED, TANK_EMPTY);
     }
 
     expect(store.errorEvents).toBe(1);
-    expect(store.errorChanges).toBe(1);
     expect(store.operationalError).toBe(TANK_EMPTY);
+    expect(store.operationalState).toBe(ERROR);
   });
 
   test("the unchanged state is not written at all, which is the whole fix", async () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await publish(accessory, matter, CLEANING, TANK_EMPTY);
+    await publish(accessory, matter, DOCKED, TANK_EMPTY);
     const after = store.writes.length;
 
     for (let i = 0; i < 5; i += 1) {
-      await publish(accessory, matter, CLEANING, TANK_EMPTY);
+      await publish(accessory, matter, DOCKED, TANK_EMPTY);
     }
 
     const extra = store.writes.slice(after);
@@ -142,7 +141,7 @@ describe("a standing tank fault is not re-raised every minute", () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await publish(accessory, matter, CLEANING, TANK_EMPTY);
+    await publish(accessory, matter, DOCKED, TANK_EMPTY);
 
     for (const write of store.writes) {
       const both =
@@ -161,41 +160,47 @@ describe("a standing tank fault is not re-raised every minute", () => {
     expect(errorAt).toBeGreaterThan(stateAt);
   });
 
-  test("a genuine state change keeps the fault standing", async () => {
+  test("a state change underneath a standing fault does not re-raise it", async () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await publish(accessory, matter, CLEANING, TANK_EMPTY);
-    await publish(accessory, matter, PAUSED, TANK_EMPTY);
+    await publish(accessory, matter, DOCKED, TANK_EMPTY);
+    // Docked -> Charging while the tank is still empty. 3.30.0 wrote the new
+    // state, which wiped the fault (the store was in Error), and re-raised it:
+    // one notification per dock transition. The store reads Error either
+    // way, so the state is held back until the fault goes.
+    await publish(accessory, matter, CHARGING, TANK_EMPTY);
 
-    // The store really was cleared by the state write, so re-asserting it is
-    // not optional — and the robot did change state, so one notification is
-    // honest.
     expect(store.operationalError).toBe(TANK_EMPTY);
-    expect(store.operationalState).toBe(PAUSED);
+    expect(store.operationalState).toBe(ERROR);
+    expect(store.errorEvents).toBe(1);
 
-    const events = store.errorEvents;
     for (let i = 0; i < 10; i += 1) {
-      await publish(accessory, matter, PAUSED, TANK_EMPTY);
+      await publish(accessory, matter, CHARGING, TANK_EMPTY);
     }
-    expect(store.errorEvents).toBe(events);
+    expect(store.errorEvents).toBe(1);
+
+    // And the moment it clears, the state the robot is in NOW comes back.
+    await publish(accessory, matter, CHARGING, 0);
+    expect(store.operationalState).toBe(CHARGING);
+    expect(store.operationalError).toBe(0);
   });
 
   test("filling the tank clears it, and emptying it raises it again", async () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await publish(accessory, matter, CLEANING, TANK_EMPTY);
+    await publish(accessory, matter, DOCKED, TANK_EMPTY);
     expect(store.errorEvents).toBe(1);
 
-    await publish(accessory, matter, CLEANING, 0);
+    await publish(accessory, matter, DOCKED, 0);
     expect(store.operationalError).toBe(0);
     for (let i = 0; i < 5; i += 1) {
-      await publish(accessory, matter, CLEANING, 0);
+      await publish(accessory, matter, DOCKED, 0);
     }
     expect(store.errorEvents).toBe(1);
 
-    await publish(accessory, matter, CLEANING, TANK_EMPTY);
+    await publish(accessory, matter, DOCKED, TANK_EMPTY);
     expect(store.errorEvents).toBe(2);
     expect(store.operationalError).toBe(TANK_EMPTY);
   });
@@ -207,13 +212,13 @@ describe("a standing tank fault is not re-raised every minute", () => {
     // The phase and the state list must keep flowing: they do not touch the
     // error, and suppressing them would be a different bug.
     await accessory.writeOperationalStateCluster(matter, {
-      operationalState: CLEANING,
+      operationalState: DOCKED,
       operationalError: { errorStateId: TANK_EMPTY },
       currentPhase: 0,
       phaseList: ["Cleaning"],
     });
     await accessory.writeOperationalStateCluster(matter, {
-      operationalState: CLEANING,
+      operationalState: DOCKED,
       operationalError: { errorStateId: TANK_EMPTY },
       currentPhase: 1,
       phaseList: ["Cleaning", "Drying"],
@@ -230,7 +235,7 @@ describe("a standing tank fault is not re-raised every minute", () => {
     const accessory = makeAccessory();
 
     await accessory.writeOperationalStateCluster(matter, {
-      operationalState: CLEANING,
+      operationalState: DOCKED,
       currentPhase: 0,
     });
 

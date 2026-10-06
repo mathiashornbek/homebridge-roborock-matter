@@ -1,0 +1,557 @@
+{
+  "run1_1731_dirtyFullMasksCleanEmpty": {
+    "source": "RM_log_without_both.txt:2880",
+    "loggedAt": "30/09/2026, 17:31:50",
+    "reply": [
+      {
+        "msg_ver": 2,
+        "msg_seq": 1416,
+        "state": 18,
+        "battery": 94,
+        "clean_time": 581,
+        "clean_area": 6097500,
+        "error_code": 0,
+        "map_present": 1,
+        "in_cleaning": 3,
+        "in_returning": 0,
+        "in_fresh_state": 0,
+        "lab_status": 1,
+        "water_box_status": 1,
+        "back_type": -1,
+        "wash_phase": 0,
+        "wash_ready": 0,
+        "wash_status": 2560,
+        "fan_power": 110,
+        "dnd_enabled": 0,
+        "map_status": 3,
+        "is_locating": 0,
+        "lock_status": 0,
+        "water_box_mode": 209,
+        "distance_off": 0,
+        "water_box_carriage_status": 1,
+        "mop_forbidden_enable": 1,
+        "camera_status": 11685,
+        "is_exploring": 0,
+        "home_sec_status": 0,
+        "home_sec_enable_password": 1,
+        "monitor_status": 0,
+        "adbumper_status": [0, 0, 0],
+        "water_shortage_status": 0,
+        "dock_type": 16,
+        "dust_collection_status": 0,
+        "auto_dust_collection": 2,
+        "avoid_count": 0,
+        "mop_mode": 306,
+        "debug_mode": 0,
+        "in_warmup": 0,
+        "collision_avoid_status": 0,
+        "switch_map_mode": 0,
+        "dock_error_status": 39,
+        "charge_status": 1,
+        "unsave_map_reason": 0,
+        "unsave_map_flag": 0,
+        "dry_status": 0,
+        "rdt": 0,
+        "clean_percent": 42,
+        "extra_time": 458,
+        "rss": 2,
+        "dss": 2196,
+        "common_status": 2,
+        "last_clean_t": 1790782012,
+        "replenish_mode": 0,
+        "repeat": 1,
+        "kct": 0,
+        "subdivision_sets": 89,
+        "cleaning_info": {
+          "target_segment_id": 8,
+          "segment_id": 4,
+          "fan_power": 103,
+          "water_box_status": 235,
+          "mop_mode": 306
+        },
+        "exit_dock": 0,
+        "sterilize_status": 0,
+        "rst": 0,
+        "seq_type": 0
+      }
+    ]
+  },
+  "run1_1748_dockedBothTanksFlagged": {
+    "source": "RM_log_without_both.txt:5424",
+    "loggedAt": "30/09/2026, 17:48:05",
+    "reply": [
+      {
+        "msg_ver": 2,
+        "msg_seq": 1468,
+        "state": 8,
+        "battery": 88,
+        "clean_time": 1344,
+        "clean_area": 13400000,
+        "error_code": 0,
+        "map_present": 1,
+        "in_cleaning": 0,
+        "in_returning": 0,
+        "in_fresh_state": 1,
+        "lab_status": 1,
+        "water_box_status": 1,
+        "fan_power": 110,
+        "dnd_enabled": 0,
+        "map_status": 3,
+        "is_locating": 0,
+        "lock_status": 0,
+        "water_box_mode": 209,
+        "distance_off": 0,
+        "water_box_carriage_status": 1,
+        "mop_forbidden_enable": 1,
+        "camera_status": 11685,
+        "is_exploring": 0,
+        "home_sec_status": 0,
+        "voice_chat_status": 0,
+        "home_sec_enable_password": 1,
+        "monitor_status": 0,
+        "adbumper_status": [0, 0, 0],
+        "water_shortage_status": 0,
+        "dock_type": 16,
+        "dust_collection_status": 0,
+        "auto_dust_collection": 2,
+        "avoid_count": 53,
+        "mop_mode": 306,
+        "in_warmup": 0,
+        "back_type": -1,
+        "wash_phase": 0,
+        "wash_ready": 1,
+        "wash_status": 2560,
+        "debug_mode": 0,
+        "collision_avoid_status": 0,
+        "switch_map_mode": 0,
+        "dock_error_status": 39,
+        "charge_status": 1,
+        "unsave_map_reason": 0,
+        "unsave_map_flag": 0,
+        "dry_status": 1,
+        "rdt": 7200,
+        "clean_percent": 0,
+        "extra_time": 578,
+        "rss": 2,
+        "dss": 2196,
+        "common_status": 2,
+        "repeat": 1,
+        "kct": 0,
+        "sterilize_status": 0,
+        "rst": 0,
+        "events": [],
+        "switch_status": 27,
+        "last_clean_t": 1790783070,
+        "replenish_mode": 0,
+        "subdivision_sets": 0,
+        "cleaning_info": {
+          "target_segment_id": -1,
+          "segment_id": -1,
+          "fan_power": 102,
+          "water_box_status": 235,
+          "mop_mode": 306
+        },
+        "exit_dock": 0,
+        "seq_type": 0
+      }
+    ]
+  },
+  "run1_1713_startupAllOk": {
+    "source": "RM_log_without_both.txt:76",
+    "loggedAt": "30/09/2026, 17:13:50",
+    "reply": [
+      {
+        "msg_ver": 2,
+        "msg_seq": 1289,
+        "state": 8,
+        "battery": 100,
+        "clean_time": 379,
+        "clean_area": 2855000,
+        "error_code": 0,
+        "map_present": 1,
+        "in_cleaning": 0,
+        "in_returning": 0,
+        "in_fresh_state": 1,
+        "lab_status": 1,
+        "water_box_status": 1,
+        "fan_power": 110,
+        "dnd_enabled": 0,
+        "map_status": 3,
+        "is_locating": 0,
+        "lock_status": 0,
+        "water_box_mode": 209,
+        "distance_off": 0,
+        "water_box_carriage_status": 1,
+        "mop_forbidden_enable": 1,
+        "camera_status": 11685,
+        "is_exploring": 0,
+        "home_sec_status": 0,
+        "voice_chat_status": 0,
+        "home_sec_enable_password": 1,
+        "monitor_status": 0,
+        "adbumper_status": [0, 0, 0],
+        "water_shortage_status": 0,
+        "dock_type": 16,
+        "dust_collection_status": 0,
+        "auto_dust_collection": 2,
+        "avoid_count": 26,
+        "mop_mode": 306,
+        "in_warmup": 0,
+        "back_type": -1,
+        "wash_phase": 0,
+        "wash_ready": 1,
+        "wash_status": 512,
+        "debug_mode": 0,
+        "collision_avoid_status": 0,
+        "switch_map_mode": 0,
+        "dock_error_status": 0,
+        "charge_status": 1,
+        "unsave_map_reason": 0,
+        "unsave_map_flag": 0,
+        "dry_status": 0,
+        "rdt": 0,
+        "clean_percent": 0,
+        "extra_time": 479,
+        "rss": 2,
+        "dss": 2216,
+        "common_status": 2,
+        "repeat": 1,
+        "kct": 0,
+        "sterilize_status": 0,
+        "rst": 0,
+        "events": [],
+        "switch_status": 27,
+        "last_clean_t": 1790758244,
+        "replenish_mode": 0,
+        "subdivision_sets": 0,
+        "cleaning_info": {
+          "target_segment_id": -1,
+          "segment_id": -1,
+          "fan_power": 102,
+          "water_box_status": 235,
+          "mop_mode": 306
+        },
+        "exit_dock": 0,
+        "seq_type": 0
+      }
+    ]
+  },
+  "run2_1752_afterRefill": {
+    "source": "RM_log_without_cloud_only.txt:822",
+    "loggedAt": "30/09/2026, 17:52:44",
+    "reply": [
+      {
+        "msg_ver": 2,
+        "msg_seq": 1521,
+        "state": 33,
+        "battery": 88,
+        "clean_time": 0,
+        "clean_area": 0,
+        "error_code": 0,
+        "map_present": 1,
+        "in_cleaning": 3,
+        "in_returning": 0,
+        "in_fresh_state": 0,
+        "lab_status": 1,
+        "water_box_status": 1,
+        "fan_power": 110,
+        "dnd_enabled": 0,
+        "map_status": 3,
+        "is_locating": 0,
+        "lock_status": 0,
+        "water_box_mode": 209,
+        "distance_off": 0,
+        "water_box_carriage_status": 1,
+        "mop_forbidden_enable": 1,
+        "camera_status": 11685,
+        "is_exploring": 0,
+        "home_sec_status": 0,
+        "voice_chat_status": 0,
+        "home_sec_enable_password": 1,
+        "monitor_status": 0,
+        "adbumper_status": [0, 0, 0],
+        "water_shortage_status": 0,
+        "dock_type": 16,
+        "dust_collection_status": 0,
+        "auto_dust_collection": 2,
+        "avoid_count": 0,
+        "mop_mode": 306,
+        "in_warmup": 0,
+        "back_type": -1,
+        "wash_phase": 0,
+        "wash_ready": 0,
+        "wash_status": 2560,
+        "debug_mode": 0,
+        "collision_avoid_status": 0,
+        "switch_map_mode": 0,
+        "dock_error_status": 0,
+        "charge_status": 1,
+        "unsave_map_reason": 0,
+        "unsave_map_flag": 0,
+        "dry_status": 0,
+        "rdt": 0,
+        "clean_percent": 0,
+        "extra_time": 0,
+        "rss": 2,
+        "dss": 2216,
+        "common_status": 2,
+        "repeat": 1,
+        "kct": 0,
+        "sterilize_status": 0,
+        "rst": 0,
+        "events": [],
+        "switch_status": 27,
+        "last_clean_t": 1790783070,
+        "replenish_mode": 0,
+        "subdivision_sets": 94,
+        "cleaning_info": {
+          "target_segment_id": -1,
+          "segment_id": -1,
+          "fan_power": 102,
+          "water_box_status": 235,
+          "mop_mode": 306
+        },
+        "exit_dock": 0,
+        "seq_type": 0
+      }
+    ]
+  },
+  "run2_1820_cleanEmptyOnly": {
+    "source": "RM_log_without_cloud_only.txt:4765",
+    "loggedAt": "30/09/2026, 18:20:54",
+    "reply": [
+      {
+        "msg_ver": 2,
+        "msg_seq": 1756,
+        "state": 18,
+        "battery": 80,
+        "clean_time": 884,
+        "clean_area": 11610000,
+        "error_code": 0,
+        "map_present": 1,
+        "in_cleaning": 3,
+        "in_returning": 0,
+        "in_fresh_state": 0,
+        "lab_status": 1,
+        "water_box_status": 1,
+        "fan_power": 110,
+        "dnd_enabled": 0,
+        "map_status": 3,
+        "is_locating": 0,
+        "lock_status": 0,
+        "water_box_mode": 209,
+        "distance_off": 0,
+        "water_box_carriage_status": 1,
+        "mop_forbidden_enable": 1,
+        "camera_status": 11685,
+        "is_exploring": 0,
+        "home_sec_status": 0,
+        "voice_chat_status": 0,
+        "home_sec_enable_password": 1,
+        "monitor_status": 0,
+        "adbumper_status": [0, 0, 0],
+        "water_shortage_status": 0,
+        "dock_type": 16,
+        "dust_collection_status": 0,
+        "auto_dust_collection": 2,
+        "avoid_count": 0,
+        "mop_mode": 306,
+        "in_warmup": 1,
+        "back_type": -1,
+        "wash_phase": 0,
+        "wash_ready": 0,
+        "wash_status": 2560,
+        "debug_mode": 0,
+        "collision_avoid_status": 0,
+        "switch_map_mode": 0,
+        "dock_error_status": 38,
+        "charge_status": 1,
+        "unsave_map_reason": 0,
+        "unsave_map_flag": 0,
+        "dry_status": 0,
+        "rdt": 0,
+        "clean_percent": 38,
+        "extra_time": 803,
+        "rss": 2,
+        "dss": 2212,
+        "common_status": 2,
+        "repeat": 1,
+        "kct": 0,
+        "sterilize_status": 0,
+        "rst": 0,
+        "events": ["error38"],
+        "switch_status": 27,
+        "last_clean_t": 1790784988,
+        "replenish_mode": 0,
+        "subdivision_sets": 153,
+        "cleaning_info": {
+          "target_segment_id": 10,
+          "segment_id": 9,
+          "fan_power": 103,
+          "water_box_status": 245,
+          "mop_mode": 306
+        },
+        "exit_dock": 0,
+        "seq_type": 0
+      }
+    ]
+  },
+  "s8ProUltra_a70_docked": {
+    "source": "S8_results.txt (S8 Pro Ultra block)",
+    "loggedAt": null,
+    "reply": [
+      {
+        "msg_ver": 2,
+        "msg_seq": 173,
+        "state": 8,
+        "battery": 100,
+        "clean_time": 161,
+        "clean_area": 2392500,
+        "error_code": 0,
+        "map_present": 1,
+        "in_cleaning": 0,
+        "in_returning": 0,
+        "in_fresh_state": 1,
+        "lab_status": 1,
+        "water_box_status": 1,
+        "back_type": -1,
+        "wash_phase": 0,
+        "wash_ready": 0,
+        "wash_status": 0,
+        "fan_power": 102,
+        "dnd_enabled": 0,
+        "map_status": 3,
+        "is_locating": 0,
+        "lock_status": 0,
+        "water_box_mode": 201,
+        "water_box_carriage_status": 1,
+        "mop_forbidden_enable": 1,
+        "camera_status": 385,
+        "is_exploring": 0,
+        "adbumper_status": [0, 0, 0],
+        "water_shortage_status": 0,
+        "dock_type": 7,
+        "dust_collection_status": 0,
+        "auto_dust_collection": 1,
+        "avoid_count": 4,
+        "mop_mode": 300,
+        "debug_mode": 0,
+        "collision_avoid_status": 1,
+        "switch_map_mode": 0,
+        "dock_error_status": 0,
+        "charge_status": 1,
+        "unsave_map_reason": 0,
+        "unsave_map_flag": 0,
+        "dry_status": 0,
+        "rdt": 0,
+        "clean_percent": 0,
+        "rss": 2,
+        "dss": 0,
+        "last_clean_t": 1790693053,
+        "common_status": 2
+      }
+    ]
+  },
+  "batteryPushes": [
+    {
+      "source": "RM_log_without_cloud_only.txt:5001",
+      "loggedAt": "30/09/2026, 18:22:05",
+      "push": {
+        "t": 1790785324,
+        "dps": {
+          "122": 79
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:5279",
+      "loggedAt": "30/09/2026, 18:23:49",
+      "push": {
+        "t": 1790785429,
+        "dps": {
+          "122": 78
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:5413",
+      "loggedAt": "30/09/2026, 18:25:33",
+      "push": {
+        "t": 1790785533,
+        "dps": {
+          "122": 77
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:5677",
+      "loggedAt": "30/09/2026, 18:27:17",
+      "push": {
+        "t": 1790785637,
+        "dps": {
+          "122": 76
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:5903",
+      "loggedAt": "30/09/2026, 18:29:00",
+      "push": {
+        "t": 1790785739,
+        "dps": {
+          "122": 75
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:6065",
+      "loggedAt": "30/09/2026, 18:30:42",
+      "push": {
+        "t": 1790785841,
+        "dps": {
+          "122": 74
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:6298",
+      "loggedAt": "30/09/2026, 18:32:24",
+      "push": {
+        "t": 1790785943,
+        "dps": {
+          "122": 73
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:6575",
+      "loggedAt": "30/09/2026, 18:34:04",
+      "push": {
+        "t": 1790786044,
+        "dps": {
+          "122": 72
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:6827",
+      "loggedAt": "30/09/2026, 18:35:46",
+      "push": {
+        "t": 1790786145,
+        "dps": {
+          "122": 71
+        }
+      }
+    },
+    {
+      "source": "RM_log_without_cloud_only.txt:6981",
+      "loggedAt": "30/09/2026, 18:37:25",
+      "push": {
+        "t": 1790786244,
+        "dps": {
+          "122": 70
+        }
+      }
+    }
+  ]
+}

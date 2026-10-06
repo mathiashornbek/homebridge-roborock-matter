@@ -6,6 +6,7 @@ const Parser = require("binary-parser").Parser;
 const zlib = require("zlib");
 const roborockCrypto = require("./roborockCrypto");
 const { describeDevice } = require("./describeDevice");
+const { noteLateReply } = require("./lateReplies");
 const {
   describeReplyRefusal,
   createRefusalError,
@@ -66,6 +67,36 @@ const photoBuffers = new Map();
 // the diagnostic report, both of which are INFO level and both of which users
 // already paste.
 const droppedFrames = new Map();
+
+/**
+ * Whether a decoded cloud frame is an RPC reply. Protocol 102 always was;
+ * python-roborock also takes a frame on 4 or 5 whose payload carries the
+ * `102` datapoint, and until 3.36.0 such a reply was dropped here unread.
+ *
+ * @param {{protocol?: unknown, payload?: unknown}} data
+ * @returns {boolean}
+ */
+function isRpcReplyFrame(data) {
+  const protocol = Number(data?.protocol);
+  if (protocol === 102) {
+    return true;
+  }
+  if (protocol !== 4 && protocol !== 5) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(String(data.payload));
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      parsed.dps !== null &&
+      typeof parsed.dps === "object" &&
+      Object.prototype.hasOwnProperty.call(parsed.dps, "102")
+    );
+  } catch {
+    return false;
+  }
+}
 
 function noteDroppedFrame(duid, reason) {
   let entry = droppedFrames.get(duid);
@@ -418,7 +449,7 @@ class roborock_mqtt_connector {
         // this.adapter.log.debug(`MESSAGE RECEIVED for duid ${duid} with key: ${this.adapter.localKeys.get(duid)} data: ${JSON.stringify(data)}`);
 
         // this.adapter.log.debug("Protocol: " + data.protocol);
-        if (data.protocol == 102) {
+        if (isRpcReplyFrame(data)) {
           const parsedPayload = JSON.parse(data.payload);
           let dps;
           if (typeof parsedPayload.dps["102"] != "undefined") {
@@ -506,6 +537,8 @@ class roborock_mqtt_connector {
             } else {
               pending.resolve(dps.result);
             }
+          } else if (!pending) {
+            noteLateReply(this.adapter, duid, dps.id, "cloud");
           }
           // protocol 300 seems to be for get_photo 0 only. get_photo 0 is for large images. 1 is for small images.
         } else if (data.protocol == 300) {
@@ -650,14 +683,28 @@ class roborock_mqtt_connector {
               // this.adapter.log.debug("raw 301: " + decrypted);
 
               if (!this.adapter.pendingRequests.has(data2.id)) {
-                noteDroppedFrame(duid, "no-request-waiting");
                 // The other silent drop on this path. An unsolicited map push
                 // lands here legitimately, but so does a reply whose id we
                 // failed to match — and the waiting request then times out
-                // with nothing in the log to say a reply had arrived.
-                this.adapter.log.debug(
-                  `Received a protocol 301 message for ${duid} with id ${data2.id}, but no request is waiting for that id. It was decrypted successfully, so the robot did answer something; either this is an unsolicited map push, or a reply arrived after its request had already timed out.`
+                // with nothing in the log to say a reply had arrived. Since
+                // 3.35.0 a reply to a request that had ALREADY timed out is
+                // told apart and counted as late, not as discarded: it is the
+                // robot being slow, not this side throwing an answer away.
+                const late = noteLateReply(
+                  this.adapter,
+                  duid,
+                  data2.id,
+                  "cloud"
                 );
+                noteDroppedFrame(
+                  duid,
+                  late ? "arrived-after-timeout" : "no-request-waiting"
+                );
+                if (!late) {
+                  this.adapter.log.debug(
+                    `Received a protocol 301 message for ${duid} with id ${data2.id}, but no request is waiting for that id. It was decrypted successfully, so the robot did answer something; either this is an unsolicited map push, or a reply to a request this plugin did not send.`
+                  );
+                }
               }
 
               if (this.adapter.pendingRequests.has(data2.id)) {
@@ -917,6 +964,7 @@ function resolveB01PendingResponse(
 
 module.exports = {
   describeDroppedFrames,
+  isRpcReplyFrame,
   resolveB01PendingResponse,
   roborock_mqtt_connector,
   parseProtocol301Header,

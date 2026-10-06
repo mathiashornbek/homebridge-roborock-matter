@@ -1,5 +1,96 @@
 # Changelog
 
+## 3.36.0
+
+**The LAN connection now asks the robot which protocol it speaks, the way python-roborock always has, and a cloud session that has gone quiet is restarted.**
+
+### "Connected but answered nothing" (#24, #28)
+
+[@Marrand](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/24) and [@CooperCGN](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/28) both have an S8 (`a51`) that accepts the LAN connection and then answers nothing, while python-roborock — the library Home Assistant uses — gets answers from the same robots. Comparing the 2 side by side, this plugin differed in 4 places, and every one of them can produce exactly that symptom:
+
+- **No hello.** python-roborock opens every local connection with a hello, first in `1.0` and then in `L01`, and encrypts by whichever the robot answers. This plugin sent none for a `1.0` robot, and took the LAN protocol from the account's `pv`, which python-roborock says outright is a different thing. A robot whose firmware has moved to `L01` on the LAN ignores every `1.0` frame.
+- **The wrong L01 handshake.** Where it did try `L01`, it sent a protocol-1 frame. Protocol 1 is the robot's answer, not the question, so nothing answered it.
+- **Datapoint 4.** A local request went out on datapoint 4, the protocol number. python-roborock sends datapoint 101 on both transports.
+- **Protocol 4 only.** A local reply was accepted only on protocol 4; one on 5 or 102 was dropped without a word.
+
+All 4 now follow python-roborock. Against a fake robot built from python-roborock's own codec in 5 firmware variants, 3.35.0 got an answer from 1 and 3.36.0 from all 5.
+
+- The hello result is logged once: `answered the local hello in 1.0`, or that the robot speaks `L01` on the LAN, or that it answered no hello. That line is what I need from #24 and #28.
+- A robot that answers no hello keeps 3.35.0's behaviour exactly. Its first request after a connect waits up to 10 seconds for the hellos; after that, not again. A robot listed as `L01` always waits, because no local frame can be built without the hello's nonces.
+
+I ran it as 3.36.0-beta.1 on my own server first. My S8 Pro Ultra answered the hello in 1.0 in 4-18 ms on 4 restarts, and its local requests kept being answered for the 10 minutes I watched. Nobody here has a robot that needs `L01`, so that part is tested against python-roborock's codec, not against hardware.
+
+### A cloud session that says it is up and delivers nothing
+
+python-roborock restarts its MQTT session after 3 cloud timeouts in a row, at most once every 30 minutes, because "the MQTT connection appears to be alive but no messages are being received". This plugin only reconnected when the link reported itself down. CooperCGN's log counts 574 cloud messages by 08:54 and 576 by 12:11, while his robot started, paused and docked in between, and [@pponce](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/27) measured a recreated session answering within 369 ms. Same rule now, with one addition from review: a timeout only counts when nothing at all arrived from that robot while the request waited, so a map request whose acknowledgement arrives and whose map does not is not mistaken for a dead session.
+
+A cloud reply on protocol 4 or 5 that carries datapoint 102 is now read as a reply, as python-roborock reads it.
+
+### Found in review
+
+- A hello still in flight when the socket closed carried on into the dead socket, and a reconnect made in that window could inherit the old socket's hello and never get one of its own. Each hello now belongs to its socket, and a request that waited on a hello re-checks the socket before it is sent.
+- The session restart now never runs while Homebridge is stopping.
+- A socket that closed during its hello while the cloud was also down got the request written into it anyway, and counted it as a mute socket. It is now refused at once.
+
+### Tests
+
+2,153 tests, 22 more than 3.35.0. Measured against the 3.35.0 sources, file by file: 12 of 13 fail for the hello and the reply rules, 3 of 5 for the session restart, 4 of 4 for the socket each hello belongs to. The 2 that pass there guard against a restart 3.35.0 could not make.
+
+## 3.35.0
+
+**3.34.0 broke the half of the play button it was meant to leave alone, and an empty water tank could hide a running clean in Apple Home. Both are fixed, with 8 more found by reading this plugin against matter.js 0.17.9 and python-roborock 7.12.0 instead of against its own comments.**
+
+### My regression first: resume on a paused full clean
+
+3.34.0 sent `resume_segment_clean` whenever `in_cleaning` was non-zero, on the assumption that 0 meant whole-home and anything else meant rooms. Roborock's numbering (python-roborock `RoborockInCleaning`) is 0 complete, 1 whole-home not complete, 2 zone not complete, 3 room not complete. A paused full clean reads 1, so the case [@CooperCGN](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/28) had confirmed working got the room verb. Each value now gets its own: 3 → `resume_segment_clean`, 2 → `resume_zoned_clean`, 0/1 → `app_start`. That is the same choice Home Assistant makes. B01 is unchanged.
+
+### An empty tank no longer hides a running clean (#35)
+
+[@pponce](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/35) decoded an outgoing Matter report: the plugin logged `operationalState=1 … fault=68`, and the wire carried `operationalState=3`. In matter.js 0.17.9, writing any `operationalError` other than NoError sets the state to Error, and clearing it does not give the old state back. "Running with a warning" does not exist on the version Homebridge ships. So Apple Home showed "Refill the water tank" while his robot mopped 2 rooms.
+
+- A fault is now only published for a robot at rest (Stopped, Charging, Docked) or one really in Error. A robot that is cleaning, paused, driving home or busy at the dock gets NoError, and the publish line says `fault=68 held back while the robot works`.
+- That check is made after a Matter command's optimistic state as well, and on the robot's own state as well as the one Apple Home is sent. Mid-run states this plugin has no name for (33 attaching the mop, 6301-6310 the mopping states and a few more) count as working, not at rest: DSimeone's a144 reports 33 in the middle of a room clean.
+- When a fault clears, the robot's real state is written back in the same publish. Before, the tile stayed on Error until the robot changed state or the 10th heartbeat.
+- While a fault stands, the state is never re-written. 3.31.0's every-10th-heartbeat resync was wiping and re-raising it: one "Refill the water tank" notification about every 10 minutes for as long as the tank was empty. The resync now re-asserts the fault itself, which is a no-op when it landed.
+
+The comments that said the state is "deliberately NOT forced to Error" were wrong on 0.17.9 and are corrected. The tests now run against a replay of the real 0.17.9 reactors (`test-support/matter-0.17.9-store.js`). The old stand-in modelled the wipe but not the forcing, which is how 4 tests came to assert stores 0.17.9 can never hold.
+
+### The dock's own tank word, and 2 new sensors (#22, #26)
+
+[@DSimeone1989](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/22)'s Saros 10R let the water-empty automation fire in 1 run and not the other, and the cloud settings had nothing to do with it. `dock_error_status` holds 1 code at a time. In run 1 both tanks needed attention and the code was 39 (dirty tank full), so the empty clean tank never showed. The dock reports each tank separately in `dss`, which this plugin had never read.
+
+- Water Tank Empty now reads the clean-water field of `dss` where the dock sends one. When it says the tank is fine, a lingering `water_shortage_status` no longer overrules it, which may be what [@n0rt0nthec4t](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/26) is seeing after a refill. A 38 still wins, and docks without `dss` work exactly as before.
+- 2 new optional sensors: **Dirty Water Tank Full** and **Cleaning Fluid Empty**. The second is the detergent warning DSimeone asked for; only docks with automatic dosing report it.
+- `dss` is ignored on plain chargers and auto-empty-only docks, which have no tanks for it to describe.
+- The robot's own `error_code` 38 and 39 ("check the clean/dirty water tank") are known now, so nobody is asked to report them.
+- Diagnostic reports keep `dss`, `rss` and `wash_status`. All 3 were cut at the key limit, including in #26.
+
+### Q10 state was read with the Q7 table (#33)
+
+[@yquirion](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/33)'s Q10 S5 flapped between Stopped and Docked. Home data was translated with the Q7 work-status table for every B01 robot, while a pushed datapoint was read as v1, and the 2 disagree: a charging Q10 (8) became Stopped. The Q10 numbers its states the v1 way plus a few of its own (python-roborock `YXDeviceState`), so it now gets its own table, on both paths. The Q7 L5 half of #33 ("Updating…") is not explained by anything here yet.
+
+### The give-up register
+
+- A robot that answers with an error has answered. A refusal did not reset the count, so 5 silences, 1 refusal and 1 silence gave the method up.
+- One silent `get_map_v1` counted twice: once in the message layer, once in the live-room fetch. Live-room tracking was paused after 3 silent fetches instead of 6. CooperCGN's log shows both lines in the same second.
+- Shutting Homebridge down no longer counts as an answer.
+
+### A reply that comes too late is called late
+
+A reply that arrives after its 10-second timeout was dropped without a word on the local socket, and a late map frame was counted as "discarded by the plugin — a bug here". The give-up line also told #24 and #28 that `get_server_timer` replies were "not arriving at all", on a counter that only ever looks at map frames. Timed-out requests are now remembered for 10 minutes. A reply that matches one is logged and counted, and the give-up line says "did arrive, but only after the plugin had stopped waiting" when that is what happened. The map-frame claim is made only about `get_map_v1`.
+
+### Service Area writes matter.js refused
+
+matter.js refuses a whole Service Area write when 1 progress entry names a room that no longer exists, and refuses to register the endpoint when 2 rooms or 2 maps share a name. Progress is persisted across restarts, so a room merged away in the Roborock app froze the cluster until the next run. Progress and current area are now filtered against the published rooms, and a second "Bedroom" is "Bedroom 2".
+
+### Left as it is, on purpose
+
+3.33.0 and 3.34.0 said the room poll "normally" reads the floor from the status the plugin already polled. That cache is never written under Homebridge, so every room poll has asked `get_status` after `get_room_mapping` all along. I made the cache real during this release, and review showed why it should stay empty: a status up to 1 minute old files a map switched in the Roborock app under the wrong map, in the room cache that is persisted. 1 extra request every few minutes is cheaper. The comment now says so.
+
+### Tests
+
+2,131 tests, 65 more than 3.34.0. How many of the new ones fail on the 3.34.0 sources, measured file by file: 5 of 5 for the #35 fault, 3 of 3 for the gate after review, 11 of 12 for the Q10 table, 9 of 13 for the dock tanks, 2 of 7 for resume, 2 of 2 for the register, 5 of 10 for late replies, 4 of 4 for Service Area.
+
 ## 3.34.0
 
 **3.33.0 fixed the room poll for the robots that did not need it. Both reporters ran it and measured the same failure again.**
