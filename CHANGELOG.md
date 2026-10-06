@@ -16,9 +16,9 @@
 All 4 now follow python-roborock. Against a fake robot built from python-roborock's own codec in 5 firmware variants, 3.35.0 got an answer from 1 and 3.36.0 from all 5.
 
 - The hello result is logged once: `answered the local hello in 1.0`, or that the robot speaks `L01` on the LAN, or that it answered no hello. That line is what I need from #24 and #28.
-- A robot that answers no hello keeps 3.35.0's behaviour exactly. Its first request after a connect waits up to 10 seconds for the hellos; after that, not again.
+- A robot that answers no hello keeps 3.35.0's behaviour exactly. Its first request after a connect waits up to 10 seconds for the hellos; after that, not again. A robot listed as `L01` always waits, because no local frame can be built without the hello's nonces.
 
-I can only test the normal case on my own robots: my S8 Pro Ultra is a `1.0` robot on the LAN. Nobody here has a robot that needs `L01`, so that part is tested against python-roborock's codec, not against hardware.
+I ran it as 3.36.0-beta.1 on my own server first. My S8 Pro Ultra answered the hello in 1.0 in 4-18 ms on 4 restarts, and its local requests kept being answered for the 10 minutes I watched. Nobody here has a robot that needs `L01`, so that part is tested against python-roborock's codec, not against hardware.
 
 ### A cloud session that says it is up and delivers nothing
 
@@ -30,10 +30,11 @@ A cloud reply on protocol 4 or 5 that carries datapoint 102 is now read as a rep
 
 - A hello still in flight when the socket closed carried on into the dead socket, and a reconnect made in that window could inherit the old socket's hello and never get one of its own. Each hello now belongs to its socket, and a request that waited on a hello re-checks the socket before it is sent.
 - The session restart now never runs while Homebridge is stopping.
+- A socket that closed during its hello while the cloud was also down got the request written into it anyway, and counted it as a mute socket. It is now refused at once.
 
 ### Tests
 
-2,151 tests, 20 more than 3.35.0. Measured against the 3.35.0 sources, file by file: 12 of 13 fail for the hello and the reply rules, 3 of 4 for the session restart, 2 of 2 for the socket each hello belongs to. The last file passes there, because it guards against a restart 3.35.0 could not make.
+2,153 tests, 22 more than 3.35.0. Measured against the 3.35.0 sources, file by file: 12 of 13 fail for the hello and the reply rules, 3 of 5 for the session restart, 4 of 4 for the socket each hello belongs to. The 2 that pass there guard against a restart 3.35.0 could not make.
 
 ## 3.35.0
 

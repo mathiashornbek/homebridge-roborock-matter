@@ -926,7 +926,13 @@ class localConnector {
     // A robot that answered no hello last time is not made to wait 10 s on
     // every reconnect for the same answer; its requests go out as they always
     // did while the hello is retried alongside them.
-    if (this.reportedNegotiations.get(duid) === "none") {
+    // Not for a robot listed as L01: without the hello's nonces no local
+    // frame can be built at all, so it always waits (found in final
+    // verification).
+    if (
+      this.reportedNegotiations.get(duid) === "none" &&
+      (await this.adapter.getRobotVersion(duid)) !== "L01"
+    ) {
       return;
     }
     const inFlight = this.negotiations.get(duid);

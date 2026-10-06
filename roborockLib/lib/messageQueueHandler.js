@@ -447,9 +447,12 @@ class messageQueueHandler {
         );
       }
       // The socket may have closed during the wait. The state read before it
-      // is stale, so read it again and take the same cloud fallback as above.
+      // is stale, so read it again — for the cloud fallback here AND for the
+      // "no local connection" refusal further down, which reads the same
+      // variable (found in final verification).
+      localConnectionState = this.adapter.localConnector.isConnected(duid);
       if (
-        !this.adapter.localConnector.isConnected(duid) &&
+        !localConnectionState &&
         this.adapter.rr_mqtt_connector.isConnected()
       ) {
         useCloudConnection = true;
