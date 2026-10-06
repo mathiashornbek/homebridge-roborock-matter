@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.37.0
+
+**When a cloud request times out, the diagnostics report can now say whether the MQTT session was actually carrying anything at the time.**
+
+All of this release is [@pponce](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/29)'s work, in [#29](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/29), the first of a four-part series. It is deliberately passive: nothing here reconnects, gates a request, changes transport selection, or touches the unanswered-method breaker. It only writes down what was observed.
+
+### Why
+
+A cloud timeout has always been ambiguous. `MQTT connection state: true` says the link believes it is up, which is exactly what it says when the link is up and delivering nothing — the failure #24, #27 and #28 all run into. Until now there was no way to tell those apart after the fact.
+
+The snapshot now separates things that used to be one word:
+
+- **`connected` and `subscriptionAcknowledged` are different claims.** A session can be connected with no usable subscription behind it.
+- **Inbound is measured in 4 stages** — the raw MQTT callback, attribution to a known robot, successful decoding, and correlation to a pending request. A link that delivers frames nobody can attribute looks very different from one that delivers nothing, and both used to read as silence.
+- **`rawSilenceDuringRequest`** records whether _any_ raw MQTT callback arrived between sending an eligible read and its timeout. This is a claim about the session, not about one robot, so unlike the two-robot correlation rule it works on a single-robot account — which is what #22 and #24 both are.
+
+The report carries ages and counts only: no robot IDs, no topics, no credentials, no payloads.
+
+### Found in review
+
+Two things were wrong when this was first proposed, and both were the same shape as faults in 3.30.0 and 3.31.0 — a value that is published but never reaches the disk the reader reads from:
+
+- **The snapshot never persisted.** `MqttSessionDiagnostics` was published through `setStateAsync` but was in neither `PERSISTED_STATE_IDS` nor `DEBOUNCED_PERSIST_IDS`, while the settings page reads it from `storagePath`. The new block would have rendered in tests and never in production. The suite was green because the UI test wrote the file itself. Both sets now contain it, and the shutdown flush was moved to _after_ transport teardown so the final disconnected snapshot reaches disk.
+- **A subscription could never be acknowledged after a reconnect.** mqtt.js resubscribes on its own, before our handler runs, so our `subscribe` callback comes back with no error and an empty grant list. Read as a result, that meant every reconnected session reported "subscription not acknowledged" forever. Acknowledgement is now taken from real SUBACK packets on the client's `packetreceive` event, and an empty grant list is treated as the no-op it is. A SUBACK whose grants are refusals still counts as unacknowledged.
+
+The second one was only visible because the test was rewritten to drive the real mqtt.js client against a loopback broker instead of a mock. The mock had been asserting the behaviour it was built to expect.
+
+### Tests
+
+2,187 tests, 36 more than 3.36.0, including a regression that drops the socket mid-session, withholds the second SUBACK, and verifies the session becomes acknowledged only when that packet actually arrives.
+
 ## 3.36.0
 
 **The LAN connection now asks the robot which protocol it speaks, the way python-roborock always has, and a cloud session that has gone quiet is restarted.**
