@@ -607,7 +607,8 @@ class messageQueueHandler {
               );
               const sessionSummary = sessionHealth?.correlatedSilenceObserved
                 ? ` MQTT session: correlated silence across ${sessionHealth.silentReadRobotCount} robots (generation ${sessionHealth.generation}).`
-                : sessionHealth && !sessionHealth.subscriptionAcknowledged
+                : sessionHealth?.connected &&
+                    !sessionHealth.subscriptionAcknowledged
                   ? ` MQTT session: subscription not acknowledged (generation ${sessionHealth.generation}).`
                   : "";
               const error = unansweredRequestError(

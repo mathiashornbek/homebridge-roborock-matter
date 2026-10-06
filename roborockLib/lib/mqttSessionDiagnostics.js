@@ -66,6 +66,9 @@ class MqttSessionDiagnostics {
   /** @param {number} generation @param {unknown} error @param {unknown} granted */
   onSubscribe(generation, error, granted) {
     if (generation !== this.generation || !this.connected) return;
+    // mqtt.js may already own the resubscribe. Its successful no-op callback
+    // carries no grants: it is neither a SUBACK nor a refusal.
+    if (!error && Array.isArray(granted) && granted.length === 0) return;
     this.subscriptionAcknowledged =
       !error &&
       Array.isArray(granted) &&

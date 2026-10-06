@@ -255,6 +255,19 @@ class roborock_mqtt_connector {
       this.initialConnectTimeout.unref();
     }
 
+    const subscribedClient = client;
+    // mqtt.js resubscribes before our connect handler. A subscribe callback
+    // can therefore contain no grants even though a real SUBACK follows.
+    // Observe that packet without changing mqtt.js subscription behaviour.
+    subscribedClient.on("packetreceive", (packet) => {
+      if (client !== subscribedClient || packet.cmd !== "suback") return;
+      this.sessionDiagnostics.onSubscribe(
+        this.sessionDiagnostics.generation,
+        null,
+        packet.granted.map((qos) => ({ qos }))
+      );
+    });
+
     await client.on("connect", (result) => {
       if (typeof result != "undefined") {
         const generation = this.sessionDiagnostics.onConnect();
@@ -304,8 +317,8 @@ class roborock_mqtt_connector {
     });
 
     await client.on("reconnect", () => {
-      // Preserve the legacy subscription, but only the connect-handler
-      // SUBACK is authoritative for the new diagnostics generation.
+      // Preserve the legacy subscription. Its callback is not evidence for
+      // a new generation; actual SUBACK packets are observed above.
       client.subscribe(`rr/m/o/${rriot.u}/${mqttUser}/#`, (err, granted) => {
         if (err) {
           this.logConnectionIssue(

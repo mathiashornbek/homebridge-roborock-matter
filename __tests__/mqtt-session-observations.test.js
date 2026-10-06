@@ -10,9 +10,15 @@ const vm = require("vm");
 const ts = require("typescript");
 const mockHandlers = new Map();
 const mockSubscriptions = [];
+let mockKnownTopic = false;
 const mockClient = {
   on: jest.fn((event, handler) => mockHandlers.set(event, handler)),
-  subscribe: jest.fn((topic, callback) => mockSubscriptions.push(callback)),
+  subscribe: jest.fn((topic, callback) => {
+    mockSubscriptions.push(callback);
+    // Like mqtt.js, a known topic's subscribe call is a successful no-op.
+    // The broker's automatic resubscribe SUBACK arrives as a packet instead.
+    if (mockKnownTopic) callback(null, []);
+  }),
   publish: jest.fn(),
   end: jest.fn(),
   reconnect: jest.fn(),
@@ -62,7 +68,11 @@ async function timeout(duid = "robot-a", method = "get_status") {
   return request.result;
 }
 function acknowledge() {
-  mockSubscriptions.at(-1)(null, [{ topic: "private-topic", qos: 1 }]);
+  mockHandlers.get("packetreceive")?.({ cmd: "suback", granted: [1] });
+  if (!mockKnownTopic) {
+    mockKnownTopic = true;
+    mockSubscriptions.at(-1)(null, [{ topic: "private-topic", qos: 1 }]);
+  }
 }
 
 beforeEach(async () => {
@@ -71,6 +81,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockHandlers.clear();
   mockSubscriptions.length = 0;
+  mockKnownTopic = false;
   states = new Map();
   requestId = 0;
   adapter = {
@@ -538,6 +549,53 @@ test("an unacknowledged subscription produces a concise timeout summary", async 
   );
   expect(error.message).not.toContain("capturedAt");
   expect(snapshot().rawSilenceDuringRequest).toBeNull();
+});
+
+test("a disconnected request timeout does not claim a subscription is unacknowledged", async () => {
+  const request = await startRequest();
+  mockHandlers.get("close")();
+  await jest.advanceTimersByTimeAsync(10_000);
+  const error = await request.result;
+  expect(error.message).toContain("MQTT connection state: false");
+  expect(error.message).not.toContain("subscription not acknowledged");
+});
+
+test("automatic resubscribe restores silence observations without callback grants", async () => {
+  mockHandlers.get("close")();
+  mockHandlers.get("reconnect")();
+  mockHandlers.get("connect")({ sessionPresent: false });
+  expect(snapshot().subscriptionAcknowledged).toBe(false);
+  acknowledge();
+  // A later successful no-op must not revoke the packet acknowledgement.
+  mockSubscriptions.at(-1)(null, []);
+  await timeout("robot-a");
+  await timeout("robot-b");
+  expect(snapshot()).toMatchObject({
+    generation: 2,
+    subscriptionAcknowledged: true,
+    rawSilenceDuringRequest: true,
+    correlatedSilenceObserved: true,
+  });
+});
+
+test("a refused automatic SUBACK does not acknowledge the new generation", () => {
+  mockHandlers.get("close")();
+  mockHandlers.get("connect")({ sessionPresent: false });
+  mockHandlers.get("packetreceive")?.({ cmd: "suback", granted: [128] });
+  expect(snapshot().subscriptionAcknowledged).toBe(false);
+  mockSubscriptions.at(-1)(null, []);
+  expect(snapshot().subscriptionAcknowledged).toBe(false);
+  acknowledge();
+  expect(snapshot().subscriptionAcknowledged).toBe(true);
+});
+
+test("packets received while disconnected cannot acknowledge a session", () => {
+  mockHandlers.get("close")();
+  mockHandlers.get("packetreceive")?.({ cmd: "suback", granted: [1] });
+  expect(snapshot()).toMatchObject({
+    connected: false,
+    subscriptionAcknowledged: false,
+  });
 });
 
 test.each(["before-connect", "after-connect", "after-connect-suback"])(
