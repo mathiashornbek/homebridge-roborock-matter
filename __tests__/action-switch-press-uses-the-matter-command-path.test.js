@@ -183,6 +183,23 @@ function createHarness({
 }
 
 describe("pressing the switch reaches the robot the way the tile does", () => {
+  test("acknowledges HomeKit before the robot command settles", async () => {
+    const harness = createHarness();
+    let finishCommand;
+    harness.appCharge.mockReturnValue(
+      new Promise((resolve) => {
+        finishCommand = resolve;
+      })
+    );
+
+    expect(harness.on.setHandler(true)).toBeUndefined();
+    await flush();
+    expect(harness.appCharge).toHaveBeenCalledTimes(1);
+
+    finishCommand();
+    await flush();
+  });
+
   test("Return to Dock sends the same Roborock command", async () => {
     const harness = createHarness();
 
@@ -326,7 +343,7 @@ describe("a press that cannot be served fails quietly and legibly", () => {
   test("no robot yet: a warning, not a thrown accessory error", async () => {
     const harness = createHarness({ withVacuum: false });
 
-    await expect(harness.on.setHandler(true)).resolves.not.toThrow();
+    expect(harness.on.setHandler(true)).toBeUndefined();
     expect(harness.platform.log.warn).toHaveBeenCalledWith(
       expect.stringContaining("not set up yet")
     );

@@ -170,7 +170,7 @@ export default class RoborockActionSwitchAccessory {
     // set of handlers on the same characteristic would run the command twice.
     on.removeAllListeners("get");
     on.removeAllListeners("set");
-    on.onGet(() => false).onSet((value) => this.handlePress(value));
+    on.onGet(() => false).onSet((value) => this.acceptPress(value));
 
     // Whatever the cache remembered, the switch starts off: it is momentary,
     // and an accessory restored in the on position would tell an automation
@@ -196,6 +196,19 @@ export default class RoborockActionSwitchAccessory {
       clearTimer(this.resetTimer);
       this.resetTimer = null;
     }
+  }
+
+  /** A momentary HAP switch acknowledges the press, not robot completion. */
+  private acceptPress(value: CharacteristicValue): void {
+    void this.handlePress(value).catch((error) => {
+      // handlePress owns expected command errors. This catch is only a final
+      // guard for an unexpected failure outside its command try/catch.
+      this.platform.log.error(
+        `Unable to accept ${this.accessory.displayName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
   }
 
   /**

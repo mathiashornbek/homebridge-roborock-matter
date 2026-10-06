@@ -197,6 +197,8 @@ function parseProtocol301Header(payload) {
 class roborock_mqtt_connector {
   constructor(adapter) {
     this.adapter = adapter;
+    // Last live presence value per robot; log suppression only.
+    this.robotPresenceByDuid = new Map();
 
     this.sessionDiagnostics = new MqttSessionDiagnostics((snapshot) => {
       Promise.resolve(
@@ -264,7 +266,7 @@ class roborock_mqtt_connector {
       this.sessionDiagnostics.onSubscribe(
         this.sessionDiagnostics.generation,
         null,
-        packet.granted.map((qos) => ({ qos }))
+        (packet.granted || []).map((qos) => ({ qos }))
       );
     });
 
@@ -422,7 +424,9 @@ class roborock_mqtt_connector {
   async initMQTT_Message() {
     this.adapter.log.debug(`MQTT initialized.`);
 
-    client.on("message", (topic, message) => {
+    const observedClient = client;
+    observedClient.on("message", (topic, message, packet = {}) => {
+      if (client !== observedClient) return;
       try {
         this.sessionDiagnostics.noteActivity("raw");
         const duid = this.resolveDuidFromTopic(topic);
@@ -751,20 +755,40 @@ class roborock_mqtt_connector {
           }
 
           // Check if the device is online
-          if (parsedData.online == false) {
-            // A robot dropping off is the single most common thing users open
-            // issues about, and the old wording ("Couldn't process message")
-            // described a failure that did not happen — the message parsed
-            // fine, and what it said was "offline".
-            this.adapter.log.warn(
-              `${describeDevice(this.adapter, duid)} reports itself offline; commands will fail until it reconnects. Check that the robot is powered on and on Wi-Fi.`
+          // Accept Boolean presence and the numeric 0/1 form supported by the
+          // previous loose comparison, without coercing arbitrary values.
+          if (
+            typeof parsedData.online === "boolean" ||
+            parsedData.online === 0 ||
+            parsedData.online === 1
+          ) {
+            const online = Boolean(parsedData.online);
+            const retained = packet?.retain === true;
+            const duplicate = packet?.dup === true;
+            const label = describeDevice(this.adapter, duid);
+
+            this.adapter.log.debug(
+              `MQTT presence for ${label}: online=${online}; retain=${retained}; dup=${duplicate}.`
             );
-          } else if (parsedData.online == true) {
-            // The counterpart was commented out, so a robot that dropped and
-            // came back left the log asserting it was offline forever.
-            this.adapter.log.info(
-              `${describeDevice(this.adapter, duid)} is back online.`
-            );
+            if (retained) {
+              // A subscription snapshot is not evidence of a new transition.
+              return;
+            }
+
+            // DUP does not prove we received the earlier delivery. Process it
+            // normally and suppress logs by the observed value, not the flag.
+            const previous = this.robotPresenceByDuid.get(duid);
+            this.robotPresenceByDuid.set(duid, online);
+            if (previous === online) {
+              return;
+            }
+            if (!online) {
+              this.adapter.log.warn(
+                `${label} reports itself offline via MQTT. This presence notification does not by itself prove that local or cloud commands will fail.`
+              );
+            } else if (previous === false) {
+              this.adapter.log.info(`${label} is back online.`);
+            }
           } else if (
             // Check for firmware update information
             parsedData.mqttOtaData
