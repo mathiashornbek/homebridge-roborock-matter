@@ -155,6 +155,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @property {boolean} [secure] True for requests whose protocol-102 reply is
  *   only an acknowledgement, with the real payload arriving on protocol 301.
  * @property {string} [method] The Roborock method, kept for diagnostics.
+ * @property {"cloud" | "local"} [transport] Used to leave local requests alone during MQTT recreation.
  */
 
 /**
@@ -181,6 +182,8 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} MqttConnector
+ * @property {() => void} [assertCanSend]
+ * @property {{observeTimeout: (observation?: ReturnType<import("./mqttSessionDiagnostics").MqttSessionDiagnostics["noteTimeout"]>) => void} | null} [recovery]
  * @property {import("./mqttSessionDiagnostics").MqttSessionDiagnostics} [sessionDiagnostics]
  * @property {() => boolean} isConnected
  * @property {(duid: string, message: Buffer) => void} sendMessage
@@ -500,6 +503,8 @@ class messageQueueHandler {
     );
 
     if (roborockMessage) {
+      // Recheck after async payload building: a recreation may have begun.
+      if (useCloudConnection) this.adapter.rr_mqtt_connector.assertCanSend?.();
       return new Promise((resolve, reject) => {
         if (
           !deviceOnline &&
@@ -648,6 +653,9 @@ class messageQueueHandler {
                 this.adapter.noteCloudSilence?.();
               }
               reject(error);
+              this.adapter.rr_mqtt_connector.recovery?.observeTimeout(
+                sessionHealth
+              );
             } else {
               // A socket that keeps reporting itself connected while every
               // request dies of silence is not a transport worth retrying
@@ -715,6 +723,7 @@ class messageQueueHandler {
             timeout,
             secure,
             method,
+            transport: useCloudConnection ? "cloud" : "local",
           });
 
           if (useCloudConnection) {
