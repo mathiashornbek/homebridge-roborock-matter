@@ -205,12 +205,18 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  *
  * @param {string} message
  * @param {boolean} transportWasUp whether the link was up AT REJECTION TIME
- * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean}}
+ * @param {boolean} [accountSessionWasSilent=false] correlated silence on this cloud read
+ * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean, accountSessionWasSilent: boolean}}
  */
-function unansweredRequestError(message, transportWasUp) {
+function unansweredRequestError(
+  message,
+  transportWasUp,
+  accountSessionWasSilent = false
+) {
   return Object.assign(new Error(message), {
     unansweredRequest: true,
     transportWasUp,
+    accountSessionWasSilent,
   });
 }
 
@@ -613,7 +619,12 @@ class messageQueueHandler {
                   : "";
               const error = unansweredRequestError(
                 `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionSummary}`,
-                transportWasUp
+                transportWasUp,
+                Boolean(
+                  transportWasUp &&
+                    sessionHealth?.requestWasSilent &&
+                    sessionHealth?.correlatedSilenceObserved
+                )
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
               this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
