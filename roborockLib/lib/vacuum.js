@@ -62,6 +62,18 @@ function buildForwardedRequestOptions(options = {}) {
  * `map_status >> 2` before storing it — so it is returned as-is. Shifting it a
  * second time would file every room on floor 1 under floor 0.
  *
+ * UNDER HOMEBRIDGE THIS IS ALWAYS NULL, and that is now on purpose. The write
+ * it expects sits behind the ioBroker `getObjectAsync()` gate in the status
+ * loop, which is an empty dummy here, so 3.33.0 and 3.34.0's "the floor
+ * normally comes from the status the plugin already polled" never happened:
+ * every room poll asked `get_status` right after `get_room_mapping`. 3.35.0
+ * briefly made the cache real, and review showed why it should not be — the
+ * status poll is up to a minute old, so a map switched in the Roborock app
+ * inside that minute got its rooms filed under the OLD map's id, in the room
+ * cache that is persisted and only refilled for maps with no rooms at all.
+ * A fresh `get_status` is one request every few minutes; a corrupted room
+ * list is a robot cleaning the wrong room. Do not populate this.
+ *
  * @param {{ getStateAsync?: (id: string) => {val?: unknown} | null | undefined }} adapter
  * @param {string} duid
  * @returns {number | null}

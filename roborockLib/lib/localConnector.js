@@ -5,6 +5,7 @@ const Parser = require("binary-parser").Parser;
 const net = require("net");
 const dgram = require("dgram");
 const { describeDevice } = require("./describeDevice");
+const { noteLateReply } = require("./lateReplies");
 const {
   describeReplyRefusal,
   createRefusalError,
@@ -741,6 +742,13 @@ class localConnector {
           payload: result,
         });
       }
+    } else {
+      // Until 3.35.0 a reply with no request waiting was dropped here without
+      // a word. One that answers a request which already timed out is the
+      // robot being slow, and is now said and counted (lib/lateReplies.js).
+      // It deliberately does NOT reset the mute-socket counter: a socket on
+      // which every reply comes too late is no more usable than a silent one.
+      noteLateReply(this.adapter, duid, id, "local");
     }
   }
 

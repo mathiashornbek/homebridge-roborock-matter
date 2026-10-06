@@ -49,6 +49,8 @@ export const HOMEKIT_STATE_SENSOR_KEYS = [
   "docked",
   "cleaning",
   "waterTankEmpty",
+  "dirtyWaterTankFull",
+  "cleaningFluidEmpty",
 ] as const;
 
 export type HomeKitStateSensorKey = (typeof HOMEKIT_STATE_SENSOR_KEYS)[number];

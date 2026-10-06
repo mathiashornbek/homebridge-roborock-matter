@@ -286,6 +286,10 @@ describe("a sensor at rest is not announcing anything", () => {
       ...AT_REST,
       dock_error_status: 0,
       water_shortage_status: 0,
+      // A real dock status word with every tank fine (DSimeone's a144, #22:
+      // clean 2, dirty 2, cleaning fluid 2). The two dock-tank sensors read
+      // it, and a dock that sends none leaves them unknown rather than "fine".
+      dss: 2216,
     });
 
     for (const definition of STATE_SENSOR_DEFINITIONS) {

@@ -215,7 +215,62 @@ function canSendV1Method(method, params) {
   }
 }
 
+/**
+ * Q10 work status (datapoint 121, python-roborock `YXDeviceState`) -> the v1
+ * state code with the same meaning.
+ *
+ * The Q10 numbers its common states exactly as v1 does (2 sleeping, 3 idle,
+ * 5 cleaning, 6 returning, 8 charging, 10 paused, 12 error, 14 updating,
+ * 22 emptying the bin, 29 mapping), so those pass through. What it adds are
+ * the sub-states of a run (99 saving the map, 101 relocating, 102 sweeping,
+ * 103 mopping, 104 sweeping and mopping, 105 transitioning) and 108 waiting
+ * to charge. Read as v1 numbers those land on v1's 101 "device offline" and
+ * 103 "locked", so they are folded into the run (5) and charging (8).
+ *
+ * Until 3.35.0 the home-data snapshot of EVERY `pv === "B01"` robot went
+ * through the Q7 table instead, which is a different numbering: a charging
+ * Q10 (8) became Stopped, an idle one (3) became Docking. A push of the same
+ * datapoint was read as v1, so the two sources disagreed and the tile flapped
+ * between them (#33).
+ *
+ * @type {Record<number, number>}
+ */
+const Q10_STATUS_TO_V1_STATE = {
+  2: 2,
+  3: 3,
+  5: 5,
+  6: 6,
+  7: 7,
+  8: 8,
+  10: 10,
+  12: 12,
+  14: 14,
+  22: 22,
+  29: 29,
+  99: 5,
+  101: 5,
+  102: 5,
+  103: 5,
+  104: 5,
+  105: 5,
+  108: 8,
+};
+
+/**
+ * @param {unknown} rawStatus a Q10 datapoint-121 value
+ * @returns {number | null} the v1 state, or null when the code is not known
+ */
+function translateQ10StatusToV1State(rawStatus) {
+  if (rawStatus === null || rawStatus === undefined || rawStatus === "") {
+    return null;
+  }
+  const mapped = Q10_STATUS_TO_V1_STATE[Number(rawStatus)];
+  return mapped !== undefined ? mapped : null;
+}
+
 module.exports = {
+  Q10_STATUS_TO_V1_STATE,
+  translateQ10StatusToV1State,
   B01_Q10_DP,
   YX_CLEAN_TASK,
   MATTER_TO_Q10_CLEAN_TYPE,

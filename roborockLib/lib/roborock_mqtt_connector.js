@@ -6,6 +6,7 @@ const Parser = require("binary-parser").Parser;
 const zlib = require("zlib");
 const roborockCrypto = require("./roborockCrypto");
 const { describeDevice } = require("./describeDevice");
+const { noteLateReply } = require("./lateReplies");
 const {
   describeReplyRefusal,
   createRefusalError,
@@ -480,6 +481,8 @@ class roborock_mqtt_connector {
             } else {
               pending.resolve(dps.result);
             }
+          } else if (!pending) {
+            noteLateReply(this.adapter, duid, dps.id, "cloud");
           }
           // protocol 300 seems to be for get_photo 0 only. get_photo 0 is for large images. 1 is for small images.
         } else if (data.protocol == 300) {
@@ -621,14 +624,28 @@ class roborock_mqtt_connector {
               // this.adapter.log.debug("raw 301: " + decrypted);
 
               if (!this.adapter.pendingRequests.has(data2.id)) {
-                noteDroppedFrame(duid, "no-request-waiting");
                 // The other silent drop on this path. An unsolicited map push
                 // lands here legitimately, but so does a reply whose id we
                 // failed to match — and the waiting request then times out
-                // with nothing in the log to say a reply had arrived.
-                this.adapter.log.debug(
-                  `Received a protocol 301 message for ${duid} with id ${data2.id}, but no request is waiting for that id. It was decrypted successfully, so the robot did answer something; either this is an unsolicited map push, or a reply arrived after its request had already timed out.`
+                // with nothing in the log to say a reply had arrived. Since
+                // 3.35.0 a reply to a request that had ALREADY timed out is
+                // told apart and counted as late, not as discarded: it is the
+                // robot being slow, not this side throwing an answer away.
+                const late = noteLateReply(
+                  this.adapter,
+                  duid,
+                  data2.id,
+                  "cloud"
                 );
+                noteDroppedFrame(
+                  duid,
+                  late ? "arrived-after-timeout" : "no-request-waiting"
+                );
+                if (!late) {
+                  this.adapter.log.debug(
+                    `Received a protocol 301 message for ${duid} with id ${data2.id}, but no request is waiting for that id. It was decrypted successfully, so the robot did answer something; either this is an unsolicited map push, or a reply to a request this plugin did not send.`
+                  );
+                }
               }
 
               if (this.adapter.pendingRequests.has(data2.id)) {

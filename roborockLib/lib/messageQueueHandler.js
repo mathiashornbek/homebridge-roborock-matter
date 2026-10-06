@@ -146,7 +146,11 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 /**
  * @typedef {Object} PendingRequest
  * @property {(value: unknown) => void} resolve
- * @property {(reason?: unknown) => void} reject
+ * @property {(reason?: unknown) => void} reject Called by the reply handlers
+ *   with the robot's own refusal, so it also tells the give-up register the
+ *   robot answered.
+ * @property {(reason?: unknown) => void} [abandon] Rejects WITHOUT telling the
+ *   register anything — for shutdown, where nothing was answered.
  * @property {ReturnType<typeof setTimeout>} timeout
  * @property {boolean} [secure] True for requests whose protocol-102 reply is
  *   only an acknowledgement, with the real payload arriving on protocol 301.
@@ -227,6 +231,9 @@ function unansweredRequestError(message, transportWasUp) {
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(duid: string, method: string) => void} [noteRequestAnswered]
  * @property {(duid: string, method: string, error: unknown) => void} [noteRequestUnanswered]
+ * @property {import("./lateReplies").LateReplyTracker} [lateReplies] Remembers
+ *   timed-out request ids so a reply that turns up after its timeout can be
+ *   told apart from one that never came.
  * @property {(duid: string) => number} [getCloudMessageReceiptCount] How many
  *   decoded MQTT messages have been attributed to this robot since startup.
  *   Optional so an adapter that cannot count them keeps the old timeout text.
@@ -573,6 +580,7 @@ class messageQueueHandler {
                 transportWasUp
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
+              this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
               reject(error);
             } else {
               // A socket that keeps reporting itself connected while every
@@ -592,6 +600,7 @@ class messageQueueHandler {
                 transportWasUp
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
+              this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
               reject(error);
             }
           }, requestTimeout);
@@ -615,7 +624,18 @@ class messageQueueHandler {
               this.adapter.noteRequestAnswered?.(duid, method);
               resolve(value);
             },
-            reject,
+            // A refusal is an answer too. The reply handlers (cloud 102,
+            // local protocol 4, B01 code) hand the robot's own error to the
+            // STORED reject; timeouts and no-link refusals use the promise's
+            // reject directly, and shutdown uses `abandon`. Until 3.35.0 this
+            // was the bare reject, so a robot that kept saying "no" neither
+            // counted nor reset: five silences, one refusal, one silence, and
+            // the method was given up on although the robot had just replied.
+            reject: (error) => {
+              this.adapter.noteRequestAnswered?.(duid, method);
+              reject(error);
+            },
+            abandon: reject,
             timeout,
             secure,
             method,

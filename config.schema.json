@@ -196,13 +196,19 @@
       },
       "homeKitStateSensors": {
         "title": "Which Sensors to Add",
-        "description": "Which states get a sensor. Docked is the one to start with: it is the state most automations read, and \"not docked\" is its own answer. Cleaning is the pair for it — not docked AND not cleaning means the robot is probably stuck somewhere, which is the automation this was asked for. Water Tank Empty is the one Apple Home cannot show any other way: Matter's vacuum device type has no water-tank attribute, so a sensor is the only route to a notification. Only used when the setting above is on.",
+        "description": "Which states get a sensor. Docked is the one to start with: it is the state most automations read, and \"not docked\" is its own answer. Cleaning is the pair for it — not docked AND not cleaning means the robot is probably stuck somewhere, which is the automation this was asked for. Water Tank Empty is the one Apple Home cannot show any other way: Matter's vacuum device type has no water-tank attribute, so a sensor is the only route to a notification. Dirty Water Tank Full and Cleaning Fluid Empty are the same idea for the dock's other two tanks, read from the dock's own status word; a dock that does not report them leaves the sensor at Open. Only used when the setting above is on.",
         "type": "array",
         "uniqueItems": true,
         "default": ["docked"],
         "items": {
           "type": "string",
-          "enum": ["docked", "cleaning", "waterTankEmpty"],
+          "enum": [
+            "docked",
+            "cleaning",
+            "waterTankEmpty",
+            "dirtyWaterTankFull",
+            "cleaningFluidEmpty"
+          ],
           "oneOf": [
             {
               "title": "Docked (Closed while the robot is in its dock)",
@@ -215,6 +221,14 @@
             {
               "title": "Water Tank Empty (Closed while the robot reports no clean water)",
               "enum": ["waterTankEmpty"]
+            },
+            {
+              "title": "Dirty Water Tank Full (Closed while the dock reports its dirty-water tank full)",
+              "enum": ["dirtyWaterTankFull"]
+            },
+            {
+              "title": "Cleaning Fluid Empty (Closed while the dock reports its cleaning-fluid cartridge empty)",
+              "enum": ["cleaningFluidEmpty"]
             }
           ]
         }

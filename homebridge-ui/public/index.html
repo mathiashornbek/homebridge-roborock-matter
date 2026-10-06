@@ -336,6 +336,37 @@
           ></span
         >
       </label>
+      <label class="checkbox">
+        <input
+          id="homekit-state-dirty-water-tank-full"
+          type="checkbox"
+          disabled
+        />
+        <span
+          >Dirty Water Tank Full
+          <small
+            >Closed while the dock reports its dirty-water tank full (or not
+            fitted), Open otherwise. Read from the dock&rsquo;s own status word
+            where the dock sends one, so on those docks a full dirty tank no
+            longer hides an empty clean one.</small
+          ></span
+        >
+      </label>
+      <label class="checkbox">
+        <input
+          id="homekit-state-cleaning-fluid-empty"
+          type="checkbox"
+          disabled
+        />
+        <span
+          >Cleaning Fluid Empty
+          <small
+            >Closed while the dock reports its cleaning-fluid cartridge empty
+            (or not fitted), Open otherwise. Only docks with automatic detergent
+            dosing report this; on any other dock the sensor stays Open.</small
+          ></span
+        >
+      </label>
     </div>
 
     <div id="homekit-switch-pairing" class="pairing-callout hidden">

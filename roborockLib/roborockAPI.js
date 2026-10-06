@@ -26,8 +26,10 @@ const {
   parseCloudSceneSchedules,
 } = require("./lib/parseCloudSceneSchedules");
 const b01Q7Adapter = require("./lib/b01Q7Adapter");
+const b01Q10Adapter = require("./lib/b01Q10Adapter");
 const { describeDroppedFrames } = require("./lib/roborock_mqtt_connector");
 const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
+const { LateReplyTracker } = require("./lib/lateReplies");
 
 // v1 states in which the robot is actively doing something and state
 // transitions are imminent (cleaning, returning, spot/zone/segment runs,
@@ -338,6 +340,11 @@ const DIAGNOSTIC_PRIORITY_KEYS = new Set([
   "error_code",
   "fault",
   "dock_error_status",
+  // The dock's packed tank word, and its neighbours. #22's diagnostics dropped
+  // all three at the key limit, which hid the one field that explained it.
+  "dss",
+  "rss",
+  "wash_status",
   "dock_type",
   "battery",
   "charge_status",
@@ -427,6 +434,7 @@ const SIMPLE_VACUUM_COMMANDS = new Set([
   "find_me",
   "app_segment_clean_by_ids",
   "resume_segment_clean",
+  "resume_zoned_clean",
   "load_multi_map",
 ]);
 
@@ -526,6 +534,9 @@ class Roborock {
     // silent method costs 4 requests a day instead of 8,640. See
     // lib/unansweredMethodBreaker.js for the measurements behind it.
     this.unansweredMethods = new UnansweredMethodBreaker();
+    // Replies that came after their request had timed out. See
+    // lib/lateReplies.js; the give-up line reads it.
+    this.lateReplies = new LateReplyTracker();
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -2232,7 +2243,11 @@ class Roborock {
       for (const [messageID, pending] of this.pendingRequests) {
         try {
           this.clearTimeout(pending?.timeout);
-          pending?.reject?.(new Error("Homebridge is shutting down."));
+          // `abandon`, not `reject`: the stored reject now tells the give-up
+          // register the robot answered, and at shutdown nothing did.
+          (pending?.abandon ?? pending?.reject)?.(
+            new Error("Homebridge is shutting down.")
+          );
         } catch {
           // A rejected pending request that nobody is listening to any more
           // is exactly what shutdown looks like; it must not stop the rest.
@@ -3420,6 +3435,10 @@ class Roborock {
    * @returns {void}
    */
   noteMethodAnswered(duid, method) {
+    // Late replies are evidence about the CURRENT run of silences. One that
+    // turned up hours ago must not make tonight's give-up line say "too slow"
+    // (found in review).
+    this.lateReplies?.resetMethod(duid, method);
     if (this.unansweredMethods.recordAnswer(duid, method)) {
       this.log.info(
         `${this.describeDevice(duid)} answers ${method} again; it is back in the normal poll cycle.`
@@ -3437,7 +3456,26 @@ class Roborock {
    * @returns {boolean} whether the breaker opened on this failure
    */
   noteMethodUnanswered(duid, method, error) {
+    // ONE SILENCE, ONE COUNT. The message layer reports every timeout it
+    // sees, and the live-room fetches report their own failures too — for
+    // the classic `get_map_v1` that was the same rejected request twice, so
+    // 3 silent fetches counted as 6 and live-room tracking was given up on
+    // halfway to the rule (CooperCGN's log in #28 shows both lines at the
+    // same second). An error that has already been counted gives the same
+    // answer again instead of a second count.
+    if (!this._countedUnanswered) {
+      /** @type {WeakMap<object, boolean>} */
+      this._countedUnanswered = new WeakMap();
+    }
+    const errorKey = error !== null && typeof error === "object" ? error : null;
+    if (errorKey && this._countedUnanswered.has(errorKey)) {
+      return this._countedUnanswered.get(errorKey) === true;
+    }
+
     const outcome = this.unansweredMethods.recordFailure(duid, method, error);
+    if (errorKey && outcome.counted) {
+      this._countedUnanswered.set(errorKey, outcome.opened);
+    }
     if (!outcome.opened) {
       return false;
     }
@@ -3473,17 +3511,41 @@ class Roborock {
     // discards leaves the request to die on its timer — indistinguishable
     // from a robot that never answered. So say which one it was, here, at
     // info level, where the number cannot be missed.
+    //
+    // CORRECTED IN 3.35.0. The verdict below used to be the same sentence for
+    // every method, built only from the protocol-301 (map) frame counter. For
+    // `get_server_timer` or `get_consumable` that counter says nothing at all,
+    // yet the line still told #24 and #28 that "the reply is not arriving at
+    // all". And a map frame that arrived after its request had timed out was
+    // counted as "discarded by the plugin — a bug here". Now: late replies
+    // are counted per method (lib/lateReplies.js) and named first, and the
+    // map-frame claim is made only about the map request.
+    const lateReplies = this.lateReplies?.count(duid, method) ?? 0;
     const dropped = describeDroppedFrames(duid);
-    const verdict =
-      dropped.total > 0
-        ? ` NOTE: ${dropped.total} map reply frame(s) for this robot were received and then discarded by the plugin (${Object.entries(
-            dropped.byReason
-          )
-            .map(([reason, count]) => `${reason}: ${count}`)
-            .join(
-              ", "
-            )}), so the robot IS answering and this side is throwing it away. Please report this — it is a bug here, not on your robot.`
-        : " No reply frames for this robot were received and discarded, so the reply is not arriving at all rather than being lost on this side.";
+    const discardedByReason = Object.entries(dropped.byReason).filter(
+      ([reason]) => reason !== "arrived-after-timeout"
+    );
+    const discarded = discardedByReason.reduce(
+      (sum, [, count]) => sum + count,
+      0
+    );
+    const isMapRequest = method === "get_map_v1";
+    let verdict;
+    if (this.isB01Device(duid)) {
+      // A B01 request goes on the wire under a translated name and its late
+      // replies are not matched, so neither verdict below would be measured.
+      verdict = "";
+    } else if (lateReplies > 0) {
+      verdict = ` ${lateReplies} repl${lateReplies === 1 ? "y" : "ies"} to ${method} did arrive, but only after the plugin had stopped waiting (10 seconds), so the robot IS answering, just too slowly to be used.`;
+    } else if (isMapRequest && discarded > 0) {
+      verdict = ` NOTE: ${discarded} map reply frame(s) for this robot were received and then discarded by the plugin (${discardedByReason
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(
+          ", "
+        )}), so the robot IS answering and this side is throwing it away. Please report this — it is a bug here, not on your robot.`;
+    } else {
+      verdict = ` No late reply to ${method} has arrived either${isMapRequest ? ", and no map reply frame was received and discarded" : ""}, so the reply is not arriving at all rather than arriving late or being lost on this side.`;
+    }
 
     this.log.info(
       `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. This is the robot or the Roborock cloud declining to reply, not a connection failure — those are reported separately.${verdict}`
@@ -3709,6 +3771,7 @@ class Roborock {
           // the method for another six hours. Coming back online is exactly
           // the moment the old evidence stops meaning anything.
           const forgotten = this.unansweredMethods.forgetDevice(duid);
+          this.lateReplies.forgetDevice(duid);
           if (forgotten > 0) {
             this.log.debug(
               `${this.describeDevice(duid)} is back online; forgetting ${forgotten} unanswered-request counter(s) so it starts from a clean slate.`
@@ -4858,6 +4921,20 @@ class Roborock {
    */
   async resume_segment_clean(duid, options) {
     await this.startCommand(duid, "resume_segment_clean", null, options);
+  }
+
+  /**
+   * CONTINUE a paused zone clean. The zone counterpart of
+   * resume_segment_clean: `in_cleaning` 2 is Roborock's "zone clean not
+   * complete" (python-roborock `RoborockInCleaning`), and `app_start` on it
+   * starts a whole-home run, exactly as it does on a paused room clean.
+   *
+   * @param {string} duid
+   * @param {object} [options]
+   * @returns {Promise<void>}
+   */
+  async resume_zoned_clean(duid, options) {
+    await this.startCommand(duid, "resume_zoned_clean", null, options);
   }
 
   /**
@@ -6661,6 +6738,40 @@ class Roborock {
   }
 
   /**
+   * A B01 robot that speaks the Q10 dialect (`ss*`), which numbers its states
+   * differently from the Q7 one. See b01Q10Adapter.translateQ10StatusToV1State.
+   *
+   * @param {string} duid
+   * @returns {boolean}
+   */
+  isB01Q10Device(duid) {
+    return (
+      this.isB01Device(duid) &&
+      b01Q7Adapter.b01FamilyForModel(
+        this.getProductAttribute(duid, "model")
+      ) === b01Q7Adapter.B01_FAMILY.Q10
+    );
+  }
+
+  /**
+   * The v1 state for a state value a robot PUSHED (datapoint 121). Classic and
+   * Q7 values pass through untouched; a Q10's run sub-states (101-105) and
+   * "waiting to charge" (108) would otherwise read as v1's "device offline"
+   * and "locked".
+   *
+   * @param {string} duid
+   * @param {unknown} rawState
+   * @returns {unknown}
+   */
+  normalizePushedState(duid, rawState) {
+    if (!this.isB01Q10Device(duid)) {
+      return rawState;
+    }
+    const translated = b01Q10Adapter.translateQ10StatusToV1State(rawState);
+    return translated === null ? rawState : translated;
+  }
+
+  /**
    * A device's name for log messages, falling back to the duid.
    *
    * The live-room success line already used the friendly name while the
@@ -6694,13 +6805,19 @@ class Roborock {
     // deviceStatus snapshot (charging = 4, cleaning = 5/6/7, ...). Reading
     // them as v1 codes makes a charging robot look like "remote control
     // active", so translate the state attribute before anyone interprets it.
+    //
+    // A Q10 is B01 too, but numbers its states the v1 way plus a few of its
+    // own; the Q7 table turned a charging Q10 into Stopped (#33). Each family
+    // reads its own table.
     if (
       property === "state" &&
       device.pv === b01Q7Adapter.B01_PROTOCOL_VERSION &&
       device.deviceStatus
     ) {
       const rawStatus = device.deviceStatus[propertyID];
-      const translated = b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
+      const translated = this.isB01Q10Device(duid)
+        ? b01Q10Adapter.translateQ10StatusToV1State(rawStatus)
+        : b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
       if (translated !== null) {
         return translated;
       }

@@ -27,11 +27,18 @@
 // WHY THIS IS GATED RATHER THAN SWITCHED. A resume verb sent to a robot that
 // is NOT in a room clean is how the play button breaks for everyone, and that
 // cannot be verified without a robot paused mid-room-clean. So the gate is
-// the robot's own answer: `in_cleaning` is 0 for a whole-home run and
-// non-zero when the robot was sent at selected areas, and unlike `state` it
-// survives the pause (a paused robot reports state 10 and nothing else).
-// Absent or unreadable reads as a full clean, which is what every release
-// before this one assumed for every robot.
+// the robot's own answer, `in_cleaning`, which unlike `state` survives the
+// pause (a paused robot reports state 10 and nothing else). Absent or
+// unreadable reads as a full clean, which is what every release before 3.34.0
+// assumed for every robot.
+//
+// CORRECTED IN 3.35.0. 3.34.0 read `in_cleaning` as "0 for a whole-home run,
+// non-zero for a room clean". Roborock's own numbering (python-roborock
+// `RoborockInCleaning`) is 0 complete, 1 whole-home clean not complete, 2 zone
+// clean not complete, 3 room clean not complete — so a paused whole-home
+// clean reads 1, and 3.34.0 sent it the room verb: the half CooperCGN had
+// confirmed working was the half it broke. Each value now gets its own verb,
+// the same three-way choice Home Assistant's Roborock integration makes.
 //
 // These tests pin both directions. The one that must never regress is the
 // second describe: the ordinary play button still sends `app_start`.
@@ -86,6 +93,9 @@ function createPlatform({ status = {}, sent = [], api = {} } = {}) {
       resume_segment_clean: jest.fn(async () => {
         sent.push("resume_segment_clean");
       }),
+      resume_zoned_clean: jest.fn(async () => {
+        sent.push("resume_zoned_clean");
+      }),
       supportsSegmentResume: () => true,
       ...api,
     },
@@ -123,24 +133,22 @@ async function pressPlay(options) {
 
 describe("#28: resuming a paused room clean continues it", () => {
   test("a robot paused mid-room-clean is told to continue, not to start", async () => {
+    // 3 is "segment clean not complete"; the repo's own captured payload of a
+    // room clean (roborockAPI.test.js) carries exactly this value.
     const { sent } = await pressPlay({
-      status: { state: PAUSED, battery: 71, in_cleaning: 2 },
+      status: { state: PAUSED, battery: 71, in_cleaning: 3 },
     });
 
     expect(sent).toEqual(["resume_segment_clean"]);
     expect(sent).not.toContain("app_start");
   });
 
-  test("any non-zero in_cleaning counts, because the exact codes are not ours", async () => {
-    // Roborock uses more than one non-zero value here across firmwares (a
-    // segment clean has been seen reported as 3), and this plugin has no
-    // measurement that pins which value means which kind of targeted clean.
-    // What it does know is the part that matters: zero means whole-home.
+  test("a paused zone clean gets the zone verb, not the room verb", async () => {
     const { sent } = await pressPlay({
-      status: { state: PAUSED, battery: 71, in_cleaning: 3 },
+      status: { state: PAUSED, battery: 71, in_cleaning: 2 },
     });
 
-    expect(sent).toEqual(["resume_segment_clean"]);
+    expect(sent).toEqual(["resume_zoned_clean"]);
   });
 
   test("a failed continue is not quietly turned into a whole-home run", async () => {
@@ -149,7 +157,7 @@ describe("#28: resuming a paused room clean continues it", () => {
     // asked for — at the moment the robot is least likely to be somewhere
     // safe. A paused robot stays paused and the user presses play again.
     const { sent } = await pressPlay({
-      status: { state: PAUSED, battery: 71, in_cleaning: 2 },
+      status: { state: PAUSED, battery: 71, in_cleaning: 3 },
       api: {
         resume_segment_clean: jest.fn(async () => {
           throw new Error(
@@ -166,12 +174,15 @@ describe("#28: resuming a paused room clean continues it", () => {
 describe("the ordinary play button is untouched", () => {
   test("a paused full clean still resumes with app_start", async () => {
     // CooperCGN confirmed this half already works, so it is the half that
-    // must not move.
-    const { sent } = await pressPlay({
-      status: { state: PAUSED, battery: 71, in_cleaning: 0 },
-    });
+    // must not move. 1 is "whole-home clean not complete" — what a paused
+    // full clean reports — and 3.34.0 sent it resume_segment_clean.
+    for (const inCleaning of [0, 1]) {
+      const { sent } = await pressPlay({
+        status: { state: PAUSED, battery: 71, in_cleaning: inCleaning },
+      });
 
-    expect(sent).toEqual(["app_start"]);
+      expect(sent).toEqual(["app_start"]);
+    }
   });
 
   test("a robot that does not report in_cleaning is treated as a full clean", async () => {
@@ -188,7 +199,7 @@ describe("the ordinary play button is untouched", () => {
     // every B01 owner at once, so the dialect opts out and the limitation is
     // reported instead.
     const { sent } = await pressPlay({
-      status: { state: PAUSED, battery: 71, in_cleaning: 2 },
+      status: { state: PAUSED, battery: 71, in_cleaning: 3 },
       api: { supportsSegmentResume: () => false },
     });
 
@@ -197,7 +208,7 @@ describe("the ordinary play button is untouched", () => {
 
   test("an API without the verb at all falls back rather than throwing", async () => {
     const { sent } = await pressPlay({
-      status: { state: PAUSED, battery: 71, in_cleaning: 2 },
+      status: { state: PAUSED, battery: 71, in_cleaning: 3 },
       api: { resume_segment_clean: undefined },
     });
 

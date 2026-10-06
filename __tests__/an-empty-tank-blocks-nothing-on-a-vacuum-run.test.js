@@ -207,9 +207,26 @@ describe("an empty tank blocks nothing on a vacuum-only run", () => {
     expect(await test.fault()).toEqual({ errorStateId: RVC_ERROR_NONE });
   });
 
-  test("the robot's own report counts during a run with no live mode command", async () => {
-    // A run started in the Roborock app carries its own clean type. Fan power
-    // off is the mop-only signature, so this robot is mopping with no water.
+  test("the robot's own report counts with no live mode command", async () => {
+    // A mode set in the Roborock app carries its own clean type. Fan power off
+    // is the mop-only signature, so this robot would mop with no water.
+    const test = harness({
+      initialStatus: {
+        ...TANK_EMPTY,
+        state: ROBOROCK_STATE_CHARGING,
+        fan_power: FAN_POWER_OFF,
+        water_box_mode: WATER_BOX_ON,
+      },
+    });
+
+    expect(await test.fault()).toEqual({
+      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
+    });
+  });
+
+  test("during a run the warning waits, whatever the run's clean type (#35)", async () => {
+    // matter.js 0.17.9 turns any fault into the Error state, which hid a
+    // running clean in issue #35. The robot is mopping; the tile says so.
     const test = harness({
       initialStatus: {
         ...TANK_EMPTY,
@@ -219,9 +236,7 @@ describe("an empty tank blocks nothing on a vacuum-only run", () => {
       },
     });
 
-    expect(await test.fault()).toEqual({
-      errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
-    });
+    expect(await test.fault()).toEqual({ errorStateId: RVC_ERROR_NONE });
   });
 
   test("an acknowledged live Vacuum change outranks a lagging mop report", async () => {
