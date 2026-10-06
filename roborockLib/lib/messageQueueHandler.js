@@ -175,7 +175,8 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @property {(duid: string) => boolean} isConnected
  * @property {(duid: string, message: Buffer) => void} sendMessage
  * @property {(duid: string) => void} clearChunkBuffer
- * @property {(duid: string) => Promise<void>} [ensureL01Handshake]
+ * @property {(duid: string) => Promise<void>} [awaitLocalNegotiation]
+ * @property {(duid: string) => string | undefined} [getNegotiatedVersion]
  */
 
 /**
@@ -230,6 +231,9 @@ function unansweredRequestError(message, transportWasUp) {
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(duid: string, method: string) => void} [noteRequestAnswered]
+ * @property {() => void} [noteCloudReply] Any reply over the cloud.
+ * @property {() => boolean} [noteCloudSilence] A cloud request timed out
+ *   while MQTT reported itself connected.
  * @property {(duid: string, method: string, error: unknown) => void} [noteRequestUnanswered]
  * @property {import("./lateReplies").LateReplyTracker} [lateReplies] Remembers
  *   timed-out request ids so a reply that turns up after its timeout can be
@@ -429,16 +433,28 @@ class messageQueueHandler {
       );
     }
 
-    if (!useCloudConnection && version == "L01") {
+    if (!useCloudConnection) {
+      // Never put a request on a socket whose hello is still in the air: the
+      // answer decides how the frame is encrypted. Bounded by the hello's own
+      // timeouts (2 x 5 s), and instant once negotiated.
       try {
-        if (this.adapter.localConnector.ensureL01Handshake) {
-          await this.adapter.localConnector.ensureL01Handshake(duid);
-        }
+        await this.adapter.localConnector.awaitLocalNegotiation?.(duid);
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         this.adapter.log.debug(
-          `L01 handshake before request failed for ${duid}: ${errorMessage}`
+          `Local hello before request failed for ${duid}: ${errorMessage}`
+        );
+      }
+      // The socket may have closed during the wait. The state read before it
+      // is stale, so read it again and take the same cloud fallback as above.
+      if (
+        !this.adapter.localConnector.isConnected(duid) &&
+        this.adapter.rr_mqtt_connector.isConnected()
+      ) {
+        useCloudConnection = true;
+        this.adapter.log.debug(
+          `The local socket for ${duid} closed during its hello. Falling back to cloud connection for method ${method}.`
         );
       }
     }
@@ -581,6 +597,25 @@ class messageQueueHandler {
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
               this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
+              // A link that says it is up and delivers NOTHING from this
+              // robot while the request waits is the stale session
+              // python-roborock restarts. A frame that did arrive — a
+              // get_map_v1 acknowledgement whose map never follows, a status
+              // push — means the session delivers, so it is not counted
+              // (found in review). B01 is left out: a Q10 command is
+              // fire-and-forget by design.
+              const deliveredMeanwhile =
+                receiptsAtSend !== null &&
+                typeof this.adapter.getCloudMessageReceiptCount ===
+                  "function" &&
+                this.adapter.getCloudMessageReceiptCount(duid) > receiptsAtSend;
+              if (
+                transportWasUp &&
+                !deliveredMeanwhile &&
+                !b01Q7Adapter.isB01Protocol(version)
+              ) {
+                this.adapter.noteCloudSilence?.();
+              }
               reject(error);
             } else {
               // A socket that keeps reporting itself connected while every
@@ -622,6 +657,9 @@ class messageQueueHandler {
             // seven methods in #22/#24 that it was built for.
             resolve: (value) => {
               this.adapter.noteRequestAnswered?.(duid, method);
+              if (useCloudConnection) {
+                this.adapter.noteCloudReply?.();
+              }
               resolve(value);
             },
             // A refusal is an answer too. The reply handlers (cloud 102,
@@ -633,6 +671,9 @@ class messageQueueHandler {
             // the method was given up on although the robot had just replied.
             reject: (error) => {
               this.adapter.noteRequestAnswered?.(duid, method);
+              if (useCloudConnection) {
+                this.adapter.noteCloudReply?.();
+              }
               reject(error);
             },
             abandon: reject,

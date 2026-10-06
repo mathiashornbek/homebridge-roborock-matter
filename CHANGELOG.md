@@ -1,5 +1,40 @@
 # Changelog
 
+## 3.36.0
+
+**The LAN connection now asks the robot which protocol it speaks, the way python-roborock always has, and a cloud session that has gone quiet is restarted.**
+
+### "Connected but answered nothing" (#24, #28)
+
+[@Marrand](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/24) and [@CooperCGN](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/28) both have an S8 (`a51`) that accepts the LAN connection and then answers nothing, while python-roborock — the library Home Assistant uses — gets answers from the same robots. Comparing the 2 side by side, this plugin differed in 4 places, and every one of them can produce exactly that symptom:
+
+- **No hello.** python-roborock opens every local connection with a hello, first in `1.0` and then in `L01`, and encrypts by whichever the robot answers. This plugin sent none for a `1.0` robot, and took the LAN protocol from the account's `pv`, which python-roborock says outright is a different thing. A robot whose firmware has moved to `L01` on the LAN ignores every `1.0` frame.
+- **The wrong L01 handshake.** Where it did try `L01`, it sent a protocol-1 frame. Protocol 1 is the robot's answer, not the question, so nothing answered it.
+- **Datapoint 4.** A local request went out on datapoint 4, the protocol number. python-roborock sends datapoint 101 on both transports.
+- **Protocol 4 only.** A local reply was accepted only on protocol 4; one on 5 or 102 was dropped without a word.
+
+All 4 now follow python-roborock. Against a fake robot built from python-roborock's own codec in 5 firmware variants, 3.35.0 got an answer from 1 and 3.36.0 from all 5.
+
+- The hello result is logged once: `answered the local hello in 1.0`, or that the robot speaks `L01` on the LAN, or that it answered no hello. That line is what I need from #24 and #28.
+- A robot that answers no hello keeps 3.35.0's behaviour exactly. Its first request after a connect waits up to 10 seconds for the hellos; after that, not again.
+
+I can only test the normal case on my own robots: my S8 Pro Ultra is a `1.0` robot on the LAN. Nobody here has a robot that needs `L01`, so that part is tested against python-roborock's codec, not against hardware.
+
+### A cloud session that says it is up and delivers nothing
+
+python-roborock restarts its MQTT session after 3 cloud timeouts in a row, at most once every 30 minutes, because "the MQTT connection appears to be alive but no messages are being received". This plugin only reconnected when the link reported itself down. CooperCGN's log counts 574 cloud messages by 08:54 and 576 by 12:11, while his robot started, paused and docked in between, and [@pponce](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/27) measured a recreated session answering within 369 ms. Same rule now, with one addition from review: a timeout only counts when nothing at all arrived from that robot while the request waited, so a map request whose acknowledgement arrives and whose map does not is not mistaken for a dead session.
+
+A cloud reply on protocol 4 or 5 that carries datapoint 102 is now read as a reply, as python-roborock reads it.
+
+### Found in review
+
+- A hello still in flight when the socket closed carried on into the dead socket, and a reconnect made in that window could inherit the old socket's hello and never get one of its own. Each hello now belongs to its socket, and a request that waited on a hello re-checks the socket before it is sent.
+- The session restart now never runs while Homebridge is stopping.
+
+### Tests
+
+2,151 tests, 20 more than 3.35.0. Measured against the 3.35.0 sources, file by file: 12 of 13 fail for the hello and the reply rules, 3 of 4 for the session restart, 2 of 2 for the socket each hello belongs to. The last file passes there, because it guards against a restart 3.35.0 could not make.
+
 ## 3.35.0
 
 **3.34.0 broke the half of the play button it was meant to leave alone, and an empty water tank could hide a running clean in Apple Home. Both are fixed, with 8 more found by reading this plugin against matter.js 0.17.9 and python-roborock 7.12.0 instead of against its own comments.**

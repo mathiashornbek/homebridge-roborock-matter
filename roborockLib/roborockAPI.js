@@ -439,6 +439,9 @@ const SIMPLE_VACUUM_COMMANDS = new Set([
 ]);
 
 const TRANSIENT_ERROR_LOG_THROTTLE_MS = 6 * 60 * 60 * 1000;
+// python-roborock mqtt/health_manager.py: TIMEOUT_THRESHOLD, RESTART_COOLDOWN.
+const CLOUD_SILENCES_BEFORE_SESSION_RESTART = 3;
+const CLOUD_SESSION_RESTART_COOLDOWN_MS = 30 * 60 * 1000;
 const MATTER_CLEAN_MODE_COMMAND_TIMEOUT_MS = 2000;
 // Reserved out of the caller's prep window so the sequence ends by itself and
 // reports what it could not confirm, rather than being cut off mid-command with
@@ -537,6 +540,9 @@ class Roborock {
     // Replies that came after their request had timed out. See
     // lib/lateReplies.js; the give-up line reads it.
     this.lateReplies = new LateReplyTracker();
+    // Consecutive unanswered cloud requests while MQTT says it is connected.
+    // See noteCloudSilence().
+    this.cloudSessionHealth = { consecutiveSilences: 0, lastRestartAt: 0 };
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -3398,6 +3404,61 @@ class Roborock {
     // it is entitled to skip.
     this.unansweredMethods.govern(duid, method);
     return vacuum.getParameter(duid, method);
+  }
+
+  /**
+   * Any reply came back over the cloud: the session delivers.
+   *
+   * @returns {void}
+   */
+  noteCloudReply() {
+    this.cloudSessionHealth.consecutiveSilences = 0;
+  }
+
+  /**
+   * A cloud request timed out while MQTT reported itself connected.
+   *
+   * python-roborock's HealthManager exists for exactly this — "the MQTT
+   * connection appears to be alive but no messages are being received" — and
+   * restarts the session after 3 timeouts in a row, at most once every 30
+   * minutes. This plugin only ever reconnected when mqtt.js said the link was
+   * DOWN, so a session that stayed up and went quiet stayed quiet: CooperCGN's
+   * log in #28 counts 574 cloud messages by 08:54 and 576 by 12:11, while his
+   * robot started, paused and docked in between, and @pponce measured a
+   * recreated session answering again within 369 ms (#27). Same rule here.
+   *
+   * @returns {boolean} whether a restart was started
+   */
+  noteCloudSilence() {
+    if (this.stopped) {
+      return false;
+    }
+    const health = this.cloudSessionHealth;
+    health.consecutiveSilences += 1;
+    if (health.consecutiveSilences < CLOUD_SILENCES_BEFORE_SESSION_RESTART) {
+      return false;
+    }
+    const now = Date.now();
+    if (
+      health.lastRestartAt !== 0 &&
+      now - health.lastRestartAt < CLOUD_SESSION_RESTART_COOLDOWN_MS
+    ) {
+      return false;
+    }
+    const silences = health.consecutiveSilences;
+    health.lastRestartAt = now;
+    health.consecutiveSilences = 0;
+    this.log.info(
+      `${silences} cloud requests in a row went unanswered while the MQTT connection reported itself up, so the plugin is starting a fresh MQTT session — the same rule python-roborock applies (3 in a row, at most once every 30 minutes). A request in flight at this moment may fail once.`
+    );
+    void Promise.resolve()
+      .then(() => this.rr_mqtt_connector?.reconnectClient?.(true))
+      .catch((error) => {
+        this.log.debug(
+          `Restarting the MQTT session failed: ${error?.message || error}`
+        );
+      });
+    return true;
   }
 
   /**

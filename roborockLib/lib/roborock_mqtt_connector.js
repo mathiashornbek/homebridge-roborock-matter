@@ -66,6 +66,36 @@ const photoBuffers = new Map();
 // already paste.
 const droppedFrames = new Map();
 
+/**
+ * Whether a decoded cloud frame is an RPC reply. Protocol 102 always was;
+ * python-roborock also takes a frame on 4 or 5 whose payload carries the
+ * `102` datapoint, and until 3.36.0 such a reply was dropped here unread.
+ *
+ * @param {{protocol?: unknown, payload?: unknown}} data
+ * @returns {boolean}
+ */
+function isRpcReplyFrame(data) {
+  const protocol = Number(data?.protocol);
+  if (protocol === 102) {
+    return true;
+  }
+  if (protocol !== 4 && protocol !== 5) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(String(data.payload));
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      parsed.dps !== null &&
+      typeof parsed.dps === "object" &&
+      Object.prototype.hasOwnProperty.call(parsed.dps, "102")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function noteDroppedFrame(duid, reason) {
   let entry = droppedFrames.get(duid);
   if (!entry) {
@@ -398,7 +428,7 @@ class roborock_mqtt_connector {
         // this.adapter.log.debug(`MESSAGE RECEIVED for duid ${duid} with key: ${this.adapter.localKeys.get(duid)} data: ${JSON.stringify(data)}`);
 
         // this.adapter.log.debug("Protocol: " + data.protocol);
-        if (data.protocol == 102) {
+        if (isRpcReplyFrame(data)) {
           const parsedPayload = JSON.parse(data.payload);
           let dps;
           if (typeof parsedPayload.dps["102"] != "undefined") {
@@ -895,6 +925,7 @@ function resolveB01PendingResponse(adapter, duid, dps) {
 
 module.exports = {
   describeDroppedFrames,
+  isRpcReplyFrame,
   resolveB01PendingResponse,
   roborock_mqtt_connector,
   parseProtocol301Header,

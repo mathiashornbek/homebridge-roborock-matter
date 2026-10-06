@@ -120,9 +120,13 @@ class message {
         },
       });
     } else {
+      // Datapoint 101 on BOTH transports, as python-roborock sends it
+      // (`RequestMessage._as_payload`). Until 3.36.0 a local request went on
+      // datapoint 4 — the protocol number, not the RPC datapoint — which some
+      // robots accept and nothing guarantees.
       payload = JSON.stringify({
         dps: {
-          [protocol]: JSON.stringify(inner),
+          101: JSON.stringify(inner),
         },
         t: timestamp,
       });
@@ -132,7 +136,14 @@ class message {
   }
 
   async buildRoborockMessage(duid, protocol, timestamp, payload) {
-    const version = await this.adapter.getRobotVersion(duid);
+    // A LOCAL frame (protocol 4) is encrypted in the protocol the robot
+    // answered the local hello in, which need not be the one its account
+    // lists (localConnector.negotiateLocalProtocol). Cloud frames keep `pv`.
+    const negotiated =
+      protocol == 4
+        ? this.adapter.localConnector?.getNegotiatedVersion?.(duid)
+        : undefined;
+    const version = negotiated || (await this.adapter.getRobotVersion(duid));
 
     let encrypted;
 
