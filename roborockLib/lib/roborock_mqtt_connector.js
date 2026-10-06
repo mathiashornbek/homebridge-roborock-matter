@@ -264,7 +264,7 @@ class roborock_mqtt_connector {
       this.sessionDiagnostics.onSubscribe(
         this.sessionDiagnostics.generation,
         null,
-        packet.granted.map((qos) => ({ qos }))
+        (packet.granted || []).map((qos) => ({ qos }))
       );
     });
 
