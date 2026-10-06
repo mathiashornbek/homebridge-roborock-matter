@@ -1469,6 +1469,13 @@ async function buildDiagnosticsReport(result) {
     "",
   ];
 
+  if (result.mqttSession) {
+    lines.push(
+      `mqttSession (ages at capturedAt): ${formatDiagnosticPayload(result.mqttSession)}`
+    );
+    lines.push("");
+  }
+
   (result.devices || []).forEach((device, index) => {
     lines.push(`device ${index + 1}: ${device.name || "Unknown device"}`);
     lines.push(`  duid: ${maskIdentifier(device.duid)}`);

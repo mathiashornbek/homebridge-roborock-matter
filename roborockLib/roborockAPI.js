@@ -398,6 +398,7 @@ const INITIAL_STATUS_WAIT_CAP_MS = 4000;
 const DEBOUNCED_PERSIST_IDS = new Set([
   "TransportDiagnostics",
   "RoborockDiagnostics",
+  "MqttSessionDiagnostics",
 ]);
 const PERSIST_FLUSH_DEBOUNCE_MS = 60000;
 
@@ -409,6 +410,7 @@ const PERSISTED_STATE_IDS = new Set([
   "B01Rooms",
   "TransportDiagnostics",
   "RoborockDiagnostics",
+  "MqttSessionDiagnostics",
 ]);
 
 const dockingStationStates = [
@@ -2237,13 +2239,15 @@ class Roborock {
       // Latched before anything is torn down, so a retry callback that fires
       // mid-shutdown reads it as already set.
       this.stopped = true;
-      this.flushPendingPersistedStates();
       await this.clearTimersAndIntervals();
       // Timers were the only thing shutdown used to stop. Both transports
       // stayed open, so frames kept arriving into disposed accessories and
       // the process could only ever be killed rather than exit.
       this.rr_mqtt_connector?.disconnect?.();
       this.localConnector?.destroyAllClients?.();
+      // Teardown publishes the final disconnected diagnostics. Flush after it
+      // so that snapshot reaches disk and its debounce timer is cleared too.
+      this.flushPendingPersistedStates();
       // Nothing is coming back for these, and leaving them means every
       // caller still awaiting one hangs until Homebridge is killed.
       for (const [messageID, pending] of this.pendingRequests) {

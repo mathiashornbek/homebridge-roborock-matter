@@ -181,6 +181,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} MqttConnector
+ * @property {import("./mqttSessionDiagnostics").MqttSessionDiagnostics} [sessionDiagnostics]
  * @property {() => boolean} isConnected
  * @property {(duid: string, message: Buffer) => void} sendMessage
  */
@@ -582,6 +583,11 @@ class messageQueueHandler {
             typeof this.adapter.getCloudMessageReceiptCount === "function"
               ? this.adapter.getCloudMessageReceiptCount(duid)
               : null;
+          const sessionDiagnostics =
+            this.adapter.rr_mqtt_connector.sessionDiagnostics;
+          const sessionRequest = useCloudConnection
+            ? sessionDiagnostics?.captureRequest()
+            : undefined;
           const timeout = this.adapter.setTimeout(() => {
             this.adapter.pendingRequests.delete(messageID);
             this.adapter.localConnector.clearChunkBuffer(duid);
@@ -594,8 +600,19 @@ class messageQueueHandler {
               const transportWasUp = Boolean(
                 this.adapter.rr_mqtt_connector?.isConnected?.()
               );
+              const sessionHealth = sessionDiagnostics?.noteTimeout(
+                duid,
+                method,
+                sessionRequest
+              );
+              const sessionSummary = sessionHealth?.correlatedSilenceObserved
+                ? ` MQTT session: correlated silence across ${sessionHealth.silentReadRobotCount} robots (generation ${sessionHealth.generation}).`
+                : sessionHealth?.connected &&
+                    !sessionHealth.subscriptionAcknowledged
+                  ? ` MQTT session: subscription not acknowledged (generation ${sessionHealth.generation}).`
+                  : "";
               const error = unansweredRequestError(
-                `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}`,
+                `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionSummary}`,
                 transportWasUp
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
@@ -659,6 +676,10 @@ class messageQueueHandler {
             // and the register never counted a single one — including all
             // seven methods in #22/#24 that it was built for.
             resolve: (value) => {
+              if (!useCloudConnection) {
+                sessionDiagnostics?.noteActivity("local");
+                sessionDiagnostics?.emit();
+              }
               this.adapter.noteRequestAnswered?.(duid, method);
               if (useCloudConnection) {
                 this.adapter.noteCloudReply?.();
