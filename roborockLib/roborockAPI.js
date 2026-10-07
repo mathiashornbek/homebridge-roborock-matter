@@ -3449,6 +3449,14 @@ class Roborock {
     ) {
       return false;
     }
+    // The experimental lifecycle owns teardown and the shared silence cooldown.
+    // Keep the v3.36 baseline active even without cross-robot evidence.
+    const recovery = this.rr_mqtt_connector?.recovery;
+    if (recovery) {
+      if (!recovery.canRecoverSilence()) return false;
+      void recovery.recreate("cloud-silence");
+      return true;
+    }
     const silences = health.consecutiveSilences;
     health.lastRestartAt = now;
     health.consecutiveSilences = 0;
@@ -6226,6 +6234,7 @@ class Roborock {
       );
     }
 
+    this.rr_mqtt_connector.assertCanSend?.();
     let entry;
     const promise = new Promise((resolve, reject) => {
       const timeout = this.setTimeout(() => {

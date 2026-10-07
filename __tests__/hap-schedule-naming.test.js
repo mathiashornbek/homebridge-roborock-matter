@@ -594,7 +594,7 @@ describe("HAP schedule names and stable group identity", () => {
 
       expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledTimes(2);
       expect(platform.log.info).toHaveBeenCalledWith(
-        "Schedule fallback verification for device-1: requested=2; primarySent=2; primaryConfirmed=1; fallbackNeeded=1; fallbackSent=1; fallbackConfirmed=1; failed=0."
+        "Schedule reconciliation for device-1: requested=2; ambiguous=0; retried=1; failed=0."
       );
       expect(
         switchService(accessory, "timer-1").getCharacteristic(Characteristic.On)
@@ -660,4 +660,146 @@ describe("HAP schedule names and stable group identity", () => {
       jest.useRealTimers();
     }
   });
+});
+
+test("repeated same-state taps share the pending write and confirmation", async () => {
+  jest.useFakeTimers();
+  try {
+    const platform = makePlatform();
+    let finish;
+    const command = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    platform.roborockAPI = {
+      getServerTimers: jest.fn().mockResolvedValue([["timer-dedup", "on"]]),
+      vacuums: { "device-1": { command } },
+    };
+    const accessory = new FakeAccessory("Test Vacuum Schedules");
+    const coordinator = makeCoordinator(platform, accessory);
+    coordinator.sync([
+      { id: "timer-dedup", enabled: false, timer: ["timer-dedup", "off"] },
+    ]);
+    const on = switchService(accessory, "timer-dedup").getCharacteristic(
+      Characteristic.On
+    );
+    const first = on.setHandler(true);
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(command).toHaveBeenCalledTimes(1);
+    const second = on.setHandler(true);
+    expect(second).toBe(first);
+    expect(on.value).toBe(true);
+    finish("ok");
+    await jest.advanceTimersByTimeAsync(4000);
+    await Promise.all([first, second]);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(on.value).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+function optimisticFixture() {
+  const platform = makePlatform();
+  const accessory = new FakeAccessory("Test Vacuum Schedules");
+  const coordinator = makeCoordinator(platform, accessory);
+  coordinator.sync([
+    { id: "optimistic", enabled: false, timer: ["optimistic", "off"] },
+  ]);
+  const calls = [];
+  coordinator.refreshIfNeeded = jest.fn(() => new Promise(() => {}));
+  coordinator.enqueueScheduleWrite = jest.fn(
+    () => new Promise((resolve, reject) => calls.push({ resolve, reject }))
+  );
+  return {
+    platform,
+    coordinator,
+    calls,
+    on: switchService(accessory, "optimistic").getCharacteristic(
+      Characteristic.On
+    ),
+  };
+}
+
+test("schedule press acknowledges immediately and failure rolls the characteristic back with an explicit warning", async () => {
+  const { platform, on, calls } = optimisticFixture();
+  expect(on.setHandler(true)).toBeUndefined();
+  expect(on.value).toBe(true);
+  expect(on.getHandler()).toBe(true);
+  await Promise.resolve();
+  calls[0].reject(new Error("cloud refused"));
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(on.value).toBe(false);
+  expect(on.getHandler()).toBe(false);
+  expect(platform.log.warn).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /Schedule display rollback.*device-1\/optimistic.*cloud refused.*not a user change/
+    )
+  );
+  on.setHandler(true);
+  expect(on.value).toBe(false);
+  expect(calls).toHaveLength(1);
+});
+
+test("an older failure cannot overwrite a newer pending schedule intent", async () => {
+  const { on, calls } = optimisticFixture();
+  on.setHandler(true);
+  await Promise.resolve();
+  on.setHandler(false);
+  await Promise.resolve();
+  on.setHandler(true);
+  await Promise.resolve();
+  expect(on.value).toBe(true);
+  calls[0].reject(new Error("old failure"));
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(on.value).toBe(true);
+  calls[1].resolve(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(on.value).toBe(true);
+  calls[2].reject(new Error("latest failure"));
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(on.value).toBe(false);
+});
+
+test("an authoritative refresh during a pending write does not erase its provisional display", async () => {
+  const { on, calls, coordinator } = optimisticFixture();
+  on.setHandler(true);
+  await Promise.resolve();
+  coordinator.sync([
+    { id: "optimistic", enabled: false, timer: ["optimistic", "off"] },
+  ]);
+  expect(on.value).toBe(true);
+  calls[0].resolve(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(on.value).toBe(true);
+});
+
+test("a cooldown-suppressed tap is corrected after HAP applies its accepted value", async () => {
+  jest.useFakeTimers();
+  try {
+    const { on, calls } = optimisticFixture();
+    on.setHandler(true);
+    await Promise.resolve();
+    calls[0].reject(new Error("refused"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(on.value).toBe(false);
+    on.setHandler(true);
+    on.value = true; // HAP writes the requested value after the setter acknowledges.
+    await jest.advanceTimersByTimeAsync(0);
+    expect(on.value).toBe(false);
+    expect(calls).toHaveLength(1);
+  } finally {
+    jest.useRealTimers();
+  }
 });

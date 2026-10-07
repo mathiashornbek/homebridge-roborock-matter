@@ -3,8 +3,9 @@
 The settings page's **Copy diagnostics** report includes an `mqttSession`
 snapshot. Cloud timeout messages append a short summary only for correlated
 silence or an unacknowledged subscription; the full snapshot stays in diagnostics.
-This instrumentation does not change transport selection, subscription handling,
-request readiness, retries, the unanswered-method breaker, or reconnection.
+The observations do not change transport selection, subscription handling,
+request readiness, retries, or reconnection. The breaker integration below uses
+the measured signal to avoid counting account-session failures against methods.
 
 - `generation` increments on each MQTT connect event, including automatic
   reconnects. It restarts with the plugin process; it is not a broker session ID.
@@ -76,3 +77,31 @@ drops the socket, withholds the second SUBACK, and verifies generation 2 becomes
 acknowledged only after that packet arrives. It also checks the broker receives
 exactly one SUBSCRIBE per connection. No Roborock account or external broker is
 used. Upstream v3.36.0's recovery policy remains unchanged by this instrumentation.
+
+## Breaker integration (PR 2 of 4)
+
+A production cloud timeout carries `accountSessionWasSilent: true` only when
+its own read qualified for the correlated-silence observation at rejection time.
+The error still rejects the caller normally and retains `unansweredRequest` and
+`transportWasUp`. The breaker reads the boolean field, not the log text, and
+ignores that failure rather than incrementing the robot/method count.
+
+This is prospective suppression: previous counts and already-open breakers are
+not cleared, and genuine robot-method failures keep their existing cooldowns.
+Until cross-robot evidence exists, ordinary counting continues. Inbound activity,
+evidence expiry, or a new generation can make subsequent read timeouts count
+again. Local timeouts, writes, and requests spanning generations do not inherit
+an unrelated account observation. Missing instrumentation keeps the existing
+classification. `requestWasSilent` in the timeout snapshot explains whether
+that particular request qualified; the persisted account snapshot remains
+request-independent.
+
+This is the second change in the four-part series discussed in issue #27:
+
+1. Session instrumentation and diagnostics (#29).
+2. Feed correlated silence into the breaker (this change).
+3. Opt-in bounded session recreation, with separately switchable preventive refresh.
+4. Read-before-retry schedule reconciliation (independently reviewable).
+
+No session recreation, retry, request gating, schedule writes, or new settings
+are introduced here.
