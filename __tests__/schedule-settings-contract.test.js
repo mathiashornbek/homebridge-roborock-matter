@@ -468,9 +468,9 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain("`Schedule discovery for ${this.duid}: `");
   });
 
-  test("schedule switch GET returns cached state without waiting for refresh", () => {
+  test("schedule switch GET returns pending or cached state without waiting for refresh", () => {
     expect(scheduleSource).toMatch(
-      /\.onGet\(\(\) => \{[\s\S]*?void this\.coordinator\.refreshIfNeeded\(\);[\s\S]*?return this\.schedule\.enabled;/
+      /\.onGet\(\(\) => \{[\s\S]*?void this\.coordinator\.refreshIfNeeded\(\);[\s\S]*?return this\.pendingCommand\?\.enabled \?\? this\.schedule\.enabled;/
     );
     expect(scheduleSource).not.toMatch(
       /\.onGet\(async \(\) => \{[\s\S]*?await this\.coordinator\.refreshIfNeeded\(\);/

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Schedule switches acknowledge accepted changes immediately and display the requested state while confirmation runs. On failure, the display returns to the last confirmed state and a warning explicitly identifies the rollback, robot, schedule and elapsed time. Newer taps are protected from older failures. See docs/optimistic-schedule-feedback.md.
+
 ## 3.37.0
 
 **When a cloud request times out, the diagnostics report can now say whether the MQTT session was actually carrying anything at the time.**

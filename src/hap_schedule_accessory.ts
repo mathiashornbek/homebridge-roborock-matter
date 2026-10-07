@@ -1983,10 +1983,12 @@ class RoborockHapScheduleSwitchAccessory {
 
     service
       .getCharacteristic(this.platform.Characteristic.On)
-      .onSet((value) => this.setSchedule(Boolean(value)))
+      .onSet((value) => {
+        void this.setSchedule(Boolean(value));
+      })
       .onGet(() => {
         void this.coordinator.refreshIfNeeded();
-        return this.schedule.enabled;
+        return this.pendingCommand?.enabled ?? this.schedule.enabled;
       });
     service.updateCharacteristic(
       this.platform.Characteristic.On,
@@ -2028,7 +2030,7 @@ class RoborockHapScheduleSwitchAccessory {
       }
       switchService.updateCharacteristic(
         this.platform.Characteristic.On,
-        schedule.enabled
+        this.pendingCommand?.enabled ?? schedule.enabled
       );
     }
   }
@@ -2040,86 +2042,94 @@ class RoborockHapScheduleSwitchAccessory {
   }
 
   private setSchedule(enabled: boolean): Promise<void> {
-    if (this.pendingCommand?.enabled === enabled) {
+    if (this.disposed) return Promise.resolve();
+    if (this.pendingCommand?.enabled === enabled)
       return this.pendingCommand.promise;
+    const recent = this.suppression.get(this.scheduleId);
+    if (
+      !this.pendingCommand &&
+      recent?.enabled === enabled &&
+      Date.now() - recent.timestamp < WRITE_SUPPRESSION_MS
+    ) {
+      this.restoreConfirmedDisplay();
+      return Promise.resolve();
     }
-    const promise = this.performScheduleChange(enabled).finally(() => {
-      if (this.pendingCommand?.promise === promise)
-        this.pendingCommand = undefined;
+    const failed = this.failedCommands.get(this.scheduleId);
+    if (
+      !this.pendingCommand &&
+      failed?.enabled === enabled &&
+      Date.now() - failed.timestamp <
+        RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS
+    ) {
+      this.restoreConfirmedDisplay();
+      this.platform.log.warn(
+        `Schedule request suppressed after failure for ${this.duid}/${this.scheduleId}; retaining confirmed ${this.schedule.enabled ? "on" : "off"} state.`
+      );
+      return Promise.resolve();
+    }
+    const startedAt = Date.now();
+    const promise = Promise.resolve().then(async () => {
+      try {
+        this.platform.log.info(
+          `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.duid}/${this.scheduleId}. Display is provisional until confirmed.`
+        );
+        const executed = await this.coordinator.enqueueScheduleWrite(
+          this.scheduleId,
+          enabled
+        );
+        if (this.disposed) return;
+        if (executed) {
+          this.schedule.enabled = enabled;
+          this.schedule.timer[1] = enabled ? "on" : "off";
+          this.failedCommands.delete(this.scheduleId);
+          this.suppression.set(this.scheduleId, {
+            enabled,
+            timestamp: Date.now(),
+          });
+        } else if (this.pendingCommand?.promise === promise) {
+          this.platform.log.warn(
+            `Schedule display rollback for ${this.duid}/${this.scheduleId}: request was not executed; restoring confirmed ${this.schedule.enabled ? "on" : "off"} after ${Date.now() - startedAt}ms.`
+          );
+        }
+      } catch (error) {
+        if (this.disposed) return;
+        this.failedCommands.set(this.scheduleId, {
+          enabled,
+          timestamp: Date.now(),
+        });
+        const detail = error instanceof Error ? error.message : String(error);
+        if (this.pendingCommand?.promise === promise) {
+          this.platform.log.warn(
+            `Schedule display rollback for ${this.duid}/${this.scheduleId}: requested ${enabled ? "on" : "off"}, restoring confirmed ${this.schedule.enabled ? "on" : "off"} after ${Date.now() - startedAt}ms; ${detail}. This is failure recovery, not a user change.`
+          );
+        } else {
+          this.platform.log.warn(
+            `Earlier schedule request failed for ${this.duid}/${this.scheduleId}: ${detail}. Keeping the newer requested display.`
+          );
+        }
+      } finally {
+        if (this.pendingCommand?.promise === promise) {
+          this.pendingCommand = undefined;
+          if (!this.disposed) this.updateService(this.schedule.enabled);
+        }
+      }
     });
     this.pendingCommand = { enabled, promise };
+    this.updateService(enabled);
     return promise;
   }
 
-  private async performScheduleChange(enabled: boolean): Promise<void> {
-    const previous = this.schedule.enabled;
-    const now = Date.now();
-    const last = this.suppression.get(this.scheduleId);
-
-    if (
-      last &&
-      last.enabled === enabled &&
-      now - last.timestamp < WRITE_SUPPRESSION_MS
-    ) {
-      return;
-    }
-
-    const failed = this.failedCommands.get(this.scheduleId);
-    if (
-      failed &&
-      failed.enabled === enabled &&
-      now - failed.timestamp <
-        RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS
-    ) {
-      this.updateService(previous);
-      return;
-    }
-
-    try {
-      this.platform.log.info(
-        `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.duid}/${this.scheduleId}.`
-      );
-      const executed = await this.coordinator.enqueueScheduleWrite(
-        this.scheduleId,
-        enabled
-      );
-
-      if (!executed) {
-        return;
-      }
-
-      if (this.disposed) {
-        return;
-      }
-
-      this.schedule.enabled = enabled;
-      this.schedule.timer[1] = enabled ? "on" : "off";
-      this.failedCommands.delete(this.scheduleId);
-      this.suppression.set(this.scheduleId, {
-        enabled,
-        timestamp: Date.now(),
-      });
-      this.updateService(enabled);
-    } catch (error) {
-      if (this.disposed) {
-        return;
-      }
-
-      this.updateService(previous);
-
-      this.failedCommands.set(this.scheduleId, {
-        enabled,
-        timestamp: Date.now(),
-      });
-
-      const message = error instanceof Error ? error.message : String(error);
-
-      this.platform.log.warn(
-        `Unable to ${enabled ? "enable" : "disable"} Roborock schedule ${this.scheduleId}: ${message}. ` +
-          `Further attempts for this same state are suppressed for ` +
-          `${RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS / 1000}s.`
-      );
-    }
+  private restoreConfirmedDisplay(): void {
+    this.updateService(this.schedule.enabled);
+    // HAP applies the requested value after onSet returns. Reassert the
+    // correction on the next turn so a suppressed tap cannot leave it on.
+    const timer = scheduleTimer(() => {
+      if (!this.disposed)
+        this.updateService(
+          this.pendingCommand?.enabled ?? this.schedule.enabled
+        );
+    }, 0);
+    unrefTimer(timer);
   }
 
   private updateService(enabled: boolean): void {
