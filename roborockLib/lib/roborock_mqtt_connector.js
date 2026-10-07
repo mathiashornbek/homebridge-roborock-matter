@@ -12,6 +12,8 @@ const {
   createRefusalError,
 } = require("./describeReplyRefusal");
 
+const { MqttReadiness } = require("./mqttReadiness");
+
 const { MqttSessionDiagnostics } = require("./mqttSessionDiagnostics");
 
 const PHOTO_MAGIC = "ROBOROCK";
@@ -206,6 +208,12 @@ class roborock_mqtt_connector {
         })
       ).catch(() => {});
     });
+    this.readiness = new MqttReadiness(
+      () =>
+        this.connected &&
+        this.sessionDiagnostics.snapshot().subscriptionAcknowledged,
+      () => this.sessionDiagnostics.generation
+    );
     this.connected = false;
     this.initialConnectTimeout = null;
 
@@ -264,7 +272,7 @@ class roborock_mqtt_connector {
       this.sessionDiagnostics.onSubscribe(
         this.sessionDiagnostics.generation,
         null,
-        packet.granted.map((qos) => ({ qos }))
+        (packet.granted || []).map((qos) => ({ qos }))
       );
     });
 
@@ -809,7 +817,12 @@ class roborock_mqtt_connector {
     return endpoint;
   }
 
+  waitUntilReady({ timeoutMs = 10000 } = {}) {
+    return this.readiness.wait(timeoutMs);
+  }
+
   sendMessage(duid, roborockMessage) {
+    this.readiness.assertReady();
     client.publish(`rr/m/i/${rriot.u}/${mqttUser}/${duid}`, roborockMessage, {
       qos: 1,
     });
@@ -833,6 +846,7 @@ class roborock_mqtt_connector {
    * ack that will not come if the network is what is broken.
    */
   disconnect() {
+    this.readiness.stop();
     this.clearInitialConnectTimeout();
     if (!client) {
       return;

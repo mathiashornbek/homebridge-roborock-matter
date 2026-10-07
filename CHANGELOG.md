@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Cloud requests now wait up to ten seconds for an acknowledged MQTT reply subscription before publication. The response timeout starts after publication, so connection waiting is not blamed on the robot. During an outage, a command can fail later; readiness expiry says it was not sent and does not add robot-silence evidence. See docs/mqtt-send-readiness.md for caller-visible failure behavior.
+
 ## 3.37.0
 
 **When a cloud request times out, the diagnostics report can now say whether the MQTT session was actually carrying anything at the time.**
