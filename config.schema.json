@@ -247,7 +247,7 @@
       },
       "enableMqttSessionRecovery": {
         "title": "Enable experimental MQTT session recovery",
-        "description": "Adds correlated-silence recovery and bounded session recreation. Off by default; the built-in v3.36 recovery remains active. Commands are not replayed. Restart the child bridge after changing this setting.",
+        "description": "Adds correlated-silence recovery and bounded session recreation. Off by default. Commands are not replayed. Restart the child bridge after changing this setting.",
         "type": "boolean",
         "default": false
       },
