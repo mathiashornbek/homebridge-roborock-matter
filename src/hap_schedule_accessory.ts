@@ -1483,6 +1483,10 @@ export default class RoborockHapScheduleAccessory {
    * HAP set handler that throws shows as a broken accessory rather than as
    * the reason.
    */
+  getRoutineRobotLabel(): string {
+    return this.vacuumName || this.duid;
+  }
+
   async runRoutine(sceneId: string, displayName: string): Promise<void> {
     const api = this.platform.roborockAPI as any;
     try {
@@ -1498,7 +1502,7 @@ export default class RoborockHapScheduleAccessory {
       );
     } catch (error) {
       this.platform.log.warn(
-        `Unable to run Roborock routine "${displayName}": ${
+        `Accepted Home routine "${displayName}" for ${this.vacuumName || this.duid} failed: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
@@ -2124,7 +2128,7 @@ class RoborockHapRoutineSwitch {
       // when there is no schedule switch to prompt a refresh.
       void this.coordinator.refreshIfNeeded();
       return false;
-    }).onSet((value) => this.handlePress(Boolean(value)));
+    }).onSet((value) => this.acceptPress(Boolean(value)));
 
     // Whatever the cache remembered, a momentary switch starts off.
     service.updateCharacteristic(this.platform.Characteristic.On, false);
@@ -2193,6 +2197,19 @@ class RoborockHapRoutineSwitch {
       clearTimer(this.resetTimer);
       this.resetTimer = undefined;
     }
+  }
+
+  /** A Routine switch acknowledges the momentary press immediately. */
+  private acceptPress(value: boolean): void {
+    void this.handlePress(value).catch((error) => {
+      // runRoutine owns expected cloud errors. Keep an unexpected background
+      // failure from becoming an unhandled rejection after HAP was answered.
+      this.platform.log.warn(
+        `Accepted Home routine "${this.displayName}" for ${this.coordinator.getRoutineRobotLabel()} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
   }
 
   private async handlePress(value: boolean): Promise<void> {
