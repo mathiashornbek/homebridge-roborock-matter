@@ -594,7 +594,7 @@ describe("HAP schedule names and stable group identity", () => {
 
       expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledTimes(2);
       expect(platform.log.info).toHaveBeenCalledWith(
-        "Schedule fallback verification for device-1: requested=2; primarySent=2; primaryConfirmed=1; fallbackNeeded=1; fallbackSent=1; fallbackConfirmed=1; failed=0."
+        "Schedule reconciliation for device-1: requested=2; ambiguous=0; retried=1; failed=0."
       );
       expect(
         switchService(accessory, "timer-1").getCharacteristic(Characteristic.On)
@@ -660,4 +660,43 @@ describe("HAP schedule names and stable group identity", () => {
       jest.useRealTimers();
     }
   });
+});
+
+test("repeated same-state taps share the pending write and confirmation", async () => {
+  jest.useFakeTimers();
+  try {
+    const platform = makePlatform();
+    let finish;
+    const command = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    platform.roborockAPI = {
+      getServerTimers: jest.fn().mockResolvedValue([["timer-dedup", "on"]]),
+      vacuums: { "device-1": { command } },
+    };
+    const accessory = new FakeAccessory("Test Vacuum Schedules");
+    const coordinator = makeCoordinator(platform, accessory);
+    coordinator.sync([
+      { id: "timer-dedup", enabled: false, timer: ["timer-dedup", "off"] },
+    ]);
+    const on = switchService(accessory, "timer-dedup").getCharacteristic(
+      Characteristic.On
+    );
+    const first = on.setHandler(true);
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(command).toHaveBeenCalledTimes(1);
+    const second = on.setHandler(true);
+    expect(second).toBe(first);
+    expect(on.value).toBe(false);
+    finish("ok");
+    await jest.advanceTimersByTimeAsync(4000);
+    await Promise.all([first, second]);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(on.value).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
 });
