@@ -170,7 +170,7 @@ export default class RoborockActionSwitchAccessory {
     // set of handlers on the same characteristic would run the command twice.
     on.removeAllListeners("get");
     on.removeAllListeners("set");
-    on.onGet(() => false).onSet((value) => this.handlePress(value));
+    on.onGet(() => false).onSet((value) => this.acceptPress(value));
 
     // Whatever the cache remembered, the switch starts off: it is momentary,
     // and an accessory restored in the on position would tell an automation
@@ -198,6 +198,19 @@ export default class RoborockActionSwitchAccessory {
     }
   }
 
+  /** A momentary HAP switch acknowledges the press, not robot completion. */
+  private acceptPress(value: CharacteristicValue): void {
+    void this.handlePress(value).catch((error) => {
+      // handlePress owns expected command errors. This catch is only a final
+      // guard for an unexpected failure outside its command try/catch.
+      this.platform.log.error(
+        `Accepted Home action ${this.definition.nameSuffix} for ${this.robotLabel()} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+  }
+
   /**
    * One press.
    *
@@ -218,14 +231,14 @@ export default class RoborockActionSwitchAccessory {
       const vacuum = this.platform.getMatterVacuum(this.duid);
       if (!vacuum) {
         this.platform.log.warn(
-          `${this.accessory.displayName} was pressed, but the robot behind it is not set up yet. Try again once startup has finished.`
+          `Accepted Home action ${this.definition.nameSuffix} for ${this.robotLabel()} failed: robot is not set up yet. Try again once startup has finished.`
         );
         return;
       }
 
       if (!vacuum.supportsHomeKitAction(this.definition.key)) {
         this.platform.log.warn(
-          `${this.accessory.displayName} was pressed, but ${vacuum.getDisplayName()} does not support that command.`
+          `Accepted Home action ${this.definition.nameSuffix} for ${this.robotLabel()} failed: robot does not support that command.`
         );
         return;
       }
@@ -233,11 +246,19 @@ export default class RoborockActionSwitchAccessory {
       await vacuum.runHomeKitAction(this.definition.key);
     } catch (error) {
       this.platform.log.error(
-        `Unable to run ${this.accessory.displayName}: ${
+        `Accepted Home action ${this.definition.nameSuffix} for ${this.robotLabel()} failed: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
     }
+  }
+
+  private robotLabel(): string {
+    return (
+      this.platform.getMatterVacuum(this.duid)?.getDisplayName() ||
+      this.platform.roborockAPI?.getVacuumDeviceInfo(this.duid, "name") ||
+      this.duid
+    );
   }
 
   private scheduleReset(): void {

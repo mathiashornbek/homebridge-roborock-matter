@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Momentary Start, Dock, Empty Bin, Pause, Find and routine buttons acknowledge acceptance immediately. Later failures are logged prominently with action, robot and reason; physical-robot validation remains pending.
+
 ## 3.37.0
 
 **When a cloud request times out, the diagnostics report can now say whether the MQTT session was actually carrying anything at the time.**
