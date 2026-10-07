@@ -782,7 +782,11 @@ class roborock_mqtt_connector {
             if (previous === online) {
               return;
             }
-            if (!online) {
+            if (previous === undefined) {
+              this.adapter.log.info(
+                `${label}: first live MQTT presence report is ${online ? "online" : "offline"}.${online ? "" : " Cloud presence does not determine whether LAN commands can succeed."}`
+              );
+            } else if (!online) {
               this.adapter.log.warn(
                 `${label} reports itself offline via MQTT. This presence notification does not by itself prove that local or cloud commands will fail.`
               );

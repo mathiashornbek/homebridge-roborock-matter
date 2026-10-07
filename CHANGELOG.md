@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- First live MQTT presence is informational once per robot; retained snapshots remain debug-only, duplicate live values are suppressed, and cloud offline wording does not imply LAN failure.
+
 ## 3.37.0
 
 **When a cloud request times out, the diagnostics report can now say whether the MQTT session was actually carrying anything at the time.**
