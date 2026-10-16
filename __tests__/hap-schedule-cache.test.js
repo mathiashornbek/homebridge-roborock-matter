@@ -115,18 +115,21 @@ describe("HAP schedule coordinator cache", () => {
       }
     );
     expect(coordinator.sync).toHaveBeenCalledTimes(1);
-    expect(coordinator.sync).toHaveBeenCalledWith([
-      {
-        id: "timer-1",
-        enabled: false,
-        timer: ["timer-1", "off"],
-      },
-      {
-        id: "timer-2",
-        enabled: true,
-        timer: ["timer-2", "on"],
-      },
-    ]);
+    expect(coordinator.sync).toHaveBeenCalledWith(
+      [
+        {
+          id: "timer-1",
+          enabled: false,
+          timer: ["timer-1", "off"],
+        },
+        {
+          id: "timer-2",
+          enabled: true,
+          timer: ["timer-2", "on"],
+        },
+      ],
+      ["serverTimer"]
+    );
   });
 
   test("concurrent refreshes share one in-flight cloud request", async () => {
@@ -217,6 +220,7 @@ describe("HAP schedule coordinator cache", () => {
     };
 
     coordinator.managerAccessory = {
+      context: {},
       services: [restoredService],
     };
 
@@ -224,13 +228,16 @@ describe("HAP schedule coordinator cache", () => {
 
     expect(coordinator.restoreScheduleHandlersFromAccessory()).toBe(true);
 
-    expect(coordinator.sync).toHaveBeenCalledWith([
-      {
-        id: "timer-2",
-        enabled: true,
-        timer: ["timer-2", "on"],
-      },
-    ]);
+    expect(coordinator.sync).toHaveBeenCalledWith(
+      [
+        {
+          id: "timer-2",
+          enabled: true,
+          timer: ["timer-2", "on"],
+        },
+      ],
+      []
+    );
   });
 
   test("failed refresh backoff suppresses repeated cloud requests and later retries", async () => {
@@ -485,7 +492,7 @@ describe("HAP schedule coordinator cache", () => {
     await expect(coordinator.refresh()).resolves.toBe(false);
     expect(getServerTimers).toHaveBeenCalledTimes(1);
     expect(coordinator.cachedSchedules).toEqual([]);
-    expect(coordinator.sync).toHaveBeenCalledWith([]);
+    expect(coordinator.sync).toHaveBeenCalledWith([], ["serverTimer"]);
 
     await expect(coordinator.refreshIfNeeded()).resolves.toBe(false);
 
