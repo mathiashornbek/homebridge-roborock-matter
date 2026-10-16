@@ -97,6 +97,7 @@ class MqttSessionDiagnostics {
    */
   noteTimeout(duid, method, request) {
     this.prune();
+    let requestWasSilent = false;
     // Only active, unanswered reads on an acknowledged, connected session
     // can contribute. A write may have succeeded even without its reply.
     if (
@@ -108,7 +109,8 @@ class MqttSessionDiagnostics {
     ) {
       this.rawSilenceDuringRequest = request.rawSequence === this.rawSequence;
       this.lastReadTimeoutAt = performance.now();
-      if (this.rawSilenceDuringRequest) {
+      requestWasSilent = this.rawSilenceDuringRequest;
+      if (requestWasSilent) {
         if (
           !this.silentReads.has(duid) &&
           this.silentReads.size >= MAX_ROBOTS
@@ -120,7 +122,8 @@ class MqttSessionDiagnostics {
       }
     }
     this.emit(true);
-    return this.snapshot();
+    // Exempt only this qualifying request, never a historical observation.
+    return { ...this.snapshot(), requestWasSilent };
   }
 
   prune() {
