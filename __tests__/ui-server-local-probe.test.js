@@ -1,7 +1,7 @@
 const net = require("net");
 
 // Create a simple server for testing TCP probes
-function createTestServer(port, delayMs = 0) {
+function createTestServer(port = 0, delayMs = 0) {
   const server = net.createServer((socket) => {
     if (delayMs > 0) {
       setTimeout(() => {
@@ -12,8 +12,10 @@ function createTestServer(port, delayMs = 0) {
     }
   });
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
+      server.removeListener("error", reject);
       resolve(server);
     });
   });
@@ -23,6 +25,14 @@ function destroyTestServer(server) {
   return new Promise((resolve) => {
     server.close(resolve);
   });
+}
+
+// Reserve an OS-assigned port and release it immediately before a failed probe.
+async function getUnusedPort() {
+  const server = await createTestServer();
+  const { port } = server.address();
+  await destroyTestServer(server);
+  return port;
 }
 
 // Implement probeTcp matching the one from src/ui/index.ts
@@ -61,16 +71,22 @@ function probeTcp(host, port, timeoutMs) {
 }
 
 describe("UI Server Local Probe - TCP Connection Testing", () => {
-  const TEST_PORT_BASE = 59000;
-  let testPortCounter = 0;
+  test("server startup rejects when its port is already in use", async () => {
+    const server = await createTestServer();
 
-  beforeEach(() => {
-    testPortCounter++;
+    try {
+      const occupiedPort = server.address().port;
+      await expect(createTestServer(occupiedPort)).rejects.toMatchObject({
+        code: "EADDRINUSE",
+      });
+    } finally {
+      await destroyTestServer(server);
+    }
   });
 
   test("single TCP probe succeeds to reachable host", async () => {
-    const port = TEST_PORT_BASE + testPortCounter;
-    const server = await createTestServer(port);
+    const server = await createTestServer();
+    const { port } = server.address();
 
     try {
       const result = await probeTcp("127.0.0.1", port, 5000);
@@ -83,7 +99,7 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
   });
 
   test("single TCP probe fails to unreachable host", async () => {
-    const port = TEST_PORT_BASE + testPortCounter;
+    const port = await getUnusedPort();
     // Don't start a server, so the connection will fail
 
     await expect(probeTcp("127.0.0.1", port, 5000)).rejects.toThrow();
@@ -96,13 +112,14 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
   });
 
   test("multiple sequential TCP probes succeed", async () => {
-    const port1 = TEST_PORT_BASE + testPortCounter;
-    const port2 = TEST_PORT_BASE + testPortCounter + 100;
-
-    const server1 = await createTestServer(port1);
-    const server2 = await createTestServer(port2);
+    const server1 = await createTestServer();
+    let server2;
 
     try {
+      server2 = await createTestServer();
+      const port1 = server1.address().port;
+      const port2 = server2.address().port;
+
       // First probe
       const result1 = await probeTcp("127.0.0.1", port1, 5000);
       expect(result1).toHaveProperty("latencyMs");
@@ -117,13 +134,13 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
       expect(result3).toHaveProperty("latencyMs");
     } finally {
       await destroyTestServer(server1);
-      await destroyTestServer(server2);
+      if (server2) await destroyTestServer(server2);
     }
   });
 
   test("multiple sequential failed probes don't accumulate errors", async () => {
-    const port1 = TEST_PORT_BASE + testPortCounter;
-    const port2 = TEST_PORT_BASE + testPortCounter + 100;
+    const port1 = await getUnusedPort();
+    const port2 = await getUnusedPort();
 
     // Don't start any servers, so both connections fail
 
@@ -155,8 +172,8 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
   });
 
   test("rapid sequential probes clean up sockets properly", async () => {
-    const port = TEST_PORT_BASE + testPortCounter;
-    const server = await createTestServer(port);
+    const server = await createTestServer();
+    const { port } = server.address();
 
     try {
       const promises = [];
@@ -177,8 +194,8 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
   });
 
   test("socket is destroyed after successful connection", async () => {
-    const port = TEST_PORT_BASE + testPortCounter;
-    const server = await createTestServer(port);
+    const server = await createTestServer();
+    const { port } = server.address();
 
     try {
       await probeTcp("127.0.0.1", port, 5000);
@@ -190,7 +207,7 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
   });
 
   test("socket is destroyed after connection failure", async () => {
-    const port = TEST_PORT_BASE + testPortCounter;
+    const port = await getUnusedPort();
 
     try {
       await probeTcp("127.0.0.1", port, 500);
@@ -201,8 +218,8 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
     }
 
     // Subsequent probe to different port should work
-    const port2 = TEST_PORT_BASE + testPortCounter + 200;
-    const server = await createTestServer(port2);
+    const server = await createTestServer();
+    const port2 = server.address().port;
 
     try {
       const result = await probeTcp("127.0.0.1", port2, 5000);
@@ -214,7 +231,7 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
 
   test("handles timeout properly and cleans up socket", async () => {
     // This test verifies that even on timeout, socket is properly destroyed
-    const port = TEST_PORT_BASE + testPortCounter;
+    const port = 12345;
 
     try {
       await probeTcp("192.0.2.1", port, 500);
@@ -224,8 +241,8 @@ describe("UI Server Local Probe - TCP Connection Testing", () => {
     }
 
     // After timeout, subsequent operations should work normally
-    const port2 = TEST_PORT_BASE + testPortCounter + 300;
-    const server = await createTestServer(port2);
+    const server = await createTestServer();
+    const port2 = server.address().port;
 
     try {
       const result = await probeTcp("127.0.0.1", port2, 5000);
