@@ -3436,6 +3436,14 @@ class Roborock {
     ) {
       return false;
     }
+    // The experimental lifecycle owns teardown and the shared silence cooldown.
+    // Keep the v3.36 baseline active even without cross-robot evidence.
+    const recovery = this.rr_mqtt_connector?.recovery;
+    if (recovery) {
+      if (!recovery.canRecoverSilence()) return false;
+      void recovery.recreate("cloud-silence");
+      return true;
+    }
     const silences = health.consecutiveSilences;
     health.lastRestartAt = now;
     health.consecutiveSilences = 0;
@@ -5904,6 +5912,8 @@ class Roborock {
       return existing.promise;
     }
 
+    await this.rr_mqtt_connector.waitUntilReady?.();
+
     const messageID = b01Q7Adapter.createB01MessageId();
     const timestamp = Math.floor(Date.now() / 1000);
     const payload = await this.message.buildPayload(
@@ -5927,36 +5937,45 @@ class Roborock {
       );
     }
 
+    // Another caller may have published while this one waited or built its payload.
+    const concurrent = this.pendingB01MapRequests.get(duid);
+    if (concurrent) return concurrent.promise;
+
     let entry;
     const promise = new Promise((resolve, reject) => {
+      entry = { resolve, reject, timeout: undefined };
+    });
+    entry.promise = promise;
+    this.pendingB01MapRequests.set(duid, entry);
+    try {
+      this.rr_mqtt_connector.sendMessage(duid, roborockMessage, () => {
+        if (this.pendingB01MapRequests.get(duid) !== entry) return;
+        this.clearTimeout(entry.timeout);
+        this.pendingB01MapRequests.delete(duid);
+        entry.reject(
+          refusal(
+            "cloud unavailable",
+            `The Roborock cloud connection was lost before the B01 map request for ${this.describeDevice(duid)} could be sent, so it was not sent.`
+          )
+        );
+      });
+      if (this.pendingB01MapRequests.get(duid) !== entry) return promise;
       const timeout = this.setTimeout(() => {
         this.pendingB01MapRequests.delete(duid);
-        reject(
+        entry.reject(
           new Error(
             `B01 map request timed out after 20s for ${this.describeDevice(duid)}.`
           )
         );
       }, 20000);
-      entry = { resolve, reject, timeout };
-    });
-    entry.promise = promise;
-    this.pendingB01MapRequests.set(duid, entry);
-    // Refused by mqtt.js (the link dropped): fail now as a transport refusal,
-    // which the give-up register does not count, rather than after 20 s as a
-    // robot that did not answer.
-    this.rr_mqtt_connector.sendMessage(duid, roborockMessage, () => {
-      if (this.pendingB01MapRequests.get(duid) !== entry) {
-        return;
+      if (typeof timeout?.unref === "function") {
+        timeout.unref();
       }
-      this.clearTimeout(entry.timeout);
+      entry.timeout = timeout;
+    } catch (error) {
       this.pendingB01MapRequests.delete(duid);
-      entry.reject(
-        refusal(
-          "cloud unavailable",
-          `The Roborock cloud connection was lost before the B01 map request for ${this.describeDevice(duid)} could be sent, so it was not sent.`
-        )
-      );
-    });
+      entry.reject(error);
+    }
     return promise;
   }
 

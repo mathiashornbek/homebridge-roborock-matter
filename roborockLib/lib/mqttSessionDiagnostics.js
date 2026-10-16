@@ -33,6 +33,8 @@ class MqttSessionDiagnostics {
     this.rawSilenceDuringRequest = null;
     /** @type {number | null} */
     this.lastReadTimeoutAt = null;
+    /** @type {{generation: number, rawSilenceDuringRequest: boolean, at: number} | null} */
+    this.lastEligibleRead = null;
   }
 
   onConnect() {
@@ -97,6 +99,7 @@ class MqttSessionDiagnostics {
    */
   noteTimeout(duid, method, request) {
     this.prune();
+    let requestWasSilent = false;
     // Only active, unanswered reads on an acknowledged, connected session
     // can contribute. A write may have succeeded even without its reply.
     if (
@@ -108,7 +111,13 @@ class MqttSessionDiagnostics {
     ) {
       this.rawSilenceDuringRequest = request.rawSequence === this.rawSequence;
       this.lastReadTimeoutAt = performance.now();
-      if (this.rawSilenceDuringRequest) {
+      this.lastEligibleRead = {
+        generation: this.generation,
+        rawSilenceDuringRequest: this.rawSilenceDuringRequest,
+        at: this.lastReadTimeoutAt,
+      };
+      requestWasSilent = this.rawSilenceDuringRequest;
+      if (requestWasSilent) {
         if (
           !this.silentReads.has(duid) &&
           this.silentReads.size >= MAX_ROBOTS
@@ -120,7 +129,8 @@ class MqttSessionDiagnostics {
       }
     }
     this.emit(true);
-    return this.snapshot();
+    // Exempt only this qualifying request, never a historical observation.
+    return { ...this.snapshot(), requestWasSilent };
   }
 
   prune() {
@@ -151,6 +161,11 @@ class MqttSessionDiagnostics {
       // a verdict on the current session or on a silent single robot.
       rawSilenceDuringRequest: this.rawSilenceDuringRequest,
       lastReadTimeoutAgeMs: age(this.lastReadTimeoutAt),
+      lastEligibleRead: this.lastEligibleRead && {
+        generation: this.lastEligibleRead.generation,
+        rawSilenceDuringRequest: this.lastEligibleRead.rawSilenceDuringRequest,
+        ageMs: age(this.lastEligibleRead.at),
+      },
       silentReadRobotCount: this.silentReads.size,
       correlatedSilenceObserved: this.silentReads.size >= 2,
       observationWindowMs: SILENCE_WINDOW_MS,

@@ -3,8 +3,9 @@
 The settings page's **Copy diagnostics** report includes an `mqttSession`
 snapshot. Cloud timeout messages append a short summary only for correlated
 silence or an unacknowledged subscription; the full snapshot stays in diagnostics.
-This instrumentation does not change transport selection, subscription handling,
-request readiness, retries, the unanswered-method breaker, or reconnection.
+The observations do not change transport selection, subscription handling,
+request readiness, retries, or reconnection. The breaker integration below uses
+the measured signal to avoid counting account-session failures against methods.
 
 - `generation` increments on each MQTT connect event, including automatic
   reconnects. It restarts with the plugin process; it is not a broker session ID.
@@ -76,3 +77,31 @@ drops the socket, withholds the second SUBACK, and verifies generation 2 becomes
 acknowledged only after that packet arrives. It also checks the broker receives
 exactly one SUBSCRIBE per connection. No Roborock account or external broker is
 used. Upstream v3.36.0's recovery policy remains unchanged by this instrumentation.
+
+## Breaker integration
+
+A production cloud timeout carries `accountSessionWasSilent: true` only when
+its own read qualified for the correlated-silence observation at rejection time.
+The error still rejects the caller normally and retains `unansweredRequest` and
+`transportWasUp`. The breaker reads the boolean field, not the log text, and
+ignores that failure rather than incrementing the robot/method count.
+
+This is prospective suppression: previous counts and already-open breakers are
+not cleared, and genuine robot-method failures keep their existing cooldowns.
+Until cross-robot evidence exists, ordinary counting continues. Inbound activity,
+evidence expiry, or a new generation can make subsequent read timeouts count
+again. Local timeouts, writes, and requests spanning generations do not inherit
+an unrelated account observation. Missing instrumentation keeps the existing
+classification. `requestWasSilent` in the timeout snapshot explains whether
+that particular request qualified; the persisted account snapshot remains
+request-independent.
+
+The default recovery rule can restart a session after three consecutive silent
+cloud requests, including on a single-robot account. The breaker exemption has
+a separate, stricter evidence threshold: at least two silent robots. Recovery
+does not retroactively erase counts or count a timeout a second time. A cloud
+reply resets the recovery streak. The integration tests exercise both policies
+through the production queue and MQTT callbacks.
+
+Session recreation, request readiness and schedule reconciliation are separate
+features. This breaker policy introduces no new settings or command retries.

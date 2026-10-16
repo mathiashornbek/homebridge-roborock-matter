@@ -330,7 +330,7 @@ test("local replies continue and are recorded separately during cloud silence", 
   });
 });
 
-test("breaker behavior is unchanged even when correlation is observed", async () => {
+test("correlated session silence is excluded from the per-method breaker", async () => {
   const breaker = new UnansweredMethodBreaker();
   for (const duid of ["robot-a", "robot-b"])
     breaker.govern(duid, "get_consumable");
@@ -342,8 +342,8 @@ test("breaker behavior is unchanged even when correlation is observed", async ()
     await timeout("robot-b", "get_consumable");
   }
   expect(snapshot().correlatedSilenceObserved).toBe(true);
-  expect(breaker.shouldSkip("robot-a", "get_consumable")).toBe(true);
-  expect(breaker.shouldSkip("robot-b", "get_consumable")).toBe(true);
+  expect(breaker.shouldSkip("robot-a", "get_consumable")).toBe(false);
+  expect(breaker.shouldSkip("robot-b", "get_consumable")).toBe(false);
 });
 
 test.each(["b01", "b01-map", "secure-ack", "refusal"])(
@@ -544,12 +544,16 @@ test("a previous generation's timeout cannot supply the latest read observation"
   expect(snapshot().lastReadTimeoutAgeMs).toBeNull();
 });
 
-test("an unacknowledged subscription produces a concise timeout summary", async () => {
+test("an unacknowledged subscription refuses the unsent request without recording robot silence", async () => {
   mockHandlers.get("connect")({ sessionPresent: true });
   const error = await timeout();
   expect(error.message).toContain(
-    "MQTT session: subscription not acknowledged (generation 2)."
+    "MQTT reply subscription did not become ready within 10000ms; this command was not sent."
   );
+  expect(error).toMatchObject({
+    requestNotSent: true,
+    unansweredRequest: false,
+  });
   expect(error.message).not.toContain("capturedAt");
   expect(snapshot().rawSilenceDuringRequest).toBeNull();
 });
