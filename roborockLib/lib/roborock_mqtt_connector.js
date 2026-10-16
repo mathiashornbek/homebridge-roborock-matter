@@ -12,6 +12,8 @@ const {
   createRefusalError,
 } = require("./describeReplyRefusal");
 
+const { MqttReadiness } = require("./mqttReadiness");
+
 const { MqttSessionDiagnostics } = require("./mqttSessionDiagnostics");
 
 const PHOTO_MAGIC = "ROBOROCK";
@@ -231,6 +233,7 @@ class roborock_mqtt_connector {
     this.adapter = adapter;
 
     this.sessionDiagnostics = new MqttSessionDiagnostics((snapshot) => {
+      this.readiness?.changed();
       Promise.resolve(
         this.adapter.setStateAsync?.("MqttSessionDiagnostics", {
           val: JSON.stringify(snapshot),
@@ -238,6 +241,12 @@ class roborock_mqtt_connector {
         })
       ).catch(() => {});
     });
+    this.readiness = new MqttReadiness(
+      () =>
+        this.sessionDiagnostics.connected &&
+        this.sessionDiagnostics.subscriptionAcknowledged,
+      () => this.sessionDiagnostics.generation
+    );
     this.connected = false;
     this.initialConnectTimeout = null;
 
@@ -253,6 +262,7 @@ class roborock_mqtt_connector {
     // kept disconnecting one for the other, both kept reconnecting, and the
     // old one still delivered every frame and was never ended at shutdown.
     this.disconnect();
+    this.readiness.start();
     rriot = userdata.rriot;
 
     endpoint = roborockCrypto
@@ -306,7 +316,7 @@ class roborock_mqtt_connector {
       this.sessionDiagnostics.onSubscribe(
         this.sessionDiagnostics.generation,
         null,
-        packet.granted.map((qos) => ({ qos }))
+        (packet.granted || []).map((qos) => ({ qos }))
       );
     });
 
@@ -875,10 +885,25 @@ class roborock_mqtt_connector {
    *   so the caller can fail the request at once instead of waiting out its
    *   timeout and reading a dead link as a silent robot.
    */
+  isReady() {
+    return !this.readiness.stopped && this.readiness.isReady();
+  }
+
+  waitUntilReady({ timeoutMs = 10000 } = {}) {
+    return this.readiness.wait(timeoutMs);
+  }
+
   sendMessage(duid, roborockMessage, onNotSent) {
     if (!client) {
       // Shut down between the caller's connection check and this publish.
       onNotSent?.(new Error("The MQTT client is closed"));
+      return;
+    }
+    try {
+      this.readiness.assertReady();
+    } catch (error) {
+      if (!onNotSent) throw error;
+      onNotSent(error);
       return;
     }
     client.publish(
@@ -935,6 +960,7 @@ class roborock_mqtt_connector {
    * The client is let go of, not stripped of its listeners (see `listen`).
    */
   disconnect() {
+    this.readiness.stop();
     this.clearInitialConnectTimeout();
     const closing = client;
     client = undefined;

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Cloud requests wait up to 10 seconds for the reply subscription before starting their full response timeout. A usable LAN route remains immediate; expired readiness means the command was not sent, and is never replayed.
+
 ## 3.39.0
 
 **Cloud requests now go out the way python-roborock sends them, and my own S8 Pro Ultra answered the map request again after weeks of silence. Selecting every room in Apple Home no longer shows the rooms of the last run, a refused schedule write no longer looks like it succeeded, and HomeKit stops warning about names like "Q5 Max+".**
