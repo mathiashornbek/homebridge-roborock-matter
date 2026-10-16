@@ -155,6 +155,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @property {boolean} [secure] True for requests whose protocol-102 reply is
  *   only an acknowledgement, with the real payload arriving on protocol 301.
  * @property {string} [method] The Roborock method, kept for diagnostics.
+ * @property {"cloud" | "local"} [transport] Used to leave local requests alone during MQTT recreation.
  */
 
 /**
@@ -181,6 +182,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} MqttConnector
+ * @property {{observeTimeout: (observation?: ReturnType<import("./mqttSessionDiagnostics").MqttSessionDiagnostics["noteTimeout"]>) => void} | null} [recovery]
  * @property {import("./mqttSessionDiagnostics").MqttSessionDiagnostics} [sessionDiagnostics]
  * @property {(options?: {timeoutMs?: number}) => Promise<number>} [waitUntilReady]
  * @property {() => boolean} [isReady]
@@ -207,12 +209,18 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  *
  * @param {string} message
  * @param {boolean} transportWasUp whether the link was up AT REJECTION TIME
- * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean}}
+ * @param {boolean} [accountSessionWasSilent=false] correlated silence on this cloud read
+ * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean, accountSessionWasSilent: boolean}}
  */
-function unansweredRequestError(message, transportWasUp) {
+function unansweredRequestError(
+  message,
+  transportWasUp,
+  accountSessionWasSilent = false
+) {
   return Object.assign(new Error(message), {
     unansweredRequest: true,
     transportWasUp,
+    accountSessionWasSilent,
   });
 }
 
@@ -647,7 +655,12 @@ class messageQueueHandler {
                   : "";
               const error = unansweredRequestError(
                 `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionSummary}`,
-                transportWasUp
+                transportWasUp,
+                Boolean(
+                  transportWasUp &&
+                    sessionHealth?.requestWasSilent &&
+                    sessionHealth?.correlatedSilenceObserved
+                )
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
               this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
@@ -671,6 +684,9 @@ class messageQueueHandler {
                 this.adapter.noteCloudSilence?.();
               }
               reject(error);
+              this.adapter.rr_mqtt_connector.recovery?.observeTimeout(
+                sessionHealth
+              );
             } else {
               // A socket that keeps reporting itself connected while every
               // request dies of silence is not a transport worth retrying
@@ -741,6 +757,7 @@ class messageQueueHandler {
             ),
             secure,
             method,
+            transport: useCloudConnection ? "cloud" : "local",
           };
           this.adapter.pendingRequests.set(messageID, pendingRequest);
           /** @param {() => void} send */
