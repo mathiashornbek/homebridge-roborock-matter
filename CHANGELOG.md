@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- MQTT presence logs distinguish retained snapshots from live reports, suppress repeated live values, and describe cloud presence without claiming that LAN commands must fail.
+
 ## 3.39.0
 
 **Cloud requests now go out the way python-roborock sends them, and my own S8 Pro Ultra answered the map request again after weeks of silence. Selecting every room in Apple Home no longer shows the rooms of the last run, a refused schedule write no longer looks like it succeeded, and HomeKit stops warning about names like "Q5 Max+".**
