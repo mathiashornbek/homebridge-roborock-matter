@@ -863,13 +863,18 @@ const DOCK_ACTIVITY_STATES: ReadonlySet<number> = new Set([
 // that never left its dock stays Idle through the one-second transit blip the
 // dock leaves behind after emptying the dust bin (issue #9, second report).
 //
-// This happens to hold the same members as EXTENDED_OPERATIONAL_STATES today.
+// A robot that halts is the same: stuck under the sofa mid-run it has not
+// finished, and at an idle dock it has not started. Deciding Idle for it told
+// Apple Home a stuck robot had finished its run.
+//
+// The transit and chore members happen to match EXTENDED_OPERATIONAL_STATES.
 // That is a coincidence of Roborock's state table, not a shared meaning — one
 // says what a toggle may display, the other says what may claim a cleaning —
 // so do not merge them.
 const RUN_MODE_INHERITED_STATES: ReadonlySet<number> = new Set([
   ...DOCK_ACTIVITY_STATES,
   RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+  RVC_OPERATIONAL_STATE.ERROR,
 ]);
 
 // The states that the "Extended Operational States" toggle unlocks. Publishing
@@ -1033,6 +1038,16 @@ export default class RoborockMatterVacuumAccessory {
   private liveRoomVisitFirstSeenAt: number | null = null;
   private liveRoomVisitLastSeenAt: number | null = null;
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
+  // What the room list said before a Matter start announced its rooms, kept
+  // until the robot is seen running. A start that fails, or that the robot
+  // acknowledges and never acts on, puts it back: those rooms were not cleaned.
+  private serviceAreaProgressBeforeStart: {
+    currentArea: number | null;
+    progress: Array<{ areaId: number; status: number }>;
+  } | null = null;
+  // Matter asked the robot to stop this run, so the rooms it was not seen
+  // cleaning end Skipped rather than Completed.
+  private serviceAreaStopRequested = false;
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
   private selectedCleanModeLiveConfirmationExpiresAt = 0;
@@ -2131,6 +2146,7 @@ export default class RoborockMatterVacuumAccessory {
           operationalState: RVC_OPERATIONAL_STATE.STOPPED,
         },
       };
+      this.serviceAreaStopRequested = true;
       this.setAndScheduleOptimisticState(state, "stop");
       this.dispatchRoborockMatterCommand("stop", () =>
         this.api.app_stop(duid, this.getMatterCommandOptions())
@@ -2181,6 +2197,7 @@ export default class RoborockMatterVacuumAccessory {
         `Starting ${name} from ${surfacePhrase(surface)} for selected service area(s): ${selectedAreaNames.join(", ")}.`
       );
       const state = cleaningOptimisticState();
+      this.rememberServiceAreaProgressBeforeStart();
       this.beginServiceAreaProgress(areasToClean.map((area) => area.areaId));
       this.setAndScheduleOptimisticState(state, "selected-area start");
       this.dispatchRoborockMatterCommand(
@@ -2201,6 +2218,7 @@ export default class RoborockMatterVacuumAccessory {
 
     this.platform.log.info(`Starting ${name} from ${surfacePhrase(surface)}.`);
     const state = cleaningOptimisticState();
+    this.rememberServiceAreaProgressBeforeStart();
     this.beginFullCleanServiceAreaProgress();
     this.setAndScheduleOptimisticState(state, "start");
     this.dispatchRoborockMatterCommand(
@@ -2897,9 +2915,18 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     if (state !== null) {
-      this.completeServiceAreaProgressIfDone(
-        this.getOperationalState(state, chargeStatus)
+      const robotState = this.getRoborockOperationalState(
+        state,
+        this.getNumberStatus("charge_status")
       );
+      if (
+        robotState === RVC_OPERATIONAL_STATE.RUNNING ||
+        robotState === RVC_OPERATIONAL_STATE.PAUSED
+      ) {
+        // The start has been acted on; its rooms now belong to a real run.
+        this.serviceAreaProgressBeforeStart = null;
+      }
+      this.completeServiceAreaProgressIfDone(robotState);
       this.beginFullCleanServiceAreaProgressIfUnannounced(state, chargeStatus);
     }
 
@@ -3947,6 +3974,7 @@ export default class RoborockMatterVacuumAccessory {
     // reports which one the robot is actually inside, the first requested
     // area is shown as operating and the rest as pending.
     this.resetLiveRoomVisits();
+    this.serviceAreaStopRequested = false;
     this.serviceAreaCurrentArea = areaIds[0];
     this.serviceAreaProgress = areaIds.map((areaId, index) => ({
       areaId,
@@ -3995,6 +4023,7 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
     this.resetLiveRoomVisits();
+    this.serviceAreaStopRequested = false;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
@@ -4050,6 +4079,7 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
 
+    this.serviceAreaProgressBeforeStart = null;
     this.beginFullCleanServiceAreaProgress();
   }
 
@@ -4069,22 +4099,89 @@ export default class RoborockMatterVacuumAccessory {
     this.persistServiceAreaProgress();
   }
 
-  private completeServiceAreaProgressIfDone(operationalState: number): void {
+  /**
+   * Settle the room list once the robot is out of a run — but only the run
+   * that actually happened.
+   *
+   * - A robot that halted (Error) has not finished: the list stays as it is
+   *   for the run to resume or end.
+   * - A Matter start the robot was never seen acting on — refused, or
+   *   acknowledged and ignored — gives the list back as it was before the
+   *   start, once the plugin itself has stopped showing the start
+   *   (isMatterStartStillPending). Those rooms were not cleaned.
+   * - A run Matter stopped ends with the rooms the robot was not seen
+   *   cleaning Skipped (Matter's own value for it); any other end of a run
+   *   completes every room, as before.
+   *
+   * `robotState` is the robot's own operational state, not the one the
+   * extended-states toggle displays: driving home is still part of the run.
+   */
+  private completeServiceAreaProgressIfDone(robotState: number): void {
     if (this.serviceAreaProgress.length === 0) {
       return;
     }
-    if (this.isInCleaningRunMode(operationalState)) {
+    if (
+      this.isInCleaningRunMode(robotState) ||
+      robotState === RVC_OPERATIONAL_STATE.ERROR
+    ) {
       return;
     }
-    // The run ended (docked, charging, stopped): everything requested is
-    // reported as completed and no area is current anymore.
-    this.resetLiveRoomVisits();
-    this.serviceAreaCurrentArea = null;
+    if (this.serviceAreaProgressBeforeStart) {
+      if (!this.isMatterStartStillPending()) {
+        this.restoreServiceAreaProgressFromBeforeStart();
+      }
+      return;
+    }
+    const unfinished = this.serviceAreaStopRequested
+      ? SERVICE_AREA_PROGRESS.SKIPPED
+      : SERVICE_AREA_PROGRESS.COMPLETED;
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
-      status: SERVICE_AREA_PROGRESS.COMPLETED,
+      status:
+        entry.status === SERVICE_AREA_PROGRESS.COMPLETED ||
+        this.liveConfirmedServiceAreaIds.has(entry.areaId)
+          ? SERVICE_AREA_PROGRESS.COMPLETED
+          : unfinished,
     }));
+    this.resetLiveRoomVisits();
+    this.serviceAreaCurrentArea = null;
+    this.serviceAreaStopRequested = false;
     this.persistServiceAreaProgress();
+  }
+
+  private rememberServiceAreaProgressBeforeStart(): void {
+    // A second start before the first was acted on keeps the original list.
+    this.serviceAreaProgressBeforeStart ??= {
+      currentArea: this.serviceAreaCurrentArea,
+      progress: this.serviceAreaProgress.map((entry) => ({ ...entry })),
+    };
+  }
+
+  /** A failed or ignored start gives back the list it replaced. */
+  private restoreServiceAreaProgressFromBeforeStart(): void {
+    const before = this.serviceAreaProgressBeforeStart;
+    if (!before) {
+      return;
+    }
+    this.serviceAreaProgressBeforeStart = null;
+    this.serviceAreaStopRequested = false;
+    this.resetLiveRoomVisits();
+    this.serviceAreaCurrentArea = before.currentArea;
+    this.serviceAreaProgress = before.progress;
+    this.persistServiceAreaProgress();
+  }
+
+  /**
+   * Whether the plugin is still showing a start the robot has not acted on:
+   * the optimistic Running is up, or the start is inside the window in which
+   * a slow robot (cloud-only S8, #4) still reports docked.
+   */
+  private isMatterStartStillPending(): boolean {
+    return (
+      this.hasRecentlyCommandedCleaning() ||
+      this.getActiveOptimisticState()?.rvcOperationalState?.operationalState ===
+        RVC_OPERATIONAL_STATE.RUNNING
+    );
   }
 
   /**
@@ -5779,6 +5876,9 @@ export default class RoborockMatterVacuumAccessory {
   private async recoverMatterStateAfterFailedCommand(
     action: string
   ): Promise<void> {
+    // A start that failed cleaned nothing; a failed command of any other kind
+    // finds no start waiting here.
+    this.restoreServiceAreaProgressFromBeforeStart();
     try {
       await this.publishCurrentMatterState(
         `${action} command failure recovery`,
