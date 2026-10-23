@@ -81,6 +81,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableMatterChargingDockedStates?: boolean;
   enableMatterFaultReporting?: boolean;
   enableMatterTankFaultReporting?: boolean;
+  enableMatterDockPhases?: boolean;
   matterChargedBatteryThreshold?: number;
   cloudOnlyMode?: boolean;
   preferCloudForMatterCommands?: boolean;

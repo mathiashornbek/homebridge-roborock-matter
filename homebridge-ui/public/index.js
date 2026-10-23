@@ -369,9 +369,22 @@ async function describeEnabledMatterFeatures() {
     ["chargingDockedStates", config.enableMatterChargingDockedStates !== false],
     ["faultReporting", config.enableMatterFaultReporting !== false],
     ["tankFaultReporting", config.enableMatterTankFaultReporting !== false],
+    ["dockPhases", config.enableMatterDockPhases !== false],
     [
       `homeKitActionSwitches(${readActionSwitchSelection(config).join("+") || "none"})`,
       config.enableHomeKitActionSwitches === true,
+    ],
+    // Each is published only with the action-switch master on, as the
+    // platform reads them.
+    [
+      "homeKitScheduleSwitches",
+      config.enableHomeKitActionSwitches === true &&
+        config.enableHomeKitScheduleSwitches === true,
+    ],
+    [
+      "homeKitRoutineSwitches",
+      config.enableHomeKitActionSwitches === true &&
+        config.enableHomeKitRoutineSwitches === true,
     ],
     [
       `homeKitStateSensors(${readStateSensorSelection(config).join("+") || "none"})`,
