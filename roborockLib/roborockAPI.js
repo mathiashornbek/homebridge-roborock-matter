@@ -4282,10 +4282,13 @@ class Roborock {
    * Service Area included).
    *
    * @param {Record<string, any>} homedata
+   * @param {{refresh?: boolean}} [options] `refresh`: the reading of a
+   *   periodic refresh, the only kind that can confirm a removal
    * @returns {Promise<{localKeyDevices: Array<{duid: string}>, added: string[], removed: string[], renamed: string[]}>}
    *   robot names added, removed and renamed relative to the previous list
    */
-  async applyHomeData(homedata) {
+  async applyHomeData(homedata, { refresh = false } = {}) {
+    homedata = this.keepRobotsNotYetGone(homedata, refresh);
     const before = new Map(
       this.normalizeArray(this.devices).map((device) => [
         device.duid,
@@ -4327,6 +4330,75 @@ class Roborock {
         (duid) => before.has(duid) && before.get(duid) !== after.get(duid)
       ),
     };
+  }
+
+  /**
+   * One reading of the account does not remove a robot. A robot this process
+   * has and a reading lacks is carried over from the previous snapshot, with
+   * its product, until two refreshes in a row (an interval apart) have
+   * lacked it; a reading that lists no robot at all removes nothing. A
+   * start's own reading never confirms a removal: the restart after a refresh
+   * reads again within a second, so one bad answer lasting a few seconds was
+   * enough to unregister a robot's Apple Home accessories, which come back
+   * as new ones without their rooms, names and automations. Additions and
+   * renames still apply at once.
+   *
+   * @param {Record<string, any>} homedata
+   * @param {boolean} refresh whether this is a periodic refresh's reading
+   * @returns {Record<string, any>} the reading with those robots kept
+   */
+  keepRobotsNotYetGone(homedata, refresh) {
+    const previous = this.devices ? this.getStoredHomeData() : null;
+    if (!previous) {
+      return homedata;
+    }
+    const listed = new Set(
+      this.normalizeArray(homedata.devices)
+        .concat(this.normalizeArray(homedata.receivedDevices))
+        .map((device) => device?.duid)
+    );
+    const counts = refresh && listed.size > 0;
+    const kept = {
+      ...homedata,
+      devices: [...this.normalizeArray(homedata.devices)],
+      receivedDevices: [...this.normalizeArray(homedata.receivedDevices)],
+      products: [...this.normalizeArray(homedata.products)],
+    };
+    if (!this.missedReadings) {
+      /** @type {Map<string, number>} duid -> refreshes in a row that lacked it */
+      this.missedReadings = new Map();
+    }
+    for (const list of ["devices", "receivedDevices"]) {
+      for (const device of this.normalizeArray(previous[list])) {
+        const duid = device?.duid;
+        if (!duid || listed.has(duid)) {
+          continue;
+        }
+        const misses = (this.missedReadings.get(duid) ?? 0) + (counts ? 1 : 0);
+        if (misses >= 2) {
+          this.missedReadings.delete(duid);
+          continue;
+        }
+        this.missedReadings.set(duid, misses);
+        this.log.debug(
+          `${device.name || duid} is missing from this reading of your Roborock account; it is kept until two refreshes in a row lack it.`
+        );
+        kept[list].push(device);
+        const productId = device.productId;
+        if (!kept.products.some((product) => product?.id == productId)) {
+          const product = this.normalizeArray(previous.products).find(
+            (entry) => entry?.id == productId
+          );
+          if (product) {
+            kept.products.push(product);
+          }
+        }
+      }
+    }
+    for (const duid of listed) {
+      this.missedReadings.delete(duid);
+    }
+    return kept;
   }
 
   /**
@@ -4425,7 +4497,7 @@ class Roborock {
           return;
         }
         this.superviseDeviceIntervals();
-        const change = await this.applyHomeData(homedata);
+        const change = await this.applyHomeData(homedata, { refresh: true });
         this.log.debug(`homedata successfully updated`);
         if (!this.isCurrentRun(run)) {
           return;
