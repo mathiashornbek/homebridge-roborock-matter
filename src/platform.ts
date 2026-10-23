@@ -41,7 +41,8 @@ import {
 import { hapName } from "./hap_name";
 import { HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME, PLUGIN_NAME } from "./settings";
 import { decryptSession } from "./crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const DEP0040_CODE = "DEP0040";
 let dep0040FilterInstalled = false;
@@ -234,6 +235,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       for (const vacuum of this.matterVacuums.values()) {
         step("matter vacuum dispose", () => vacuum.dispose());
       }
+      step("matter accessory context save", () =>
+        this.saveMatterAccessoryContexts()
+      );
 
       for (const actionSwitch of this.actionSwitches.values()) {
         step("action switch dispose", () => actionSwitch.dispose());
@@ -1915,7 +1919,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     const accessory = {
       UUID: this.generateMatterUuid(duid),
       deviceType,
-      context: { duid },
+      context: { ...this.readSavedMatterAccessoryContext(duid), duid },
     };
 
     this.applyMatterAccessoryIdentity(accessory, device);
@@ -2060,6 +2064,70 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         this.matterAccessories.splice(index, 1);
       }
     }
+  }
+
+  /**
+   * Where the Matter accessories' context is kept between runs.
+   *
+   * Homebridge 2.4.0 saves an external Matter accessory's context — every
+   * robot vacuum is one — but loads that cache only after the accessory has
+   * registered (ServerLifecycle runServer -> startServerNode), so it never
+   * comes back. The room progress and room selection the accessory keeps
+   * there were lost on every restart, so the plugin keeps its own copy.
+   */
+  private getMatterAccessoryContextPath(): string | null {
+    try {
+      return join(
+        this.api.user.storagePath(),
+        "roborock.MatterAccessoryContext"
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private readSavedMatterAccessoryContext(
+    duid: string
+  ): Record<string, unknown> {
+    const file = this.getMatterAccessoryContextPath();
+    if (!file) {
+      return {};
+    }
+    try {
+      const saved = JSON.parse(readFileSync(file, "utf8"))?.[duid];
+      return saved && typeof saved === "object" && !Array.isArray(saved)
+        ? saved
+        : {};
+    } catch {
+      // None yet, or unreadable: start as a first run would.
+      return {};
+    }
+  }
+
+  /** Run at shutdown; see getMatterAccessoryContextPath. */
+  private saveMatterAccessoryContexts(): void {
+    const file = this.getMatterAccessoryContextPath();
+    if (!file) {
+      return;
+    }
+    // Merged into what is there: a second instance of this platform (another
+    // child bridge, another account) keeps its robots in the same file.
+    let contexts: Record<string, unknown> = {};
+    try {
+      const saved = JSON.parse(readFileSync(file, "utf8"));
+      if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+        contexts = saved;
+      }
+    } catch {
+      // None yet, or unreadable: replaced below.
+    }
+    for (const accessory of this.matterAccessories) {
+      const duid = this.getMatterAccessoryDuid(accessory);
+      if (duid) {
+        contexts[duid] = accessory.context;
+      }
+    }
+    writeFileSync(file, JSON.stringify(contexts), { mode: 0o600 });
   }
 
   private generateMatterUuid(duid: string): string {

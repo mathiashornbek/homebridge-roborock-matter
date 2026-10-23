@@ -1122,8 +1122,9 @@ export default class RoborockMatterVacuumAccessory {
   ) {
     this.registered = isRegistered;
     this.seedFromLastKnownLiveStatus(device.duid);
-    this.updateMetadata(device);
+    // Before the registration defaults are built, so they carry it.
     this.restoreServiceAreaProgress();
+    this.updateMetadata(device);
   }
 
   /**
@@ -3937,9 +3938,9 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private persistServiceAreaProgress(): void {
-    // Best-effort: Homebridge persists accessory context periodically and on
-    // shutdown, so a restart mid-clean restores the room display instead of
-    // silently dropping back to a generic label.
+    // Kept across a restart (the platform saves the Matter accessories'
+    // context at shutdown), so a restart mid-clean restores the room display
+    // instead of silently dropping back to a generic label.
     this.accessory.context.serviceAreaProgressState = {
       currentArea: this.serviceAreaCurrentArea,
       progress: this.serviceAreaProgress.map((entry) => ({ ...entry })),
@@ -3947,6 +3948,15 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private restoreServiceAreaProgress(): void {
+    // The selection too: without it Apple Home snapped back to "no rooms"
+    // after every restart, and Start cleaned the whole house.
+    const selection = this.accessory.context?.selectedServiceAreaIds;
+    if (Array.isArray(selection)) {
+      this.selectedServiceAreaIds = selection.filter(
+        (areaId): areaId is number =>
+          typeof areaId === "number" && Number.isInteger(areaId)
+      );
+    }
     const persisted = this.accessory.context?.serviceAreaProgressState as
       | { currentArea?: unknown; progress?: unknown }
       | undefined;
@@ -4527,6 +4537,7 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     this.selectedServiceAreaIds = selectedAreas;
+    this.accessory.context.selectedServiceAreaIds = [...selectedAreas];
     // A SELECTION MADE BETWEEN RUNS HAS NO PROGRESS YET — #24.
     //
     // Progress is persisted, so the finished rooms of the morning's run were
