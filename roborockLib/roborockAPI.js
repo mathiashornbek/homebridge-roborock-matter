@@ -5477,6 +5477,28 @@ class Roborock {
     );
   }
 
+  /**
+   * Name a Q7 work status the adapter has no translation for, once per robot
+   * and code. The answer is published without a state rather than as Idle, so
+   * this line is the only place the number shows up.
+   *
+   * @param {string} duid
+   * @param {unknown} status
+   */
+  noteUnknownB01WorkStatus(duid, status) {
+    if (!this._b01UnknownWorkStatuses) {
+      this._b01UnknownWorkStatuses = new Set();
+    }
+    const key = `${duid}:${status}`;
+    if (this._b01UnknownWorkStatuses.has(key)) {
+      return;
+    }
+    this._b01UnknownWorkStatuses.add(key);
+    this.log.info(
+      `${this.describeDevice(duid)} reports work status ${status}, which this plugin has no translation for, so its tile keeps the last known state. If it persists, please report the number and what the Roborock app shows.`
+    );
+  }
+
   async refreshB01Status(duid, options = {}) {
     // A Q10 (`ss*`) IS NOT POLLED AT ALL, and that gate belongs here rather
     // than at the send choke point. The choke point already refuses
@@ -5555,7 +5577,19 @@ class Roborock {
           "get_status",
           []
         );
+        // python-roborock refuses a prop.get answer that is not an object
+        // (b01_q7_channel.find_response). Read as an empty status it would
+        // publish nothing true and reset the failure streak, so it is a
+        // failed read like any other.
+        if (data === null || typeof data !== "object" || Array.isArray(data)) {
+          throw new Error(
+            `The robot answered the status read without a status (${JSON.stringify(data)}).`
+          );
+        }
         const v1Status = b01Q7Adapter.mapStatusToV1(data, this.b01Family(duid));
+        if (v1Status.state === undefined && data.status !== undefined) {
+          this.noteUnknownB01WorkStatus(duid, data.status);
+        }
         // A run that has just started is the moment the user is watching, and
         // it was also the slowest: the live-room fetch below rides its own
         // throttle, counted from the last attempt, so the first room of a run
@@ -5573,8 +5607,15 @@ class Roborock {
             liveState.lastAttemptAt = 0;
           }
         }
-        refreshState.lastKnownV1State = v1Status.state;
-        refreshState.lastV1Status = v1Status;
+        // An answer without a known work status leaves the last known one
+        // standing, here as on the tile.
+        if (v1Status.state !== undefined) {
+          refreshState.lastKnownV1State = v1Status.state;
+        }
+        refreshState.lastV1Status = {
+          ...refreshState.lastV1Status,
+          ...v1Status,
+        };
 
         if (refreshState.consecutiveFailures > 0) {
           // ANNOUNCE A RECOVERY ONLY FROM A FAILURE THE LOG ANNOUNCED.
@@ -5600,7 +5641,7 @@ class Roborock {
         if (!refreshState.firstSuccessLogged) {
           refreshState.firstSuccessLogged = true;
           this.log.info(
-            `B01 status online for ${this.describeDevice(duid)}: state=${v1Status.state}, battery=${v1Status.battery ?? "?"}%, charging=${v1Status.charge_status === 1 ? "yes" : "no"}.`
+            `B01 status online for ${this.describeDevice(duid)}: state=${v1Status.state ?? "unknown"}, battery=${v1Status.battery ?? "?"}%, charging=${v1Status.charge_status === undefined ? "unknown" : v1Status.charge_status === 1 ? "yes" : "no"}.`
           );
         }
 

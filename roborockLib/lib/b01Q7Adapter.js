@@ -258,6 +258,10 @@ const B01_STATUS_TO_V1_STATE = {
   8: 3,
   9: 23,
   10: 8,
+  // working_sleep: "an untouched pause falls asleep after ~10 minutes; the
+  // job is kept" (Home Assistant maps it to PAUSED). Read as Idle, a paused
+  // run looked finished.
+  11: 10,
 };
 
 /** @param {unknown} version */
@@ -1188,7 +1192,7 @@ function translateQ7WorkStatusToV1State(rawStatus) {
 /**
  * @param {any} data
  * @param {string} [family] one of B01_FAMILY; Q7 when not given
- * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
+ * @returns {{state?: number, error_code: number, charge_status?: number, dry_status?: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
  */
 function mapStatusToV1(data, family = B01_FAMILY.Q7) {
   const source = data && typeof data === "object" ? data : {};
@@ -1196,17 +1200,25 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
   const rawStatus = Number(source.status);
   const mappedState = B01_STATUS_TO_V1_STATE[rawStatus];
 
-  /** @type {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
+  /** @type {{state?: number, error_code: number, charge_status?: number, dry_status?: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
   const v1 = {
     // The Q7 fault field is a separate diagnostic channel: informational
     // codes (e.g. 407 "cleaning in progress / scheduled cleanup ignored")
     // linger after harmless events, so fault NEVER overrides the work
     // status. The reference implementation treats fault the same way.
-    state: mappedState !== undefined ? mappedState : 3,
     error_code: informationalFaults(family).has(fault) ? 0 : fault,
+  };
+
+  // A work status this table does not know, or none at all, says nothing
+  // about the robot. Defaulting it to Idle-off-the-dock published a docked or
+  // paused robot as idle whenever an answer came back partial; leaving the
+  // fields out keeps whatever was last known (upstream maps unknown codes to
+  // UNKNOWN, never to a real state).
+  if (mappedState !== undefined) {
+    v1.state = mappedState;
     // Charging (4) and dock air-drying (10) count as on-charger so the
     // PowerSource cluster and the Charging/Docked tile logic see it.
-    charge_status: rawStatus === 4 || rawStatus === 10 ? 1 : 0,
+    v1.charge_status = rawStatus === 4 || rawStatus === 10 ? 1 : 0;
     // Status 10 is the dock air-drying the mop, and mapping it to v1 state 8
     // deliberately throws that away so the tile reads Docked rather than
     // inventing a state. The information is worth keeping though: drying is
@@ -1214,8 +1226,8 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
     // publishes it as a phase instead. `dry_status` is the field a v1 robot
     // with a drying dock uses for exactly this, so the B01 answer is written
     // under the same name rather than a private one.
-    dry_status: rawStatus === 10 ? 1 : 0,
-  };
+    v1.dry_status = rawStatus === 10 ? 1 : 0;
+  }
 
   const battery = Number(source.quantity);
   if (Number.isFinite(battery)) {
