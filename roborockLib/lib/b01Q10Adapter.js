@@ -98,6 +98,12 @@ const MATTER_TO_Q10_CLEAN_TYPE = { 0: 2, 1: 3, 2: 1 };
 const Q10_CLEAN_TYPE_TO_MATTER = { 1: 2, 2: 0, 3: 1 };
 
 /**
+ * The plugin's name for dpRequestDps. There is no v1 method for it: a classic
+ * robot answers a status read, a Q10 can only be asked to push.
+ */
+const REQUEST_STATUS_PUSH = "request_dps";
+
+/**
  * Translate a v1-shaped outgoing command to a Q10 datapoint write.
  *
  * Returns `{dp, params}` for a command the dialect can express, or `null` for
@@ -159,6 +165,11 @@ function translateOutgoing(method, params) {
         ? null
         : { dp: B01_Q10_DP.CLEAN_MODE, params: q10Mode };
     }
+    case REQUEST_STATUS_PUSH:
+      // Not a read: a write that makes the robot push its full status (and
+      // its current map), which arrives through the push path like any
+      // other. python-roborock `Q10PropertiesApi.refresh`.
+      return { dp: B01_Q10_DP.REQUEST_DPS, params: {} };
     default:
       // Everything else, reads included, is refused by the caller.
       return null;
@@ -388,6 +399,7 @@ function mapDpsToV1(dps) {
 }
 
 module.exports = {
+  REQUEST_STATUS_PUSH,
   mapDpsToV1,
   describeQ10Fault,
   Q10_STATUS_TO_V1_STATE,

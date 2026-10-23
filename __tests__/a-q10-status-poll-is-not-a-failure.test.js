@@ -57,12 +57,15 @@ const Q10_MODEL = "roborock.vacuum.ss07";
 const Q7_MODEL = "roborock.vacuum.sc05";
 
 describe("a Q10 status poll is not attempted, and not counted as a failure", () => {
-  test("no request is sent for a Q10", async () => {
+  test("no status read is sent for a Q10, only the push request", async () => {
     const { api, sendRequest } = createApi(Q10_MODEL);
 
     const result = await api.refreshB01Status("duid-q10", { force: true });
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    // dpRequestDps, a write; see a-q10-is-asked-to-push-its-status.test.js.
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
+      "request_dps",
+    ]);
     expect(result).toBeNull();
   });
 
@@ -76,7 +79,9 @@ describe("a Q10 status poll is not attempted, and not counted as a failure", () 
       await api.refreshB01Status("duid-q10", { force: true });
     }
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    expect(
+      sendRequest.mock.calls.filter((call) => call[1] !== "request_dps")
+    ).toEqual([]);
     expect(api._b01StatusState?.get("duid-q10")?.consecutiveFailures ?? 0).toBe(
       0
     );
@@ -99,10 +104,9 @@ describe("a Q10 status poll is not attempted, and not counted as a failure", () 
       .filter((line) => line.includes("Q10"));
     expect(notices).toHaveLength(1);
     // It has to answer the reader's actual question: why is nothing being
-    // polled, and where does the state on the tile come from instead.
-    expect(notices[0]).toContain("no reply");
-    expect(notices[0]).toContain("home data");
-    expect(notices[0]).toContain("#19");
+    // read, and where does the state on the tile come from instead.
+    expect(notices[0]).toContain("no status read");
+    expect(notices[0]).toContain("pushes");
   });
 
   test("each Q10 robot is announced separately", async () => {

@@ -303,6 +303,9 @@ const B01_STATUS_TICK_MS = 15000;
 const B01_STATUS_FORCED_GAP_MS = 1500;
 const B01_STATUS_ACTIVE_GAP_MS = 12000;
 const B01_STATUS_IDLE_GAP_MS = 25000;
+// How often a Q10 is asked to push its full status (dpRequestDps). It pushes
+// changes on its own; this is the resync, at Home Assistant's cadence.
+const B01_Q10_STATUS_REQUEST_GAP_MS = 60000;
 
 // The last path segment of the cloud schedule probe's negative control.
 //
@@ -5453,28 +5456,52 @@ class Roborock {
   }
 
   /**
-   * Say once per Q10 robot that its status does not come from this loop.
+   * Ask a Q10 to push its full status (dpRequestDps), at most once a minute.
    *
-   * Once per robot rather than once per poll: at the idle cadence the loop
-   * reaches this 144 times an hour, and a line repeated that often stops
-   * being read. The reader's question is not "was a request skipped" but
-   * "why is my tile not updating and where does its state come from" — so the
-   * notice answers that and points at the issue tracking the remaining half.
+   * A Q10 has no status read: the dialect sends no reply. It does push its
+   * datapoints, on change and on this request, and the push path reads them
+   * (onB01DatapointPush). The request is fire-and-forget, so it resolves to
+   * nothing, publishes nothing and is never counted as a failed read; a
+   * request the cloud could not carry is only noted at debug level.
    *
    * @param {string} duid
-   * @returns {void}
+   * @param {{force?: boolean}} [options]
+   * @returns {Promise<null>}
    */
-  noteB01Q10StatusPollNotAttempted(duid) {
+  async requestB01Q10StatusPush(duid, options = {}) {
+    if (!this._b01Q10StatusRequestAt) {
+      this._b01Q10StatusRequestAt = new Map();
+    }
+    const gapMs = options.force
+      ? B01_STATUS_FORCED_GAP_MS
+      : B01_Q10_STATUS_REQUEST_GAP_MS;
+    if (Date.now() - (this._b01Q10StatusRequestAt.get(duid) || 0) < gapMs) {
+      return null;
+    }
+    this._b01Q10StatusRequestAt.set(duid, Date.now());
+
     if (!this._b01Q10StatusNoticed) {
       this._b01Q10StatusNoticed = new Set();
     }
-    if (this._b01Q10StatusNoticed.has(duid)) {
-      return;
+    if (!this._b01Q10StatusNoticed.has(duid)) {
+      this._b01Q10StatusNoticed.add(duid);
+      this.log.info(
+        `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which has no status read, so its state comes from the datapoints it pushes. The plugin asks it to push a full status once a minute.`
+      );
     }
-    this._b01Q10StatusNoticed.add(duid);
-    this.log.info(
-      `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which sends no reply to a status read, so the dedicated B01 status loop does not poll it. Its state comes from the home data snapshot over HTTPS instead. This is a property of the dialect and not a fault; reading state from the datapoint updates the robot pushes is tracked in issue #19.`
-    );
+
+    try {
+      await this.messageQueueHandler.sendRequest(
+        duid,
+        b01Q10Adapter.REQUEST_STATUS_PUSH,
+        {}
+      );
+    } catch (error) {
+      this.log.debug(
+        `The Q10 status request for ${this.describeDevice(duid)} was not sent: ${error?.message || error}`
+      );
+    }
+    return null;
   }
 
   /**
@@ -5522,24 +5549,12 @@ class Roborock {
   }
 
   async refreshB01Status(duid, options = {}) {
-    // A Q10 (`ss*`) IS NOT POLLED AT ALL, and that gate belongs here rather
-    // than at the send choke point. The choke point already refuses
-    // `get_status` for a Q10 by name — correctly, since a fire-and-forget
-    // dialect cannot answer a read — but a request refused is still a request
-    // counted: the catch below incremented `consecutiveFailures` on every one
-    // and warned "B01 status has failed N times in a row" every tenth. At the
-    // 25-second idle cadence that is a warning every four minutes about a
-    // robot that is working exactly as designed, which is the same false alarm
-    // #14 spent three rounds chasing. Asking a question whose refusal is
-    // certain before it is asked is not a diagnostic.
-    //
-    // Returning null is what the throttle below already returns, so every
-    // caller handles it; no state entry is allocated either, and
-    // `getLastKnownLiveStatus` answers null for a Q10 as it does for a classic
-    // robot — "nothing known", never a value.
+    // A Q10 (`ss*`) is never sent a status READ: the dialect has no reply,
+    // so a read could only be refused, and a refused read counted as a
+    // failure warned about a healthy robot every few minutes (#14). It is
+    // asked to push instead, and what it pushes is read on the push path.
     if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
-      this.noteB01Q10StatusPollNotAttempted(duid);
-      return null;
+      return this.requestB01Q10StatusPush(duid, options);
     }
     if (this.b01Family(duid) === null) {
       this.noteB01FamilyUnknown(duid);
