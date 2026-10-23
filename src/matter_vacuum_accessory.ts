@@ -1466,6 +1466,27 @@ export default class RoborockMatterVacuumAccessory {
         ? { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" }
         : null;
     }
+    if (errorCode !== null && errorCode !== 0 && !speaksV1) {
+      // A B01 robot's `fault` field lingers after the event that set it, and
+      // Home Assistant reads a B01 robot's state from its work status alone:
+      // charging, drying and the dock chores are Docked (vacuum.py
+      // Q7_STATE_CODE_TO_STATE / Q10_STATE_CODE_TO_STATE). A robot in its
+      // dock is therefore not faulted, and saying so clears a code left
+      // standing from before it got there — a Q7 lifted mid-run and carried
+      // home read Stuck at the dock until something overwrote the field.
+      const robotState = this.getRoborockOperationalState(
+        this.getNumberStatus("state"),
+        this.getNumberStatus("charge_status")
+      );
+      if (
+        robotState === RVC_OPERATIONAL_STATE.CHARGING ||
+        robotState === RVC_OPERATIONAL_STATE.DOCKED ||
+        robotState === RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN ||
+        robotState === RVC_OPERATIONAL_STATE.CLEANING_MOP
+      ) {
+        return { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" };
+      }
+    }
     if (
       errorCode !== null &&
       errorCode !== 0 &&
