@@ -1995,10 +1995,10 @@ class Roborock {
           const ignoredSet = this.getIgnoredDeviceSet();
           // create devices and set states
           this.products = homedataResult.products;
-          this.devices = homedataResult.devices || [];
-          this.devices = this.devices.filter(
-            (device) => !this.shouldSkipDevice(device, ignoredSet)
-          );
+          // Owned AND shared robots, the list getVacuumList() publishes from:
+          // a robot shared with the account (`receivedDevices`) used to get
+          // an Apple Home tile and no runtime behind it.
+          this.devices = this.getManagedHomeDevices(homedataResult);
 
           const managedDevicesForDiagnostics = this.getManagedHomeDevices(
             homedataResult,
@@ -2047,6 +2047,7 @@ class Roborock {
 
             this.roomIDs[roomID] = roomName;
           }
+          await this.addSharedRobotRoomNames(homedataResult);
           this.log.debug(`RoomIDs debug: ${JSON.stringify(this.roomIDs)}`);
 
           // Perform a periodic MQTT health check. Reconnect only if needed.
@@ -2160,6 +2161,43 @@ class Roborock {
       // still coming up registered nothing and sat idle until a human
       // restarted Homebridge.
       this.scheduleStartServiceRetry(error);
+    }
+  }
+
+  /**
+   * Room names for robots shared with this account. Their rooms belong to the
+   * owner's home, which this account's home data does not carry, so they
+   * would all read "Room <id>". `user/deviceshare/query/{duid}/rooms` has
+   * them (python-roborock's get_shared_device_rooms, which reads `roomId` as
+   * the id). Best effort: a robot whose rooms cannot be read keeps the
+   * numbered names, as before.
+   *
+   * @param {{receivedDevices?: Array<{duid?: string}>}} homedata
+   */
+  async addSharedRobotRoomNames(homedata) {
+    const shared = new Set(
+      this.normalizeArray(homedata?.receivedDevices).map((d) => d?.duid)
+    );
+    for (const device of this.getManagedHomeDevices(homedata)) {
+      if (!shared.has(device.duid) || !this.api) {
+        continue;
+      }
+      try {
+        const response = await this.api.get(
+          `user/deviceshare/query/${device.duid}/rooms`
+        );
+        const rooms = response?.data?.success ? response.data.result : [];
+        for (const room of this.normalizeArray(rooms)) {
+          const id = room?.id ?? room?.roomId;
+          if (id !== undefined && typeof room?.name === "string") {
+            this.roomIDs[id] = room.name;
+          }
+        }
+      } catch (error) {
+        this.log.debug(
+          `Could not read the room names of ${this.describeDevice(device.duid)}, which is shared with this account: ${/** @type {any} */ (error)?.message || error}`
+        );
+      }
     }
   }
 
