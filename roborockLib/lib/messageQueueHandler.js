@@ -49,6 +49,20 @@ const METHOD_REQUEST_TIMEOUTS = {
 };
 
 /**
+ * Requests python-roborock 7.13.0 sends over MQTT only, even to a robot whose
+ * LAN socket is up: the `MapsTrait` read and map switch (`@mqtt_rpc_channel`),
+ * the map content (`map_rpc_channel`), obstacle photos (`blob_rpc_channel`)
+ * and the network info `V1Channel` fetches through `mqtt_rpc_channel`.
+ */
+const CLOUD_ONLY_METHODS = new Set([
+  "get_map_v1",
+  "get_multi_maps_list",
+  "load_multi_map",
+  "get_network_info",
+  "get_photo",
+]);
+
+/**
  * @param {string} method
  * @param {number} [requestTimeoutMs]
  * @returns {number}
@@ -307,7 +321,7 @@ class messageQueueHandler {
       !remoteConnection &&
       !secure &&
       !photo &&
-      method != "get_network_info";
+      !CLOUD_ONLY_METHODS.has(method);
 
     if (
       preferLocalConnection &&
@@ -428,7 +442,7 @@ class messageQueueHandler {
       remoteConnection ||
       secure ||
       photo ||
-      method == "get_network_info";
+      CLOUD_ONLY_METHODS.has(method);
     if (!useCloudConnection && !localConnectionState && mqttConnectionState) {
       useCloudConnection = true;
       await this.adapter.updateTransportDiagnostics(duid, {
@@ -768,6 +782,10 @@ class messageQueueHandler {
                   condition: method == "get_network_info",
                   reason: "network-info-cloud-only",
                 },
+                {
+                  condition: CLOUD_ONLY_METHODS.has(method),
+                  reason: "cloud-only-method",
+                },
               ].find((entry) => entry.condition)?.reason ?? "cloud-request";
             this.adapter.updateTransportDiagnostics(duid, {
               lastTransport: "cloud",
@@ -816,6 +834,7 @@ class messageQueueHandler {
 }
 
 module.exports = {
+  CLOUD_ONLY_METHODS,
   messageQueueHandler,
   getRequestTimeout,
   refusal,

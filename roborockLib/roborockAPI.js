@@ -1700,6 +1700,7 @@ class Roborock {
       "cloud-only-mode",
       "cloud-only-mqtt-unavailable",
       "network-info-cloud-only",
+      "cloud-only-method",
       "secure-command",
       "photo-command",
       "preferred-cloud-command",
@@ -1713,6 +1714,8 @@ class Roborock {
       "cloud-only-mode": "cloud-only mode is enabled",
       "cloud-only-mqtt-unavailable":
         "cloud-only mode is enabled but Roborock cloud MQTT is unavailable",
+      "cloud-only-method":
+        "this request is only ever sent through the Roborock cloud, as python-roborock sends it",
       "cloud-request": "cloud transport was selected for this command",
       "device-offline": "Roborock currently reports the vacuum offline",
       "device-offline-during-connect":
