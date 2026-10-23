@@ -32,19 +32,6 @@ class message {
   constructor(adapter) {
     this.adapter = adapter;
     this.missingLocalKeyWarnings = new Set();
-
-    // The protocol RSA keypair is only needed for the rare photo request
-    // path (camera-equipped models). Generate it lazily on first use
-    // instead of paying a full RSA-2048 keygen (~50 ms on fast hardware,
-    // substantially more on a Raspberry Pi) at every startup.
-    this._keys = null;
-  }
-
-  get keys() {
-    if (!this._keys) {
-      this._keys = roborockCrypto.generateRsaKeyPair();
-    }
-    return this._keys;
   }
 
   /**
@@ -54,7 +41,8 @@ class message {
    * @param {string} method
    * @param {any} params
    * @param {boolean} [secure]
-   * @param {boolean} [photo]
+   * @param {boolean} [_unused] the photo flag's old slot, kept so positional
+   *   callers stay valid; nothing asks for a photo
    * @param {{b01Q10Dps?: Record<string, any>}} [options] `b01Q10Dps` carries a
    *   pre-built Q10 datapoint map from the send choke point, which is the only
    *   place that knows the device family. Absent for every other device.
@@ -66,20 +54,12 @@ class message {
     method,
     params,
     secure = false,
-    photo = false,
+    _unused = false,
     options = {}
   ) {
     const timestamp = Math.floor(Date.now() / 1000);
     const endpoint = this.adapter.rr_mqtt_connector.getEndpoint();
     const version = await this.adapter.getRobotVersion(duid);
-
-    if (photo) {
-      params.endpoint = endpoint;
-      params.security = {
-        cipher_suite: 0,
-        pub_key: this.keys.public,
-      };
-    }
 
     const inner = {
       id: messageID,
@@ -89,7 +69,7 @@ class message {
     // Every V1 request over MQTT carries it, as python-roborock's MQTT
     // strategy encodes every request with its security data; its local
     // strategy encodes none.
-    if ((secure || protocol === 101) && !photo) {
+    if (secure || protocol === 101) {
       inner.security = {
         endpoint: endpoint,
         // Lowercase, as python-roborock's SecurityData.to_dict sends it.

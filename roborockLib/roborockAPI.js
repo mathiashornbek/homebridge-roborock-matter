@@ -4344,8 +4344,6 @@ class Roborock {
       if (waitForResult) {
         await commandPromise;
       }
-    } else if (command === "get_photo") {
-      this.vacuums[duid].getParameter(duid, "get_photo", parameters);
     } else {
       this.log.warn(`Command ${command} not found.`);
     }

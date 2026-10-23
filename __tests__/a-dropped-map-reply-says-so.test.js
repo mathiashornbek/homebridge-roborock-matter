@@ -111,29 +111,3 @@ describe("no protocol 301 frame is dropped in silence", () => {
     expect(region).toMatch(/no request is waiting for that id/i);
   });
 });
-
-describe("one robot unfinished photo cannot swallow another robot map", () => {
-  test("the chunk buffer is per robot, not per process", () => {
-    // `let photoGzipChunks = []` / `let photoChunkID = 0` at module scope were
-    // shared by every robot on the account, and cleared only when a transfer
-    // COMPLETED. One robot going offline between chunk 1 and chunk 2 left the
-    // id set forever, and from then on every 301 frame with seq == 2 from ANY
-    // robot was swallowed into that stale buffer.
-    expect(SOURCE).not.toMatch(/^let photoGzipChunks = \[\];$/m);
-    expect(SOURCE).not.toMatch(/^let photoChunkID = 0;$/m);
-    expect(SOURCE).toMatch(/photoBuffers = new Map\(\)/);
-    expect(SOURCE).toMatch(/function photoBufferFor\(duid\)/);
-  });
-
-  test("a buffer whose request is no longer waiting is discarded", () => {
-    expect(SOURCE).toMatch(
-      /photoBuffer\.chunkId !== 0 &&\s*!this\.adapter\.pendingRequests\.has\(photoBuffer\.chunkId\)/
-    );
-  });
-
-  test("the module still loads with the rewritten buffer", () => {
-    expect(
-      require("../roborockLib/lib/roborock_mqtt_connector.js")
-    ).toBeTruthy();
-  });
-});

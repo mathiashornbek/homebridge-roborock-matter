@@ -180,7 +180,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} MessageBuilder
- * @property {(duid: string, protocol: number, messageID: number, method: string, params: unknown[], secure: boolean, photo: boolean, options?: {b01Q10Dps?: Record<string, unknown>}) => Promise<unknown>} buildPayload
+ * @property {(duid: string, protocol: number, messageID: number, method: string, params: unknown[], secure: boolean, unused: boolean, options?: {b01Q10Dps?: Record<string, unknown>}) => Promise<unknown>} buildPayload
  * @property {(duid: string, protocol: number, timestamp: number, payload: unknown) => Promise<Buffer | null | undefined>} buildRoborockMessage
  */
 
@@ -274,7 +274,6 @@ function errorText(error) {
  * @property {string} method
  * @property {unknown[]} params
  * @property {boolean} secure
- * @property {boolean} photo
  * @property {any} messageID
  * @property {string} version
  * @property {unknown} payload
@@ -347,7 +346,8 @@ class messageQueueHandler {
    * @param {string} method
    * @param {unknown[]} params
    * @param {boolean} [secure=false]
-   * @param {boolean} [photo=false]
+   * @param {boolean} [_unused=false] the photo flag's old slot, kept so
+   *   positional callers stay valid; nothing asks for a photo
    * @param {RequestOptions} [options]
    * @returns {Promise<unknown | undefined>}
    */
@@ -356,7 +356,7 @@ class messageQueueHandler {
     method,
     params,
     secure = false,
-    photo = false,
+    _unused = false,
     options = {}
   ) {
     const remoteConnection = await this.adapter.isRemoteDevice(duid);
@@ -374,7 +374,6 @@ class messageQueueHandler {
       !preferCloudConnection &&
       !remoteConnection &&
       !secure &&
-      !photo &&
       !CLOUD_ONLY_METHODS.has(method);
 
     if (
@@ -495,7 +494,6 @@ class messageQueueHandler {
       preferCloudConnection ||
       remoteConnection ||
       secure ||
-      photo ||
       CLOUD_ONLY_METHODS.has(method);
     if (!useCloudConnection && !localConnectionState && mqttConnectionState) {
       useCloudConnection = true;
@@ -538,14 +536,11 @@ class messageQueueHandler {
       }
     }
 
-    let messageID = /** @type {any} */ (
+    const messageID = /** @type {any} */ (
       b01Q7Adapter.isB01Protocol(version)
         ? b01Q7Adapter.createB01MessageId()
         : this.adapter.getRequestId()
     );
-    if (photo && typeof messageID === "number") {
-      messageID = messageID % 256; // this is a special case. Otherwise photo requests will not have the correct ID in the response.
-    }
     const timestamp = Math.floor(Date.now() / 1000);
 
     const protocol = useCloudConnection ? 101 : 4;
@@ -558,7 +553,7 @@ class messageQueueHandler {
       method,
       params,
       secure,
-      photo,
+      false,
       b01Q10Dps ? { b01Q10Dps } : {}
     );
     const roborockMessage = await this.adapter.message.buildRoborockMessage(
@@ -664,7 +659,6 @@ class messageQueueHandler {
             method,
             params,
             secure,
-            photo,
             messageID,
             version,
             payload,
@@ -678,7 +672,6 @@ class messageQueueHandler {
                   reason: "offline-cloud-command",
                 },
                 { condition: secure, reason: "secure-command" },
-                { condition: photo, reason: "photo-command" },
                 { condition: cloudOnlyConnection, reason: "cloud-only-mode" },
                 {
                   condition: preferCloudConnection,
@@ -770,7 +763,7 @@ class messageQueueHandler {
           method,
           context.params,
           context.secure,
-          context.photo,
+          false,
           {}
         );
         const frame = await this.adapter.message.buildRoborockMessage(
