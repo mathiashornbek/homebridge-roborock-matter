@@ -287,6 +287,8 @@ class roborock_mqtt_connector {
     this.connectionEventsWanted = false;
     /** @type {((topic: string, message: Buffer) => void) | null} */
     this.messageHandler = null;
+    /** @type {Set<(connected: boolean) => void>} see waitUntilConnected */
+    this.connectWaiters = new Set();
 
     // NOTE: this class previously generated its own RSA-2048 keypair here,
     // but nothing ever read it — the protocol keypair lives in message.js
@@ -459,6 +461,9 @@ class roborock_mqtt_connector {
         this.clearInitialConnectTimeout();
 
         this.connected = true;
+        for (const waiter of [...this.connectWaiters]) {
+          waiter(true);
+        }
         if (this._connectionIssueActive) {
           this._connectionIssueActive = false;
           this._connectionIssueLog?.clear();
@@ -1097,17 +1102,19 @@ class roborock_mqtt_connector {
       return true;
     }
 
-    const deadline = Date.now() + timeoutMs;
-    while (!this.connected && Date.now() < deadline) {
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 100);
-        if (typeof timer?.unref === "function") {
-          timer.unref();
-        }
-      });
-    }
-
-    return this.connected;
+    return new Promise((resolve) => {
+      /** @param {boolean} connected */
+      const settle = (connected) => {
+        clearTimeout(timer);
+        this.connectWaiters.delete(settle);
+        resolve(connected);
+      };
+      const timer = setTimeout(() => settle(this.connected), timeoutMs);
+      if (typeof timer?.unref === "function") {
+        timer.unref();
+      }
+      this.connectWaiters.add(settle);
+    });
   }
 
   async ensureConnected() {

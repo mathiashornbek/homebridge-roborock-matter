@@ -213,3 +213,19 @@ test("shutting down during the back-off cancels the reconnect", async () => {
   expect(mockClients).toHaveLength(1);
   expect(jest.getTimerCount()).toBe(0);
 });
+
+test("waiting for the session resolves on the connect, or with false at the deadline", async () => {
+  const connector = await startConnector();
+  const waited = connector.waitUntilConnected(5_000);
+  await jest.advanceTimersByTimeAsync(1_000);
+  current().emit("connect", { sessionPresent: false });
+  await expect(waited).resolves.toBe(true);
+
+  current().emit("close");
+  connector.clearReconnectTimer();
+  const timedOut = connector.waitUntilConnected(5_000);
+  await jest.advanceTimersByTimeAsync(5_000);
+  await expect(timedOut).resolves.toBe(false);
+  expect(connector.connectWaiters.size).toBe(0);
+  connector.disconnect();
+});
