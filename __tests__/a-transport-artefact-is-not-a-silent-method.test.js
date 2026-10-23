@@ -85,33 +85,46 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-/** The MQTT link drops and a new one comes up, as a session restart does. */
-function linkReplaced() {
-  const current = mockClients.at(-1);
-  current.emit("close");
-  // mqtt.js reconnects the same object, or the plugin builds a new one;
-  // either way the connect event comes from whichever client is current.
+/** The connector's next client, once its back-off has run, connects. */
+async function nextLinkComesUp() {
+  await jest.advanceTimersByTimeAsync(
+    api.rr_mqtt_connector.reconnectDelays.initialMs
+  );
   mockClients.at(-1).emit("connect", { sessionPresent: false });
 }
 
 async function mapListRead({ replaceLinkAfterMs = null } = {}) {
+  if (!api.rr_mqtt_connector.isConnected()) {
+    await nextLinkComesUp();
+  }
+  const sentAt = Date.now();
   const request = api.messageQueueHandler
     .sendRequest(DUID, METHOD, [])
     .catch((error) => error);
   if (replaceLinkAfterMs !== null) {
     await jest.advanceTimersByTimeAsync(replaceLinkAfterMs);
-    linkReplaced();
+    mockClients.at(-1).emit("close");
+    await nextLinkComesUp();
   }
-  await jest.advanceTimersByTimeAsync(10_000);
+  await jest.advanceTimersByTimeAsync(
+    Math.max(0, sentAt + 10_000 - Date.now())
+  );
   return request;
 }
 
 test("reads whose MQTT link was replaced under them never close the method", async () => {
+  // A link replaced quickly enough for the new one to be up before the
+  // request's own timeout: with the 10 s back-off, what a load_multi_map
+  // (30 s) or a caller's longer budget sees across a session restart.
+  api.rr_mqtt_connector.reconnectDelays.initialMs = 1_000;
+  api.rr_mqtt_connector.reconnectDelayMs = 1_000;
   for (let i = 0; i < 8; i += 1) {
     const error = await mapListRead({ replaceLinkAfterMs: 2_000 });
     expect(error.message).toMatch(/timed out/);
     expect(error.transportWasUp).toBe(false);
   }
+  // Each replacement was a new client.
+  expect(mockClients).toHaveLength(9);
 
   expect(api.unansweredMethods.shouldSkip(DUID, METHOD)).toBe(false);
   expect(

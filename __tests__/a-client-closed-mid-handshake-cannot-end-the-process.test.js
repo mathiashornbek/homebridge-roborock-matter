@@ -137,8 +137,9 @@ test("a session restart that shutdown overtakes does not bring the client back",
   await connector.initUser(userAt("mqtt://broker.invalid"));
   client.reconnect = jest.fn();
   // Homebridge stops while the old link is being closed.
-  client.endAsync = jest.fn(async () => connector.disconnect());
+  client.end = jest.fn(() => connector.disconnect());
 
   await expect(connector.reconnectClient(true)).resolves.toBe(false);
   expect(client.reconnect).not.toHaveBeenCalled();
+  expect(connector.reconnectTimer).toBeNull();
 });

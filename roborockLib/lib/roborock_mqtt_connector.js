@@ -14,6 +14,39 @@ const {
 
 const { MqttSessionDiagnostics } = require("./mqttSessionDiagnostics");
 
+// python-roborock's MQTT reconnect policy (mqtt/roborock_session.py):
+// MIN_BACKOFF_INTERVAL 10 s, BACKOFF_MULTIPLIER 1.5, back to 10 s after every
+// successful connect. Its 6-hour ceiling exists for rate-limited or
+// unauthorised accounts, which python-roborock hands to a re-authentication
+// hook this plugin does not have; here a dead network is retried at most every
+// 10 minutes, so the cloud is back within 10 minutes of the network, and an
+// outage costs 6 attempts an hour instead of mqtt.js's one a second.
+const MQTT_RECONNECT_DELAYS = Object.freeze({
+  initialMs: 10_000,
+  multiplier: 1.5,
+  maxMs: 10 * 60_000,
+});
+const CLIENT_ID_ALPHABET =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/**
+ * A client id of its own for every connection: 22 random base-62 characters,
+ * as python-roborock generated them before it moved to broker-assigned ids
+ * (`mqtt.base62(uuid4().int, padding=22)`). Within MQTT 3.1.1's guaranteed
+ * 1–23 characters of [0-9a-zA-Z]. The account-wide username used to double
+ * as the id, so any second client of the account — another Homebridge, the
+ * ioBroker adapter, an overlapping restart — took the session over.
+ *
+ * @returns {string}
+ */
+function randomClientId() {
+  let id = "";
+  for (let i = 0; i < 22; i += 1) {
+    id += CLIENT_ID_ALPHABET[crypto.randomInt(CLIENT_ID_ALPHABET.length)];
+  }
+  return id;
+}
+
 const PHOTO_MAGIC = "ROBOROCK";
 const PHOTO_HEADER_MIN_LENGTH = 9;
 const PROTOCOL_301_HEADER_LENGTH = 24;
@@ -244,6 +277,16 @@ class roborock_mqtt_connector {
     // up" across a session restart.
     this.linkId = 0;
     this.initialConnectTimeout = null;
+    // Reconnects are the connector's, not mqtt.js's: every connection is a
+    // new client with a new id, after python-roborock's back-off.
+    this.reconnectDelays = { ...MQTT_RECONNECT_DELAYS };
+    this.reconnectDelayMs = this.reconnectDelays.initialMs;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    this.reconnectTimer = null;
+    this.sessionWanted = false;
+    this.connectionEventsWanted = false;
+    /** @type {((topic: string, message: Buffer) => void) | null} */
+    this.messageHandler = null;
 
     // NOTE: this class previously generated its own RSA-2048 keypair here,
     // but nothing ever read it — the protocol keypair lives in message.js
@@ -265,8 +308,24 @@ class roborock_mqtt_connector {
       .toString("base64"); // Could be a random but rather static string. The app generates it on first run.
     mqttUser = roborockCrypto.md5hex(rriot.u + ":" + rriot.k).substring(2, 10);
     mqttPassword = roborockCrypto.md5hex(rriot.s + ":" + rriot.k).substring(16);
+    // A new session from scratch: initMQTT_Subscribe and initMQTT_Message say
+    // again which listeners it wants.
+    this.connectionEventsWanted = false;
+    this.messageHandler = null;
+    this.sessionWanted = true;
+    this.reconnectDelayMs = this.reconnectDelays.initialMs;
+    this.openClient();
+  }
+
+  /**
+   * A new mqtt.js client for one connection, with whatever listeners the
+   * connector has been asked for. python-roborock builds a new client for
+   * every connection as well (`_run_reconnect_loop`), so nothing of a session
+   * that went bad — its id, its stores, its timers — reaches the next one.
+   */
+  openClient() {
     client = mqtt.connect(rriot.r.m, {
-      clientId: mqttUser,
+      clientId: randomClientId(),
       username: mqttUser,
       password: mqttPassword,
       keepalive: 30,
@@ -276,7 +335,65 @@ class roborock_mqtt_connector {
       // already reported as failed would reach the robot minutes later.
       // python-roborock refuses to publish while disconnected; so does this.
       queueQoSZero: false,
+      // mqtt.js would reconnect this same client every second, with the same
+      // id; scheduleReconnect builds a new one after python-roborock's
+      // back-off instead.
+      reconnectPeriod: 0,
     });
+    if (this.connectionEventsWanted) {
+      this.installConnectionEvents();
+    }
+    if (this.messageHandler) {
+      this.listen("message", this.messageHandler);
+    }
+  }
+
+  /**
+   * Open a new client after the back-off: 10 s after a connection that had
+   * been up, growing by 1.5 for every attempt that fails, up to 10 minutes.
+   *
+   * @returns {number | null} the delay, or null when one is already armed or
+   *   the session is shut down
+   */
+  scheduleReconnect() {
+    if (!this.sessionWanted || this.reconnectTimer) {
+      return null;
+    }
+    const delayMs = this.reconnectDelayMs;
+    this.reconnectDelayMs = Math.min(
+      delayMs * this.reconnectDelays.multiplier,
+      this.reconnectDelays.maxMs
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.sessionWanted || this.connected) {
+        return;
+      }
+      const previous = client;
+      this.openClient();
+      // Let go of the closed one. Its listeners stay and ignore it (see
+      // listen); end() only makes sure nothing of it is left running.
+      if (previous && previous !== client) {
+        try {
+          previous.end(true);
+        } catch (error) {
+          this.adapter.log.debug(
+            `Ending the previous MQTT client failed: ${error?.message || error}`
+          );
+        }
+      }
+    }, delayMs);
+    if (typeof this.reconnectTimer?.unref === "function") {
+      this.reconnectTimer.unref();
+    }
+    return delayMs;
+  }
+
+  clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   async initMQTT_Subscribe() {
@@ -287,9 +404,9 @@ class roborock_mqtt_connector {
     // boots before the network is up, or a SYN black-holed by a firewall) it
     // threw a TypeError inside an async timer. That is an unhandled rejection,
     // which terminates the Homebridge process under Node's default policy —
-    // the exact opposite of the intended recovery. mqtt.js already retries on
-    // its own reconnectPeriod, so the correct behaviour here is to say so
-    // clearly and let it keep trying. The handle is stored and unref'd so
+    // the exact opposite of the intended recovery. The connector already
+    // retries on its own back-off (scheduleReconnect), so the correct
+    // behaviour here is to say so clearly and let it keep trying. The handle is stored and unref'd so
     // shutdown can cancel it instead of firing into a torn-down adapter.
     this.clearInitialConnectTimeout();
     this.initialConnectTimeout = setTimeout(() => {
@@ -302,9 +419,17 @@ class roborock_mqtt_connector {
       this.initialConnectTimeout.unref();
     }
 
-    // mqtt.js resubscribes before our connect handler. A subscribe callback
-    // can therefore contain no grants even though a real SUBACK follows.
-    // Observe that packet without changing mqtt.js subscription behaviour.
+    this.connectionEventsWanted = true;
+    this.installConnectionEvents();
+  }
+
+  /**
+   * The connection-state listeners, on the current client. Installed again on
+   * every client openClient builds.
+   */
+  installConnectionEvents() {
+    // Observe every SUBACK packet without changing mqtt.js subscription
+    // behaviour; its callback is not the only evidence of one.
     this.listen("packetreceive", (packet) => {
       if (packet.cmd !== "suback") return;
       this.sessionDiagnostics.onSubscribe(
@@ -317,6 +442,8 @@ class roborock_mqtt_connector {
     this.listen("connect", (result) => {
       if (typeof result != "undefined") {
         this.linkId += 1;
+        // python-roborock: the back-off starts over after every connect.
+        this.reconnectDelayMs = this.reconnectDelays.initialMs;
         const generation = this.sessionDiagnostics.onConnect();
         client.subscribe(
           `rr/m/o/${rriot.u}/${mqttUser}/#`,
@@ -358,37 +485,27 @@ class roborock_mqtt_connector {
       );
     });
 
+    // Every way a connection ends — a failed connect, a dropped link, a
+    // keepalive timeout, the broker closing it — comes through here, and is
+    // followed by a new client after the back-off.
     this.listen("close", () => {
-      if (this.connected) {
-        this.adapter.log.info(`MQTT connection closed; reconnecting.`);
+      const wasConnected = this.connected;
+      this.connected = false;
+      this.sessionDiagnostics.onDisconnect();
+      const delayMs = this.scheduleReconnect();
+      if (wasConnected) {
+        // So the next connect says the outage is over.
+        this._connectionIssueActive = true;
+        this.adapter.log.info(
+          delayMs === null
+            ? `MQTT connection closed.`
+            : `MQTT connection closed; reconnecting in ${Math.round(delayMs / 1000)} seconds.`
+        );
+      } else if (delayMs !== null) {
+        this.adapter.log.debug(
+          `MQTT connect attempt did not succeed; next attempt in ${Math.round(delayMs / 1000)} seconds.`
+        );
       }
-      this.connected = false;
-      this.sessionDiagnostics.onDisconnect();
-    });
-
-    this.listen("reconnect", () => {
-      // Preserve the legacy subscription. Its callback is not evidence for
-      // a new generation; actual SUBACK packets are observed above.
-      client.subscribe(
-        `rr/m/o/${rriot.u}/${mqttUser}/#`,
-        this.whileCurrent((err, granted) => {
-          if (err) {
-            this.logConnectionIssue(
-              `Failed to subscribe to the Roborock MQTT server after reconnect: ${err} (granted: ${JSON.stringify(granted)}).`
-            );
-          }
-        })
-      );
-      this.clearInitialConnectTimeout();
-      this.adapter.log.debug(`MQTT connection reconnect attempt.`);
-    });
-
-    this.listen("offline", () => {
-      this.connected = false;
-      this.sessionDiagnostics.onDisconnect();
-      this.logConnectionIssue(
-        `Roborock MQTT connection is offline. The client keeps reconnecting automatically.`
-      );
     });
   }
 
@@ -475,7 +592,8 @@ class roborock_mqtt_connector {
   async initMQTT_Message() {
     this.adapter.log.debug(`MQTT initialized.`);
 
-    this.listen("message", (topic, message) => {
+    // Kept, so every client openClient builds gets it too.
+    this.messageHandler = (topic, message) => {
       try {
         this.sessionDiagnostics.noteActivity("raw");
         const duid = this.resolveDuidFromTopic(topic);
@@ -855,7 +973,8 @@ class roborock_mqtt_connector {
       } finally {
         this.sessionDiagnostics.emit();
       }
-    });
+    };
+    this.listen("message", this.messageHandler);
   }
 
   getEndpoint() {
@@ -940,6 +1059,8 @@ class roborock_mqtt_connector {
    * The client is let go of, not stripped of its listeners (see `listen`).
    */
   disconnect() {
+    this.sessionWanted = false;
+    this.clearReconnectTimer();
     this.clearInitialConnectTimeout();
     const closing = client;
     client = undefined;
@@ -994,52 +1115,57 @@ class roborock_mqtt_connector {
       this.adapter.log.debug("MQTT health check passed. Reconnect skipped.");
       return false;
     }
-
-    await this.reconnectClient(true);
-    return true;
-  }
-
-  async reconnectClient(force = false) {
-    if (client) {
-      try {
-        if (!force && this.connected) {
-          this.adapter.log.debug(
-            "MQTT reconnect skipped because client is already connected."
-          );
-          return false;
-        }
-
-        this.adapter.log.info("Reconnecting mqtt client!");
-        // Force the teardown. An unforced `end()` waits for mqtt.js to emit
-        // `outgoingEmpty` before it will finish, and a link that has just
-        // died still holds unacknowledged messages — so on the only path
-        // this function is ever called from, that event never arrives.
-        // `end()` then never completes, `disconnecting` stays true, and
-        // `reconnect()` declines to act in that state. The latch is
-        // self-sustaining, because every later `end()` short-circuits on the
-        // same flag: the hourly retry becomes a silent no-op and the account
-        // stays offline until the process restarts. Measured in the field on
-        // 25 Aug 2026 — 1070 consecutive status failures, 1 h 44 min of them
-        // after the network was healthy, three retries that did nothing, and
-        // an instant recovery on the same session once the child bridge was
-        // restarted.
-        const current = client;
-        await current.endAsync(true);
-        // Shut down, or replaced by a retried start, while the link closed.
-        if (client !== current) {
-          return false;
-        }
-        current.reconnect();
-        return true;
-      } catch (error) {
-        this.adapter.catchError(
-          `Failed to reconnect with error: ${error}`,
-          `reconnectClient`
-        );
-      }
+    if (this.reconnectTimer) {
+      this.adapter.log.debug(
+        "MQTT health check: a reconnect is already scheduled."
+      );
+      return false;
     }
 
-    return false;
+    return this.reconnectClient(true);
+  }
+
+  /**
+   * Start a fresh MQTT session: end this client now and build a new one after
+   * the back-off, as python-roborock's `restart()` cancels its connection and
+   * lets the reconnect loop build the next client.
+   *
+   * This used to end the client and call `reconnect()` on the SAME object,
+   * with the same id, one second later. The teardown is still forced:
+   * an unforced `end()` waits for an `outgoingEmpty` that a dead link never
+   * emits (25 Aug 2026: 1 h 44 min of failures after the network was back).
+   *
+   * @param {boolean} [force]
+   * @returns {Promise<boolean>} whether a new session was started
+   */
+  async reconnectClient(force = false) {
+    if (!client || !this.sessionWanted) {
+      return false;
+    }
+    if (!force && this.connected) {
+      this.adapter.log.debug(
+        "MQTT reconnect skipped because client is already connected."
+      );
+      return false;
+    }
+
+    this.adapter.log.info("Reconnecting mqtt client!");
+    const current = client;
+    this.connected = false;
+    this.sessionDiagnostics.onDisconnect();
+    try {
+      current.end(true);
+    } catch (error) {
+      this.adapter.log.debug(
+        `Ending the MQTT client failed: ${error?.message || error}`
+      );
+    }
+    // Shut down, or replaced by a retried start, while the link closed.
+    if (!this.sessionWanted || client !== current) {
+      return false;
+    }
+    this.scheduleReconnect();
+    return true;
   }
 }
 

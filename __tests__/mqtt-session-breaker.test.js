@@ -360,8 +360,11 @@ test.each(["robot-a", "robot-b"])(
     await timeout("robot-a", "get_consumable");
     await timeout("robot-a", "get_consumable");
     const error = await timeout(thirdRobot, "get_consumable");
-    expect(mockClient.endAsync).toHaveBeenCalledTimes(1);
-    expect(mockClient.reconnect).toHaveBeenCalledTimes(1);
+    // A fresh session: this client ended, a new one after the back-off,
+    // never reconnect() on the old one.
+    expect(mockClient.end).toHaveBeenCalledTimes(1);
+    expect(mockClient.end).toHaveBeenCalledWith(true);
+    expect(mockClient.reconnect).not.toHaveBeenCalled();
     expect(outcomes).toHaveLength(3);
     expect(outcomes.filter((outcome) => outcome.counted)).toHaveLength(
       thirdRobot === "robot-b" ? 2 : 3
@@ -370,10 +373,12 @@ test.each(["robot-a", "robot-b"])(
       thirdRobot === "robot-b"
     );
 
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(require("mqtt").connect).toHaveBeenCalledTimes(2);
     mockHandlers.get("connect")({ sessionPresent: false });
     acknowledge();
     await timeout("robot-a", "get_consumable");
-    expect(mockClient.reconnect).toHaveBeenCalledTimes(1);
+    expect(require("mqtt").connect).toHaveBeenCalledTimes(2);
     expect(outcomes).toHaveLength(4);
     expect(outcomes.at(-1).counted).toBe(true);
   }
