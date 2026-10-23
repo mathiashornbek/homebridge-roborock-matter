@@ -10,6 +10,9 @@ const API_V4_LOGIN_CODE = "api/v4/auth/email/login/code";
 const API_V4_LOGIN_PASSWORD = "api/v4/auth/email/login/pwd";
 const API_V4_EMAIL_CODE = "api/v4/email/code/send";
 
+// The agreement version a login sends when none is looked up.
+const FALLBACK_AGREEMENT = Object.freeze({ majorVersion: 14, minorVersion: 0 });
+
 // How long any request to Roborock's REST servers may take. Without one,
 // axios waits forever on a server that never answers (a half-open TCP
 // connection), and one such request wedged the account-wide queue every
@@ -229,30 +232,42 @@ function loginNonce() {
  * server, then the code login or the password login with the agreement
  * version for that country.
  *
+ * Only Roborock's servers are asked for that version. local_roborock_server
+ * (`customServer`) serves no such lookup — its v3 route sits behind the
+ * session-token rule and answers a login with 2010 — and its login reads no
+ * version, so the fallback goes out without asking.
+ *
  * @param {import("axios").AxiosInstance} loginApi
- * @param {{email: string, server: string | undefined, code?: string, password?: string}} credentials
+ * @param {{email: string, server: string | undefined, customServer?: boolean, code?: string, password?: string}} credentials
  * @returns {Promise<Record<string, any>>} Roborock's answer envelope
  */
-async function signedLogin(loginApi, { email, server, code, password }) {
+async function signedLogin(
+  loginApi,
+  { email, server, customServer = false, code, password }
+) {
   const s = loginNonce();
   const signData = await signRequest(loginApi, s);
   if (!signData || !signData.k) {
     throw new Error("Failed to create login signature.");
   }
   const region = await getLoginRegion(loginApi, email, server);
+  const agreement = customServer
+    ? FALLBACK_AGREEMENT
+    : await getAgreementVersion(loginApi, region.country);
   return code !== undefined
     ? loginWithCode(loginApi, {
         email,
         code,
         country: region.country,
         countryCode: region.countryCode,
+        agreement,
         k: signData.k,
         s,
       })
     : loginByPassword(loginApi, {
         email,
         password,
-        country: region.country,
+        agreement,
         k: signData.k,
         s,
       });
@@ -317,7 +332,7 @@ async function getAgreementVersion(loginApi, country) {
   } catch {
     // The fallback below.
   }
-  return { majorVersion: 14, minorVersion: 0 };
+  return FALLBACK_AGREEMENT;
 }
 
 /**
@@ -430,14 +445,13 @@ async function requestEmailCode(loginApi, email) {
 
 async function loginWithCode(
   loginApi,
-  { email, code, country, countryCode, k, s }
+  { email, code, country, countryCode, agreement, k, s }
 ) {
   const headers = {
     "x-mercy-k": k,
     "x-mercy-ks": s,
   };
 
-  const agreement = await getAgreementVersion(loginApi, country);
   const params = new URLSearchParams({
     country,
     countryCode,
@@ -460,13 +474,12 @@ async function loginWithCode(
   }
 }
 
-async function loginByPassword(loginApi, { email, password, country, k, s }) {
+async function loginByPassword(loginApi, { email, password, agreement, k, s }) {
   const headers = {
     "x-mercy-k": k,
     "x-mercy-ks": s,
   };
 
-  const agreement = await getAgreementVersion(loginApi, country);
   const params = new URLSearchParams({
     email,
     password: encryptPassword(password, k),

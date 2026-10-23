@@ -9,12 +9,21 @@
 // log in against it (see the research notes on issue #43):
 //
 // - account/login API (the region server, or the custom server URL):
-//   POST api/v1/getUrlByEmail, POST api/v3/key/sign, GET
-//   api/v3/app/agreement/latest, POST api/v4/email/code/send, POST
-//   api/v4/auth/email/login/code, POST api/v4/auth/email/login/pwd and GET
-//   api/v1/getHomeDetail (token in `Authorization`);
+//   POST api/v1/getUrlByEmail, POST api/v3/key/sign, POST
+//   api/v4/email/code/send, POST api/v4/auth/email/login/code, POST
+//   api/v4/auth/email/login/pwd and GET api/v1/getHomeDetail (token in
+//   `Authorization`);
 // - IoT API (`rriot.r.a`, Hawk-signed): GET [v2/]user/homes/{id}, GET
 //   user/scene/device/{duid}, GET user/deviceshare/query/{duid}/rooms.
+//
+// The user-agreement lookup is Roborock's, not the server's: with
+// `agreement` set, GET api/v3/app/agreement/latest names that version and a
+// login carrying another is refused with 3006, as Roborock's servers do. Left
+// unset, the fake is local_roborock_server, whose v3 route is not public — it
+// falls under the token rule like every other non-public /api/ route — and
+// whose login reads no version. (Its one agreement handler,
+// /api/v4/app/agreement/latest, is token-protected too and names the app's
+// documents, not a login version.)
 //
 // Failure answers are the server's own: a wrong email or PIN, and a token it
 // no longer knows, are HTTP 401 `{"code":2010,"msg":"invalid_credentials"}`;
@@ -83,7 +92,7 @@ async function startFakeRoborockCloud(options = {}) {
     sharedRooms: {},
     country: "DE",
     countryCode: "49",
-    agreement: { majorVersion: 15, minorVersion: 1 },
+    agreement: null,
     passwordLogin: "unsupported",
     ...options,
   };
@@ -237,7 +246,8 @@ async function startFakeRoborockCloud(options = {}) {
     }
     if (req.method === "GET" && pathname === "/api/v3/app/agreement/latest") {
       if (!config.agreement) {
-        return send(res, 200, { code: 500, msg: "unavailable", data: null });
+        // local_roborock_server: a non-public route under the token rule.
+        return send(res, 401, { code: 2010, msg: "invalid_credentials" });
       }
       return send(res, 200, {
         code: 200,

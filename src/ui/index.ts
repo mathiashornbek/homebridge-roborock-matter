@@ -257,6 +257,7 @@ class RoborockUiServer {
       loginResult = await roborockAuth.signedLogin(loginApi, {
         email,
         server: this.loginServer({ baseURL, serverURL }),
+        customServer: typeof serverURL === "string",
         ...credentials,
       });
     } catch (error: any) {
