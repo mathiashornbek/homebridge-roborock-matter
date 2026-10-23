@@ -134,22 +134,17 @@ describe("a Q10 reads its own status codes from home data (#33)", () => {
 });
 
 describe("a Q10's run sub-states are a run, not v1's offline/locked", () => {
+  // Pushed datapoints are read at the transport boundary
+  // (b01Q10Adapter.mapDpsToV1, see a-b01-push-is-read-in-its-own-dialect);
+  // a classic robot's pushes never reach it.
+  const { mapDpsToV1 } = require("../roborockLib/lib/b01Q10Adapter");
+
   test.each([
     ["sweeping", 102, 5],
     ["mopping", 103, 5],
     ["sweep and mop", 104, 5],
     ["waiting to charge", 108, 8],
-  ])(
-    "pushed YXDeviceState %s (%i) normalises to v1 state %i",
-    async (_name, raw, v1) => {
-      const api = await q10Api(8);
-      expect(api.normalizePushedState(Q10, raw)).toBe(v1);
-    }
-  );
-
-  test("a classic robot's pushed state is never touched", async () => {
-    const api = await q10Api(8);
-    api.isB01Q10Device = () => false;
-    expect(api.normalizePushedState(Q10, 101)).toBe(101);
+  ])("pushed YXDeviceState %s (%i) reads as v1 state %i", (_name, raw, v1) => {
+    expect(mapDpsToV1({ 121: raw }).state).toBe(v1);
   });
 });

@@ -1051,6 +1051,18 @@ function resolveB01PendingResponse(
   dps,
   onCorrelatedReply = () => {}
 ) {
+  if (
+    dps &&
+    dps.msgId === undefined &&
+    dps.id === undefined &&
+    typeof adapter.onB01DatapointPush === "function" &&
+    adapter.isB01Device?.(duid)
+  ) {
+    // A datapoint push from a B01 robot. It is read in the robot's own
+    // dialect there; handed on raw it was read as classic datapoints.
+    adapter.onB01DatapointPush(duid, dps);
+    return true;
+  }
   if (!dps || dps.msgId === undefined || dps.id !== undefined) {
     return false;
   }

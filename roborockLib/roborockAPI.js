@@ -5635,13 +5635,7 @@ class Roborock {
         }
         // An answer without a known work status leaves the last known one
         // standing, here as on the tile.
-        if (v1Status.state !== undefined) {
-          refreshState.lastKnownV1State = v1Status.state;
-        }
-        refreshState.lastV1Status = {
-          ...refreshState.lastV1Status,
-          ...v1Status,
-        };
+        this.rememberB01LiveStatus(duid, v1Status);
 
         if (refreshState.consecutiveFailures > 0) {
           // ANNOUNCE A RECOVERY ONLY FROM A FAILURE THE LOG ANNOUNCED.
@@ -6617,21 +6611,75 @@ class Roborock {
   }
 
   /**
-   * The v1 state for a state value a robot PUSHED (datapoint 121). Classic and
-   * Q7 values pass through untouched; a Q10's run sub-states (101-105) and
-   * "waiting to charge" (108) would otherwise read as v1's "device offline"
-   * and "locked".
+   * A datapoint frame a B01 robot pushed on its own (no msgId), read in the
+   * robot's dialect before anything reaches the Matter side.
+   *
+   * A Q10 reports its state this way; its datapoints are translated to the
+   * v1-shaped fields the accessory reads, kept as the robot's last known live
+   * status, and delivered. A Q7's pushed datapoint numbering is not
+   * documented anywhere, so a Q7 push is never read directly: it is named once
+   * and answered with a status read, which the Q7 does answer in a known
+   * shape.
    *
    * @param {string} duid
-   * @param {unknown} rawState
-   * @returns {unknown}
+   * @param {Record<string, unknown>} dps
+   * @returns {void}
    */
-  normalizePushedState(duid, rawState) {
-    if (!this.isB01Q10Device(duid)) {
-      return rawState;
+  onB01DatapointPush(duid, dps) {
+    const family = this.b01Family(duid);
+    if (family === b01Q7Adapter.B01_FAMILY.Q10) {
+      const v1Status = b01Q10Adapter.mapDpsToV1(dps);
+      if (Object.keys(v1Status).length === 0) {
+        return;
+      }
+      this.rememberB01LiveStatus(duid, v1Status);
+      if (this.deviceNotify) {
+        this.deviceNotify("CloudMessage", { duid, payload: [v1Status] });
+      }
+      return;
     }
-    const translated = b01Q10Adapter.translateQ10StatusToV1State(rawState);
-    return translated === null ? rawState : translated;
+    if (family === b01Q7Adapter.B01_FAMILY.Q7) {
+      if (!this._b01Q7PushNoticed) {
+        this._b01Q7PushNoticed = new Set();
+      }
+      if (!this._b01Q7PushNoticed.has(duid)) {
+        this._b01Q7PushNoticed.add(duid);
+        this.log.info(
+          `${this.describeDevice(duid)} pushed datapoints ${JSON.stringify(dps)}. The Q7 numbering of pushed datapoints is not documented, so they are not read directly; a status read is taken instead. This is said once per robot.`
+        );
+      }
+      void this.getStatus(duid, { force: true }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Merge a B01 robot's freshly reported v1-shaped fields into its last known
+   * live status (getLastKnownLiveStatus), whichever way they arrived.
+   *
+   * @param {string} duid
+   * @param {Record<string, unknown>} v1Status
+   */
+  rememberB01LiveStatus(duid, v1Status) {
+    if (!this._b01StatusState) {
+      this._b01StatusState = new Map();
+    }
+    let refreshState = this._b01StatusState.get(duid);
+    if (!refreshState) {
+      refreshState = {
+        lastAttemptAt: 0,
+        inflight: null,
+        consecutiveFailures: 0,
+        failureWarned: false,
+      };
+      this._b01StatusState.set(duid, refreshState);
+    }
+    if (typeof v1Status.state === "number") {
+      refreshState.lastKnownV1State = v1Status.state;
+    }
+    refreshState.lastV1Status = {
+      ...refreshState.lastV1Status,
+      ...v1Status,
+    };
   }
 
   /**

@@ -309,7 +309,86 @@ function translateQ10StatusToV1State(rawStatus) {
   return mapped !== undefined ? mapped : null;
 }
 
+/**
+ * Datapoints a Q10 pushed, read as the v1-shaped status fields the rest of the
+ * plugin speaks.
+ *
+ * This is the one place a Q10 push is interpreted. The accessory reads v1
+ * datapoints, so a raw Q10 frame read there landed its suction (123) in the
+ * wrong units and its clean mode (137) and fault (90) nowhere. python-roborock
+ * flattens the nested dpCommon (101) into the top level before reading
+ * anything (b01_q10_protocol.decode_rpc_response), so a fault pushed under 101
+ * is the same fault as one pushed at the top level.
+ *
+ * Only what can be read faithfully is returned: an unknown state, suction or
+ * clean mode is left out, never guessed, and the water level (124) is not
+ * mapped because this plugin has no Q10 water control to mirror it into.
+ *
+ * @param {Record<string, unknown>} dps
+ * @returns {{state?: number, charge_status?: number, battery?: number,
+ *            fan_power?: number, matter_clean_type?: number,
+ *            error_code?: number, in_cleaning?: number}}
+ */
+function mapDpsToV1(dps) {
+  /** @type {Record<string, unknown>} */
+  const flat = { ...dps };
+  const common = flat[String(B01_Q10_DP.COMMON)];
+  delete flat[String(B01_Q10_DP.COMMON)];
+  if (common && typeof common === "object" && !Array.isArray(common)) {
+    Object.assign(flat, common);
+  }
+  /** @param {number} dp */
+  const has = (dp) => Object.prototype.hasOwnProperty.call(flat, String(dp));
+
+  /** @type {ReturnType<typeof mapDpsToV1>} */
+  const v1 = {};
+  if (has(B01_Q10_DP.STATUS)) {
+    const state = translateQ10StatusToV1State(flat[String(B01_Q10_DP.STATUS)]);
+    if (state !== null) {
+      v1.state = state;
+      // Emptying the bin happens on the dock; whether it charges meanwhile is
+      // not said, so the last known value stands.
+      if (state !== 22) {
+        v1.charge_status = state === 8 ? 1 : 0;
+      }
+    }
+  }
+  if (has(B01_Q10_DP.BATTERY)) {
+    const battery = Number(flat[String(B01_Q10_DP.BATTERY)]);
+    if (Number.isFinite(battery)) {
+      v1.battery = battery;
+    }
+  }
+  if (has(B01_Q10_DP.FAN_LEVEL)) {
+    const fanPower = b01Q7Adapter.windToV1FanPower(b01Q7Adapter.B01_FAMILY.Q10)[
+      Number(flat[String(B01_Q10_DP.FAN_LEVEL)])
+    ];
+    if (fanPower !== undefined) {
+      v1.fan_power = fanPower;
+    }
+  }
+  if (has(B01_Q10_DP.CLEAN_MODE)) {
+    const cleanType =
+      Q10_CLEAN_TYPE_TO_MATTER[Number(flat[String(B01_Q10_DP.CLEAN_MODE)])];
+    if (cleanType !== undefined) {
+      v1.matter_clean_type = cleanType;
+    }
+  }
+  if (has(B01_Q10_DP.FAULT)) {
+    const fault = Number(flat[String(B01_Q10_DP.FAULT)]);
+    if (Number.isFinite(fault)) {
+      v1.error_code = b01Q7Adapter
+        .informationalFaults(b01Q7Adapter.B01_FAMILY.Q10)
+        .has(fault)
+        ? 0
+        : fault;
+    }
+  }
+  return v1;
+}
+
 module.exports = {
+  mapDpsToV1,
   describeQ10Fault,
   Q10_STATUS_TO_V1_STATE,
   translateQ10StatusToV1State,
