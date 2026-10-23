@@ -318,7 +318,7 @@ const ROBOROCK_WATER_BOX_MILD = 201;
  * Floor on how many DISTINCT live-room observations a room needs before the
  * plugin will call it visited. This is only a floor: the dwell below is what
  * actually separates cleaning a room from crossing it. See
- * `liveRoomVisitAreaId`.
+ * `liveRoomVisit`.
  */
 const LIVE_ROOM_READINGS_TO_CONFIRM = 2;
 
@@ -1031,12 +1031,15 @@ export default class RoborockMatterVacuumAccessory {
    * `Date.now()` at processing time: it is the interval the robot was actually
    * seen in the room, not the interval during which we happened to look.
    */
-  private liveRoomVisitAreaId: number | null = null;
-  private liveRoomVisitReadings = 0;
-  // First and most recent observation timestamps of the CURRENT visit. Their
-  // difference is the dwell. In-memory only, like liveConfirmedServiceAreaIds.
-  private liveRoomVisitFirstSeenAt: number | null = null;
-  private liveRoomVisitLastSeenAt: number | null = null;
+  // The current visit: the room, how many distinct readings saw the robot
+  // in it, and the first and most recent of their timestamps (the dwell is
+  // their difference). In-memory only, like liveConfirmedServiceAreaIds.
+  private liveRoomVisit: {
+    areaId: number;
+    readings: number;
+    firstSeenAt: number;
+    lastSeenAt: number;
+  } | null = null;
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
   // What the room list said before a Matter start announced its rooms, kept
   // until the robot is seen running. A start that fails, or that the robot
@@ -4052,10 +4055,7 @@ export default class RoborockMatterVacuumAccessory {
   /** Every run boundary starts live-room confirmation from nothing. */
   private resetLiveRoomVisits(): void {
     this.liveConfirmedServiceAreaIds = new Set();
-    this.liveRoomVisitAreaId = null;
-    this.liveRoomVisitReadings = 0;
-    this.liveRoomVisitFirstSeenAt = null;
-    this.liveRoomVisitLastSeenAt = null;
+    this.liveRoomVisit = null;
   }
 
   private clearServiceAreaProgress(): void {
@@ -4185,38 +4185,31 @@ export default class RoborockMatterVacuumAccessory {
   /**
    * Fold one live-room observation into the current visit, and promote the
    * room to confirmed once the visit is long enough to be a clean rather than
-   * a crossing. See `liveRoomVisitAreaId` for why both conditions are needed.
+   * a crossing. See `liveRoomVisit` for why both conditions are needed.
    */
   private recordLiveRoomVisit(areaId: number, observedAt: number): void {
-    if (this.liveRoomVisitAreaId !== areaId) {
+    let visit = this.liveRoomVisit;
+    if (!visit || visit.areaId !== areaId) {
       // A different room ends the previous visit outright: dwell is never
       // accumulated across separate passes through the same room.
-      this.liveRoomVisitAreaId = areaId;
-      this.liveRoomVisitReadings = 1;
-      this.liveRoomVisitFirstSeenAt = observedAt;
-      this.liveRoomVisitLastSeenAt = observedAt;
-    } else if (
-      this.liveRoomVisitLastSeenAt === null ||
-      observedAt > this.liveRoomVisitLastSeenAt
-    ) {
+      visit = {
+        areaId,
+        readings: 1,
+        firstSeenAt: observedAt,
+        lastSeenAt: observedAt,
+      };
+      this.liveRoomVisit = visit;
+    } else if (observedAt > visit.lastSeenAt) {
       // A genuinely new sighting. Re-reading the cached sample — which happens
       // whenever a publish cycle runs faster than the live-room refetch — adds
       // neither a reading nor dwell, because nothing new was observed.
-      this.liveRoomVisitReadings += 1;
-      this.liveRoomVisitLastSeenAt = observedAt;
-      if (this.liveRoomVisitFirstSeenAt === null) {
-        this.liveRoomVisitFirstSeenAt = observedAt;
-      }
+      visit.readings += 1;
+      visit.lastSeenAt = observedAt;
     }
 
-    const dwellMs =
-      this.liveRoomVisitFirstSeenAt !== null &&
-      this.liveRoomVisitLastSeenAt !== null
-        ? this.liveRoomVisitLastSeenAt - this.liveRoomVisitFirstSeenAt
-        : 0;
     if (
-      this.liveRoomVisitReadings >= LIVE_ROOM_READINGS_TO_CONFIRM &&
-      dwellMs >= LIVE_ROOM_DWELL_TO_CONFIRM_MS
+      visit.readings >= LIVE_ROOM_READINGS_TO_CONFIRM &&
+      visit.lastSeenAt - visit.firstSeenAt >= LIVE_ROOM_DWELL_TO_CONFIRM_MS
     ) {
       this.liveConfirmedServiceAreaIds.add(areaId);
     }
