@@ -5493,11 +5493,7 @@ class Roborock {
     // caller handles it; no state entry is allocated either, and
     // `getLastKnownLiveStatus` answers null for a Q10 as it does for a classic
     // robot — "nothing known", never a value.
-    if (
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
-    ) {
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
       this.noteB01Q10StatusPollNotAttempted(duid);
       return null;
     }
@@ -5559,12 +5555,7 @@ class Roborock {
           "get_status",
           []
         );
-        const v1Status = b01Q7Adapter.mapStatusToV1(
-          data,
-          b01Q7Adapter.b01FamilyForModel(
-            this.getProductAttribute(duid, "model")
-          )
-        );
+        const v1Status = b01Q7Adapter.mapStatusToV1(data, this.b01Family(duid));
         // A run that has just started is the moment the user is watching, and
         // it was also the slowest: the live-room fetch below rides its own
         // throttle, counted from the last attempt, so the first room of a run
@@ -5826,11 +5817,7 @@ class Roborock {
     // and that is BOTH dialects, the premise of #19. Returning the cache is
     // what the throttled path above already returns, so every caller handles
     // it, and no failure state is allocated for a request never made.
-    if (
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
-    ) {
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
       return this.getB01RoomCache(duid);
     }
 
@@ -6025,11 +6012,7 @@ class Roborock {
     // "B01"` — which is BOTH dialects, the premise of #19. Returning null is
     // what the disabled-tracking branch above already returns, so every caller
     // handles it, and no state entry is allocated.
-    if (
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
-    ) {
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
       this.noteB01Q10LiveRoomNotAttempted(duid);
       return null;
     }
@@ -6524,9 +6507,21 @@ class Roborock {
   isB01Q10Device(duid) {
     return (
       this.isB01Device(duid) &&
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
+      this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
+    );
+  }
+
+  /**
+   * Which B01 dialect family this robot's model belongs to (see
+   * b01Q7Adapter.b01FamilyForModel). One spelling for every caller, so the
+   * status, room and live-room loops cannot disagree about a robot.
+   *
+   * @param {string} duid
+   * @returns {string}
+   */
+  b01Family(duid) {
+    return b01Q7Adapter.b01FamilyForModel(
+      this.getProductAttribute(duid, "model")
     );
   }
 
