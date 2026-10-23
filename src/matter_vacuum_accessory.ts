@@ -491,7 +491,7 @@ function afterDeferredMatterWrites(): Promise<void> {
  * operational state the robot was last in (getRoborockOperationalState), the
  * way a dock chore keeps the run mode: DSimeone's a144 reports 33 with
  * `in_cleaning: 3` in the middle of a room clean (#22), and at an idle dock
- * after one. Not at rest either way, so never beside a fault.
+ * after one.
  */
 function isRoborockStateWithoutAMatterName(state: number): boolean {
   return (
@@ -530,9 +530,9 @@ const IN_CLEANING_SEGMENT = 3;
  * stopped. Issue #35 decoded exactly that off the wire: the plugin logged
  * Running with fault 68, the report carried operationalState 3, and the tile
  * said "Refill the water tank" while the robot mopped two rooms. A robot that
- * is working, paused, driving home or busy at the dock is not blocked by an
- * empty tank, so only a robot at rest — or one that really is in Error — gets
- * the fault.
+ * is working, paused or driving home from a run is not blocked by an empty
+ * tank, so a fault is only raised beside one of these states. One already
+ * standing is kept through housekeeping at an idle dock (canCarryAFault).
  */
 const OPERATIONAL_STATES_THAT_CARRY_A_FAULT: ReadonlySet<number> = new Set([
   RVC_OPERATIONAL_STATE.STOPPED,
@@ -1938,7 +1938,7 @@ export default class RoborockMatterVacuumAccessory {
     const heldBackText =
       faultText === "" &&
       typeof opState?.operationalState === "number" &&
-      !this.canCarryAFault(opState.operationalState) &&
+      !this.canCarryAFault() &&
       matterFault !== null &&
       matterFault.id !== RVC_OPERATIONAL_ERROR.NO_ERROR &&
       this.isFaultAttributeEnabled()
@@ -3689,28 +3689,32 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
-   * Whether the robot is at rest (or really in Error), judged on BOTH the
-   * state Apple Home is sent and the robot's own state before the controller
-   * mapping. With "Dock & Returning Status" off, a robot driving home is sent
-   * as Stopped, which on its own would let a fault through (found in review).
+   * Whether a fault may stand: the robot is not in a cleaning run, or it has
+   * really halted.
+   *
+   * In matter.js 0.17.9 any fault IS the Error state (see
+   * OPERATIONAL_STATES_THAT_CARRY_A_FAULT), so a robot that is cleaning,
+   * paused or on its way home from a run is published without one: Error
+   * would hide the clean (#35). A robot idle in its dock is not in a run while
+   * the dock empties the bin, washes, dries or swaps the mop, or reports the
+   * "returning" blip after emptying. Withdrawing a standing tank fault there
+   * and raising it again afterwards was one more notification per chore for a
+   * tank nobody had touched (#26). Run membership is the run mode those states
+   * inherit (resolveRunMode) — the answer Apple Home is given, read here
+   * without advancing it.
    */
-  private canCarryAFault(publishedState: number): boolean {
-    const rawState = this.getNumberStatus("state");
-    // A state Matter has no name for keeps the operational state the robot was
-    // last in, which may be Charging — and a robot attaching its mop mid-run
-    // (DSimeone's a144, 33 with `in_cleaning: 3`) is not at rest. Raising the
-    // tank fault there put the tile in Error once per swap (found in review).
-    if (rawState !== null && isRoborockStateWithoutAMatterName(rawState)) {
-      return false;
-    }
+  private canCarryAFault(): boolean {
     const robotState = this.getRoborockOperationalState(
-      rawState,
+      this.getNumberStatus("state"),
       this.getNumberStatus("charge_status")
     );
-    return (
-      OPERATIONAL_STATES_THAT_CARRY_A_FAULT.has(publishedState) &&
-      OPERATIONAL_STATES_THAT_CARRY_A_FAULT.has(robotState)
-    );
+    if (robotState === RVC_OPERATIONAL_STATE.ERROR) {
+      return true;
+    }
+    const inRun = RUN_MODE_INHERITED_STATES.has(robotState)
+      ? this.lastRunMode === RUN_MODE_CLEANING
+      : this.isInCleaningRunMode(robotState);
+    return !inRun;
   }
 
   private buildOperationalStateCluster(): Record<string, unknown> {
@@ -3771,13 +3775,13 @@ export default class RoborockMatterVacuumAccessory {
     // for what that is worth and what it costs.
     if (this.isFaultAttributeEnabled()) {
       const fault = this.getMatterFault();
-      if (!this.canCarryAFault(operationalState)) {
-        // A robot that is cleaning, paused, driving home or busy at the dock
-        // is not blocked, so it gets NoError — whatever the tank or the
-        // robot's own error field says. In matter.js 0.17.9 a fault IS the
-        // Error state (see OPERATIONAL_STATES_THAT_CARRY_A_FAULT), and Error
-        // is what hid a running clean in issue #35. Writing NoError here is
-        // affirmative, not invented: the state itself says the robot works.
+      if (!this.canCarryAFault()) {
+        // A robot in a run — cleaning, paused, driving home, or busy at the
+        // dock in the middle of one — is not blocked, so it gets NoError,
+        // whatever the tank or the robot's own error field says. In matter.js
+        // 0.17.9 a fault IS the Error state, and Error is what hid a running
+        // clean in issue #35. Writing NoError here is affirmative, not
+        // invented: the run itself says the robot works.
         cluster.operationalError = {
           errorStateId: RVC_OPERATIONAL_ERROR.NO_ERROR,
         };
