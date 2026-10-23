@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.40.0-beta.1
+## 3.40.0-beta.2
 
 **A test build of the biggest reliability round so far. The plugin now handles the local and cloud connections the way python-roborock does, and a long list of Apple Home, schedule and Q7/Q10 faults found in a full review are fixed. Feedback before 3.40.0 is very welcome.**
 
