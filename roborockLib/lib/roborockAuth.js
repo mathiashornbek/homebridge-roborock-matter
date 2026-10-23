@@ -223,6 +223,39 @@ function loginNonce() {
 }
 
 /**
+ * python-roborock's client-side limits for logins (`_LOGIN_RATES` in
+ * web_api.py): at most 1 a second, 3 a minute, 10 an hour and 20 a day.
+ * Every attempt counts against Roborock's own sign-in limits, and 9004
+ * blocks sign-in for 7 days.
+ *
+ * @type {Array<[number, number]>} [attempts, window in ms]
+ */
+const LOGIN_RATES = [
+  [1, 1000],
+  [3, 60 * 1000],
+  [10, 60 * 60 * 1000],
+  [20, 24 * 60 * 60 * 1000],
+];
+
+/**
+ * How long until one more login fits LOGIN_RATES.
+ *
+ * @param {number[]} attempts when the earlier logins were sent, oldest first
+ * @param {number} now
+ * @returns {number} ms to wait; 0 when one may go now
+ */
+function loginWaitMs(attempts, now) {
+  let waitMs = 0;
+  for (const [limit, windowMs] of LOGIN_RATES) {
+    const recent = attempts.filter((at) => now - at < windowMs);
+    if (recent.length >= limit) {
+      waitMs = Math.max(waitMs, recent[recent.length - limit] + windowMs - now);
+    }
+  }
+  return waitMs;
+}
+
+/**
  * One login, the same for the plugin and the settings page: a fresh
  * `api/v3/key/sign` signature (python-roborock signs every login; reusing
  * one across attempts was finding 12), the account's country from the login
@@ -397,11 +430,31 @@ function loginRefusedError(envelope) {
     new Error(`Login failed: ${JSON.stringify(envelope)}`)
   );
   const refusal = describeLoginRefusal(envelope);
+  // Null for an answer that is not a known refusal: Roborock answered, but
+  // nothing says the credentials are wrong.
+  error.refusal = refusal;
   if (refusal) {
     error.code = refusal.code;
-    error.refusal = refusal;
   }
   return error;
+}
+
+/**
+ * The body of a failed login request when it is Roborock's own answer: an
+ * envelope with a numeric `code` (a refused login comes as HTTP 401 or 412
+ * with one). Anything else, a proxy's 502 page or an empty body, says
+ * nothing about the credentials and is left to fail as the transport error
+ * it is; it used to be read as a refused login, which deletes the cached
+ * session and home data.
+ *
+ * @param {any} error an axios error
+ * @returns {Record<string, any> | null}
+ */
+function roborockAnswer(error) {
+  const data = error?.response?.data;
+  return data && typeof data === "object" && typeof data.code === "number"
+    ? data
+    : null;
 }
 
 async function requestEmailCode(loginApi, email) {
@@ -453,8 +506,9 @@ async function loginWithCode(
     });
     return res.data;
   } catch (error) {
-    if (error.response && error.response.data) {
-      return error.response.data;
+    const answer = roborockAnswer(error);
+    if (answer) {
+      return answer;
     }
     throw error;
   }
@@ -480,8 +534,9 @@ async function loginByPassword(loginApi, { email, password, country, k, s }) {
     });
     return res.data;
   } catch (error) {
-    if (error.response && error.response.data) {
-      return error.response.data;
+    const answer = roborockAnswer(error);
+    if (answer) {
+      return answer;
     }
     throw error;
   }
@@ -498,6 +553,7 @@ module.exports = {
   getLoginRegion,
   getRegionConfig,
   loginRefusedError,
+  loginWaitMs,
   parseServerURL,
   signedLogin,
   signRequest,

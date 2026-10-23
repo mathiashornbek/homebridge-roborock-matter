@@ -159,16 +159,18 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} PendingRequest
- * @property {(value: unknown) => void} resolve
- * @property {(reason?: unknown) => void} reject Called by the reply handlers
- *   with the robot's own refusal, so it also tells the give-up register the
- *   robot answered.
+ * @property {(value: unknown, via?: "local" | "cloud") => void} resolve `via`
+ *   is the transport the reply came over, when a handler says.
+ * @property {(reason?: unknown, via?: "local" | "cloud") => void} reject
+ *   Called by the reply handlers with the robot's own refusal, so it also
+ *   tells the give-up register the robot answered.
  * @property {(reason?: unknown) => void} [abandon] Rejects WITHOUT telling the
  *   register anything — for shutdown, where nothing was answered.
  * @property {ReturnType<typeof setTimeout>} timeout
  * @property {boolean} [secure] True for requests whose protocol-102 reply is
  *   only an acknowledgement, with the real payload arriving on protocol 301.
  * @property {string} [method] The Roborock method, kept for diagnostics.
+ * @property {"local" | "cloud"} [transport] The transport it was sent over.
  */
 
 /**
@@ -929,12 +931,18 @@ class messageQueueHandler {
         // poll looked like a success, the failure branch was unreachable,
         // and the register never counted a single one — including all
         // seven methods in #22/#24 that it was built for.
-        resolve: (value) => {
+        //
+        // `via` is the transport the reply came over. The LAN reply to the
+        // attempt this one retries can still arrive, under the same id: the
+        // robot answered, but MQTT delivered nothing, so it is booked to the
+        // LAN and says nothing about the cloud session (python-roborock stops
+        // listening on the LAN before its MQTT attempt).
+        resolve: (value, via = "cloud") => {
           this.adapter.noteRequestAnswered?.(duid, method);
-          if (feedsCloudHealth) {
+          if (feedsCloudHealth && via === "cloud") {
             this.adapter.noteCloudReply?.();
           }
-          this.adapter.noteTransportOutcome?.(duid, "cloud", "ok");
+          this.adapter.noteTransportOutcome?.(duid, via, "ok");
           resolve(value);
         },
         // A refusal is an answer too. The reply handlers (cloud 102, local
@@ -946,15 +954,16 @@ class messageQueueHandler {
         // given up on although the robot had just replied.
         // Not a cloud-health success: python-roborock's `_send_rpc` raises
         // an API error before it reaches `on_success`.
-        reject: (error) => {
+        reject: (error, via = "cloud") => {
           this.adapter.noteRequestAnswered?.(duid, method);
-          this.adapter.noteTransportOutcome?.(duid, "cloud", "ok");
+          this.adapter.noteTransportOutcome?.(duid, via, "ok");
           reject(error);
         },
         abandon: reject,
         timeout,
         secure,
         method,
+        transport: "cloud",
       });
 
       if (!context.deviceOnline && context.allowOfflineCloudSend) {
@@ -1062,6 +1071,7 @@ class messageQueueHandler {
         timeout,
         secure,
         method,
+        transport: "local",
       });
 
       const lengthBuffer = Buffer.alloc(4);

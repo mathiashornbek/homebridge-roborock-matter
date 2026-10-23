@@ -73,7 +73,7 @@
         "title": "Transient Warning Interval",
         "description": "Hours between repeated transient timeout warnings for each vacuum. Use 0 to hide these recurring warnings unless debug logging is enabled.",
         "type": "number",
-        "default": 6,
+        "default": 1,
         "minimum": 0
       },
       "enableMatterServiceArea": {

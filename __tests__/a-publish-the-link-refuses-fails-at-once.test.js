@@ -57,6 +57,8 @@ describe("a cloud request whose publish is refused", () => {
     expect(outcome.code).toBe("ROBOROCK_TRANSPORT_REFUSED");
     expect(outcome.message).toMatch(/was lost before the get_prop request/);
     expect(api.pendingRequests.size).toBe(0);
+    // The hourly transport line's own timer is the only one left.
+    api.transportTally.flush();
     expect(jest.getTimerCount()).toBe(0);
   });
 

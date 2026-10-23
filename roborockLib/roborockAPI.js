@@ -431,6 +431,8 @@ class Roborock {
     // the second is a corpse it must not restart.
     /** @type {boolean} */
     this.stopped = false;
+    // The current start; see beginRun().
+    this.currentRun = 0;
     // Called every time a start succeeds; see setReadyListener.
     /** @type {(() => unknown) | null} */
     this.readyListener = null;
@@ -502,6 +504,8 @@ class Roborock {
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
+    /** @type {number[]} when this process sent its password logins */
+    this.passwordLogins = [];
     this.persistBasePath = null;
     this.errorLogThrottleMs =
       typeof options.errorLogThrottleMs === "number"
@@ -1797,8 +1801,11 @@ class Roborock {
   async startService() {
     // A deliberate start clears the shutdown latch: Homebridge restarts a
     // child bridge in-process, and a stopped adapter that is started again
-    // must be allowed to retry.
+    // must be allowed to retry. Its other callers, the retry timer and
+    // restartService, read the latch immediately before calling, so a start
+    // can never clear a latch set after whatever asked for it.
     this.stopped = false;
+    const run = this.beginRun();
     this.log.info(`Connecting to your Roborock account…`);
     this.translations = require(
       `./i18n/${this.language || "en"}/translations.json`
@@ -1866,7 +1873,15 @@ class Roborock {
     try {
       userdata = await this.getUserData(this.loginApi);
     } catch (error) {
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
       const message = error?.message || String(error);
+      if (error?.retryInMs) {
+        this.log.warn(message);
+        this.armStartServiceRetry(error.retryInMs);
+        return;
+      }
 
       // A refusal that asking again cannot change stops here with what to
       // do about it; a sign-in block is waited out, because every attempt
@@ -1892,9 +1907,10 @@ class Roborock {
       this.scheduleStartServiceRetry(error);
       return;
     }
-    // Shutdown can land during any wait below; a start that carried on built
-    // a new MQTT client and intervals on an adapter that had just stopped.
-    if (this.stopped) {
+    // Shutdown, or a newer start, can land during any wait below; a start
+    // that carried on built a new MQTT client and intervals on an adapter
+    // that had moved on.
+    if (!this.isCurrentRun(run)) {
       return;
     }
     if (!userdata) {
@@ -1932,11 +1948,11 @@ class Roborock {
     // Get home details.
     try {
       const homeId = await roborockAuth.getHomeId(this.loginApi);
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
       const homedataResult = await this.fetchHomeData(homeId);
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
       // Owned AND shared robots, room names, products and local keys, the
@@ -1970,7 +1986,7 @@ class Roborock {
         await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
       }
 
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
       await this.rr_mqtt_connector.initUser(userdata);
@@ -2014,6 +2030,9 @@ class Roborock {
           });
 
       await this.createDevices();
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
 
       // Cloud requests fail outright until the MQTT session is up, and
       // the very first ones (the per-robot network probe, then each
@@ -2022,6 +2041,9 @@ class Roborock {
       // hoping an unrelated delay covers it; a broker that never comes
       // up releases the wait and the requests fail as they would have.
       await this.rr_mqtt_connector.waitUntilConnected();
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
 
       // First on the wire once the session is up, because it is the one
       // request an Apple Home tile is waiting for: until a Q7's real
@@ -2038,7 +2060,7 @@ class Roborock {
         this.getNetworkInfo(),
         this.initializeDeviceUpdates(),
       ]);
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
 
@@ -2059,8 +2081,11 @@ class Roborock {
       // works over the cloud, and the transport layer already falls back
       // to it, so holding accessory registration hostage to a fixed-length
       // broadcast listen only delayed the Apple Home tiles.
-      void this.attachLocalTransports(localDiscovery, localKeyDevices);
+      void this.attachLocalTransports(localDiscovery, localKeyDevices, run);
     } catch (error) {
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
       if (roborockAuth.isSessionRejected(error)) {
         await this.handleRejectedSession(error);
         return;
@@ -2130,14 +2155,23 @@ class Roborock {
    *
    * @param {Promise<Record<string, string>>} localDiscovery
    * @param {Array<{duid: string}>} localKeyDevices
+   * @param {number} [run] the start this attach belongs to
    */
-  async attachLocalTransports(localDiscovery, localKeyDevices) {
+  async attachLocalTransports(
+    localDiscovery,
+    localKeyDevices,
+    run = this.currentRun
+  ) {
     if (this.isCloudOnlyModeEnabled()) {
       return;
     }
 
     try {
       const discoveredDevices = await localDiscovery;
+      // Shutdown ends the discovery window early, and resolves it.
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
 
       // merge udp discovered devices with local devices found via mqtt
       Object.entries(discoveredDevices).forEach(([duid, ip]) => {
@@ -2147,24 +2181,28 @@ class Roborock {
       });
       this.log.debug(`localDevices: ${JSON.stringify(this.localDevices)}`);
 
+      // Only the robots on the account with a local key. Discovery hears
+      // every robot on the LAN, and `localDevices` keeps every address ever
+      // heard, so iterating it opened a socket to a robot just removed from
+      // the account, or skipped in the settings, and pinged it for good.
       for (const device of this.normalizeArray(localKeyDevices)) {
-        if (
-          !Object.prototype.hasOwnProperty.call(this.localDevices, device.duid)
-        ) {
-          await this.updateTransportDiagnostics(device.duid, {
+        const duid = device.duid;
+        if (!Object.prototype.hasOwnProperty.call(this.localDevices, duid)) {
+          await this.updateTransportDiagnostics(duid, {
             localDiscoveryState: "not-discovered",
             lastTransportReason: "missing-local-ip",
           });
+          continue;
         }
-      }
-
-      for (const duid in this.localDevices) {
         const ip = this.localDevices[duid];
 
         await this.updateTransportDiagnostics(duid, {
           localIp: ip,
           localDiscoveryState: "discovered",
         });
+        if (!this.isCurrentRun(run)) {
+          return;
+        }
         await this.localConnector.createClient(duid, ip);
       }
     } catch (error) {
@@ -2189,6 +2227,8 @@ class Roborock {
       // Teardown publishes the final disconnected diagnostics. Flush after it
       // so that snapshot reaches disk and its debounce timer is cleared too.
       this.flushPendingPersistedStates();
+      // The hour not yet over is reported too, and its timer cleared.
+      this.transportTally?.flush();
       // Nothing is coming back for these, and leaving them means every
       // caller still awaiting one hangs until Homebridge is killed.
       for (const [messageID, pending] of this.pendingRequests) {
@@ -2325,6 +2365,27 @@ class Roborock {
         return null;
       }
 
+      // The start retry has no attempt cap, so its logins are capped here,
+      // at python-roborock's rates: an outage on the login endpoint used to
+      // cost one password login every 10 minutes for as long as it lasted.
+      const now = this.now();
+      const waitMs = roborockAuth.loginWaitMs(this.passwordLogins, now);
+      if (waitMs > 0) {
+        const wait =
+          waitMs >= 2 * 3600000
+            ? `${Math.ceil(waitMs / 3600000)} hour(s)`
+            : `${Math.ceil(waitMs / 60000)} minute(s)`;
+        throw Object.assign(
+          new Error(
+            `The plugin has logged in to Roborock with your password as often as is safe for now (too many attempts get sign-in blocked for 7 days), so it tries again in ${wait}.`
+          ),
+          { retryInMs: waitMs }
+        );
+      }
+      this.passwordLogins = this.passwordLogins
+        .filter((at) => now - at < 24 * 60 * 60 * 1000)
+        .concat(now);
+
       const loginResult = await roborockAuth.signedLogin(loginApi, {
         email: this.config.username,
         password: this.config.password,
@@ -2342,6 +2403,10 @@ class Roborock {
 
       throw roborockAuth.loginRefusedError(loginResult);
     } catch (error) {
+      if (error?.retryInMs) {
+        // Nothing was sent, so there is nothing to judge.
+        throw error;
+      }
       this.log.error(`Error in getUserData: ${error.message}`);
       // DO NOT THROW AWAY THE CACHED SESSION BECAUSE DNS WAS NOT UP YET.
       //
@@ -2376,8 +2441,9 @@ class Roborock {
    * @param {any} error
    */
   isCredentialRejection(error) {
-    if (error?.refusal) {
-      return Boolean(error.refusal.credentials);
+    // A login answer (loginRefusedError): only a known credential refusal.
+    if (error?.refusal !== undefined) {
+      return Boolean(error.refusal?.credentials);
     }
     const code = Number(error?.code ?? error?.status);
     if ([2012, 2008, 2018, 2010].includes(code)) {
@@ -4168,7 +4234,23 @@ class Roborock {
     }
   }
 
+  /**
+   * Shutdown: what a start armed, and the local transport's own timers.
+   */
   clearTimersAndIntervals() {
+    this.clearRunTimers();
+    this.localConnector.clearLocalDevicedTimeout();
+  }
+
+  /**
+   * Stop what a start armed: its retry, the hourly MQTT check, the home-data
+   * refresh, the MQTT startup watchdog, every robot's polling and the B01
+   * status loop. A restart stops only these. The local sockets belong to
+   * their robots, not to a start: one still up keeps its keep-alive across a
+   * restart, which used to stop it for good (the start that followed found
+   * the socket connected and left it alone).
+   */
+  clearRunTimers() {
     if (this.startServiceRetryTimer) {
       this.clearTimeout(this.startServiceRetryTimer);
       this.startServiceRetryTimer = null;
@@ -4179,8 +4261,6 @@ class Roborock {
     if (this.homedataInterval) {
       this.clearInterval(this.homedataInterval);
     }
-
-    this.localConnector.clearLocalDevicedTimeout();
 
     // The MQTT startup watchdog is armed in initMQTT_Subscribe and would
     // otherwise survive shutdown and fire into a torn-down adapter.
@@ -4235,10 +4315,13 @@ class Roborock {
    * Service Area included).
    *
    * @param {Record<string, any>} homedata
+   * @param {{refresh?: boolean}} [options] `refresh`: the reading of a
+   *   periodic refresh, the only kind that can confirm a removal
    * @returns {Promise<{localKeyDevices: Array<{duid: string}>, added: string[], removed: string[], renamed: string[]}>}
    *   robot names added, removed and renamed relative to the previous list
    */
-  async applyHomeData(homedata) {
+  async applyHomeData(homedata, { refresh = false } = {}) {
+    homedata = this.keepRobotsNotYetGone(homedata, refresh);
     const before = new Map(
       this.normalizeArray(this.devices).map((device) => [
         device.duid,
@@ -4248,7 +4331,9 @@ class Roborock {
 
     this.products = homedata.products;
     this.devices = this.getManagedHomeDevices(homedata);
-    this.roomIDs = {};
+    // Merged into, never emptied: a reading without rooms used to make the
+    // robot's next room report name every room "Room <id>" in Apple Home
+    // until a reading with rooms came. A room's id keeps its last name.
     for (const room of this.normalizeArray(homedata.rooms)) {
       if (room && room.id !== undefined) {
         this.roomIDs[room.id] = room.name;
@@ -4283,6 +4368,75 @@ class Roborock {
   }
 
   /**
+   * One reading of the account does not remove a robot. A robot this process
+   * has and a reading lacks is carried over from the previous snapshot, with
+   * its product, until two refreshes in a row (an interval apart) have
+   * lacked it; a reading that lists no robot at all removes nothing. A
+   * start's own reading never confirms a removal: the restart after a refresh
+   * reads again within a second, so one bad answer lasting a few seconds was
+   * enough to unregister a robot's Apple Home accessories, which come back
+   * as new ones without their rooms, names and automations. Additions and
+   * renames still apply at once.
+   *
+   * @param {Record<string, any>} homedata
+   * @param {boolean} refresh whether this is a periodic refresh's reading
+   * @returns {Record<string, any>} the reading with those robots kept
+   */
+  keepRobotsNotYetGone(homedata, refresh) {
+    const previous = this.devices ? this.getStoredHomeData() : null;
+    if (!previous) {
+      return homedata;
+    }
+    const listed = new Set(
+      this.normalizeArray(homedata.devices)
+        .concat(this.normalizeArray(homedata.receivedDevices))
+        .map((device) => device?.duid)
+    );
+    const counts = refresh && listed.size > 0;
+    const kept = {
+      ...homedata,
+      devices: [...this.normalizeArray(homedata.devices)],
+      receivedDevices: [...this.normalizeArray(homedata.receivedDevices)],
+      products: [...this.normalizeArray(homedata.products)],
+    };
+    if (!this.missedReadings) {
+      /** @type {Map<string, number>} duid -> refreshes in a row that lacked it */
+      this.missedReadings = new Map();
+    }
+    for (const list of ["devices", "receivedDevices"]) {
+      for (const device of this.normalizeArray(previous[list])) {
+        const duid = device?.duid;
+        if (!duid || listed.has(duid)) {
+          continue;
+        }
+        const misses = (this.missedReadings.get(duid) ?? 0) + (counts ? 1 : 0);
+        if (misses >= 2) {
+          this.missedReadings.delete(duid);
+          continue;
+        }
+        this.missedReadings.set(duid, misses);
+        this.log.debug(
+          `${device.name || duid} is missing from this reading of your Roborock account; it is kept until two refreshes in a row lack it.`
+        );
+        kept[list].push(device);
+        const productId = device.productId;
+        if (!kept.products.some((product) => product?.id == productId)) {
+          const product = this.normalizeArray(previous.products).find(
+            (entry) => entry?.id == productId
+          );
+          if (product) {
+            kept.products.push(product);
+          }
+        }
+      }
+    }
+    for (const duid of listed) {
+      this.missedReadings.delete(duid);
+    }
+    return kept;
+  }
+
+  /**
    * Give every cached room its current name from `roomIDs`. The cache keeps
    * the name it was given when the robot reported the room, so a room renamed
    * in the app kept its old name until the robot reported its rooms again.
@@ -4313,11 +4467,44 @@ class Roborock {
    * retried start, so a robot added to or removed from the account, or a new
    * session, ends with a runtime for exactly the robots on the account and a
    * ready signal that publishes them.
+   *
+   * Its callers get here after a wait (a refresh's reading, a rejected
+   * session's cleanup). A shutdown that landed in that wait is final: the
+   * start would clear the latch and bring a stopped adapter back.
    */
   async restartService() {
-    this.bInited = false;
-    this.clearTimersAndIntervals();
+    if (this.stopped) {
+      return;
+    }
     await this.startService();
+  }
+
+  /**
+   * Make a new start the current one. Every start is a run: the platform's,
+   * a retry and a restart alike. Shutdown and the next start end the run
+   * before it, and a run checks isCurrentRun after every wait, so a start
+   * overtaken by either stops at its next step instead of building an MQTT
+   * client, arming polling, opening LAN sockets or publishing robots on an
+   * adapter that has moved on. What the previous run armed is stopped here,
+   * so no start can leave the last one's polling running beside its own (the
+   * 6-hour re-login retry started without that, and every robot was polled
+   * twice from then on).
+   *
+   * @returns {number} the new run
+   */
+  beginRun() {
+    this.currentRun += 1;
+    this.bInited = false;
+    this.clearRunTimers();
+    return this.currentRun;
+  }
+
+  /**
+   * @param {number} run a run from beginRun
+   * @returns {boolean} whether it is still the run to carry on
+   */
+  isCurrentRun(run) {
+    return !this.stopped && run === this.currentRun;
   }
 
   /**
@@ -4328,7 +4515,9 @@ class Roborock {
    * @param {string | number} homeId
    */
   async updateHomeData(homeId) {
-    if (this.stopped) {
+    // The refresh belongs to the start that armed it; see beginRun.
+    const run = this.currentRun;
+    if (!this.isCurrentRun(run)) {
       return;
     }
     this.log.debug(`Updating HomeData with homeId: ${homeId}`);
@@ -4339,12 +4528,15 @@ class Roborock {
         // A refresh still on the wire when Homebridge stops lands here after
         // stopService, and superviseDeviceIntervals would start the polling
         // loops again against transports that are already closed.
-        if (this.stopped) {
+        if (!this.isCurrentRun(run)) {
           return;
         }
         this.superviseDeviceIntervals();
-        const change = await this.applyHomeData(homedata);
+        const change = await this.applyHomeData(homedata, { refresh: true });
         this.log.debug(`homedata successfully updated`);
+        if (!this.isCurrentRun(run)) {
+          return;
+        }
 
         if (change.added.length > 0 || change.removed.length > 0) {
           const parts = [
@@ -4362,7 +4554,7 @@ class Roborock {
         }
       } catch (error) {
         const rejection = await this.findSessionRejection(error);
-        if (rejection && !this.stopped) {
+        if (rejection && this.isCurrentRun(run)) {
           await this.handleRejectedSession(rejection);
           return;
         }

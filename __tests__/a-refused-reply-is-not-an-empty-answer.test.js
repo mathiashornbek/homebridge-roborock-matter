@@ -165,7 +165,7 @@ describe("the cloud connector rejects a refusal instead of resolving it", () => 
 
     expect(source).toContain("describeReplyRefusal");
     expect(source.indexOf("describeReplyRefusal(parsed_102)")).toBeLessThan(
-      source.indexOf("resolve(result)")
+      source.indexOf("resolve(result, ")
     );
     expect(source).toContain("reject(");
   });

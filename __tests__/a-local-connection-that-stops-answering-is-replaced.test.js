@@ -126,13 +126,16 @@ test("once the robot answers again, the next status read goes over the LAN", asy
   rig.robot.answersRequests = true;
   rig.robot.result = () => [{ state: 8 }];
   await jest.advanceTimersByTimeAsync(5 * 60_000);
+  // Its hello is answered, so requests try the new socket; the robot only
+  // counts as answering again once it answers one.
   expect(rig.api.localConnector.isConnected(rig.duid)).toBe(true);
-  expect(settingsCard()).toBe("Local connected");
+  expect(settingsCard()).toBe("Local not answering");
 
   const outcome = statusRead();
   await jest.advanceTimersByTimeAsync(0);
   await expect(outcome).resolves.toEqual({ value: [{ state: 8 }] });
   expect(rig.api.rr_mqtt_connector.sendMessage).not.toHaveBeenCalled();
+  expect(settingsCard()).toBe("Local connected");
   expect(
     rig.log.info.mock.calls.some(([line]) =>
       /answers on the LAN again/.test(line)

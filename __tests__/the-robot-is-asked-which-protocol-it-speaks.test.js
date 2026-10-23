@@ -239,7 +239,7 @@ describe("requests and replies", () => {
         }),
       });
       connector.processLocalSegment(DUID, 120, Buffer.alloc(120));
-      expect(resolve).toHaveBeenCalledWith([{ state: 8 }]);
+      expect(resolve).toHaveBeenCalledWith([{ state: 8 }], "local");
     }
   );
 
