@@ -60,8 +60,14 @@ test("a client closed mid-handshake leaves no timer that can fire into nobody", 
     const closed = new Promise((resolve) => socket.once("close", resolve));
 
     connector.disconnect();
+    // The broker hangs up too. Waiting for the client's close alone hung now
+    // and then on macOS under load, when the client was let go of before its
+    // own connect event had run.
+    socket.destroy();
     await closed;
-    await new Promise((resolve) => setImmediate(resolve));
+    for (let turn = 0; turn < 50 && jest.getTimerCount() > 0; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
 
     expect(jest.getTimerCount()).toBe(0);
     expect(() => jest.advanceTimersByTime(60_000)).not.toThrow();
