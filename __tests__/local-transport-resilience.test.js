@@ -383,12 +383,12 @@ describe("a chunk boundary inside a length prefix keeps framing aligned", () => 
     expect(socket.chunkBuffer.length).toBe(0);
   });
 
-  test("checkComplete does not claim a partial header is a complete frame set", () => {
+  test("the scan does not claim a partial header is a complete frame set", () => {
     const stream = Buffer.concat([replyFrame(1), replyFrame(2)]);
     const withPartialHeader = stream.subarray(0, replyFrame(1).length + 2);
 
-    expect(connector.checkComplete(Buffer.alloc(0))).toBe(true);
-    expect(connector.checkComplete(replyFrame(1))).toBe(true);
+    expect(connector.scanChunkBuffer(Buffer.alloc(0)).status).toBe("complete");
+    expect(connector.scanChunkBuffer(replyFrame(1)).status).toBe("complete");
     expect(connector.scanChunkBuffer(withPartialHeader)).toEqual({
       status: "complete",
       consumed: replyFrame(1).length,

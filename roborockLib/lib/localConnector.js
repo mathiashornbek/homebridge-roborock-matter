@@ -988,16 +988,6 @@ class localConnector {
     return { status: "complete", consumed: offset, declaredLength: 0 };
   }
 
-  checkComplete(buffer) {
-    return this.scanChunkBuffer(buffer).status == "complete";
-  }
-
-  clearChunkBuffer(duid) {
-    if (this.localClients[duid]) {
-      this.localClients[duid].chunkBuffer = Buffer.alloc(0);
-    }
-  }
-
   sendMessage(duid, message) {
     const client = this.localClients[duid];
     if (client) {

@@ -188,7 +188,6 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @typedef {Object} LocalConnector
  * @property {(duid: string) => boolean} isConnected
  * @property {(duid: string, message: Buffer) => void} sendMessage
- * @property {(duid: string) => void} [clearChunkBuffer]
  * @property {(duid: string, frame: Buffer, onLost: (cause: string) => void) => LocalRequestHandle | null} [writeRequest]
  * @property {(duid: string) => Promise<void>} [awaitLocalNegotiation]
  * @property {(duid: string) => string | undefined} [getNegotiatedVersion]
