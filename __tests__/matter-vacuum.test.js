@@ -111,14 +111,29 @@ function createAccessory(platform, isRegistered = false) {
 
 describe("Matter clean mode capabilities", () => {
   test("is exposed by default", () => {
-    const platform = createPlatform();
+    const platform = createPlatform({
+      capabilities: { canVacuum: true, canMop: true },
+    });
     const { accessory } = createAccessory(platform);
 
     expect(accessory.clusters.rvcCleanMode).toBeDefined();
     expect(accessory.handlers.rvcCleanMode).toBeDefined();
-    expect(accessory.clusters.rvcCleanMode.supportedModes).toHaveLength(1);
+    expect(accessory.clusters.rvcCleanMode.supportedModes).toHaveLength(3);
     expect(accessory.clusters.rvcCleanMode).not.toHaveProperty("startUpMode");
     expect(accessory.clusters.rvcCleanMode).not.toHaveProperty("onMode");
+  });
+
+  test("is not announced with fewer than the two modes Matter requires", () => {
+    // ModeBase SupportedModes is constrained to 2-255 entries, and matter.js
+    // validates an endpoint's initial state when it registers: a robot with
+    // no mop and no suction levels has only "Vacuum", and no choice to offer.
+    const platform = createPlatform({
+      capabilities: { canVacuum: true, canMop: false },
+    });
+    const { accessory } = createAccessory(platform);
+
+    expect(accessory.clusters.rvcCleanMode).toBeUndefined();
+    expect(accessory.handlers.rvcCleanMode).toBeUndefined();
   });
 
   test("can be disabled independently for controller compatibility", async () => {
@@ -167,14 +182,20 @@ describe("Matter clean mode capabilities", () => {
 
   test("hides mop modes for vacuum-only models", () => {
     const platform = createPlatform({
-      capabilities: { canVacuum: true, canMop: false },
+      capabilities: {
+        canVacuum: true,
+        canMop: false,
+        canControlFanPower: true,
+      },
     });
     const { accessory } = createAccessory(platform);
 
     const labels = accessory.clusters.rvcCleanMode.supportedModes.map(
       (mode) => mode.label
     );
-    expect(labels).toEqual(["Vacuum"]);
+    expect(labels).not.toContain("Mop");
+    expect(labels).not.toContain("Vacuum + Mop");
+    expect(labels[0]).toBe("Vacuum");
   });
 });
 

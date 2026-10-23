@@ -5021,8 +5021,20 @@ export default class RoborockMatterVacuumAccessory {
     return this.platform.platformConfig.enableMatterPowerSource !== false;
   }
 
+  /**
+   * Whether the RvcCleanMode cluster is announced at all. Matter constrains
+   * ModeBase SupportedModes to 2-255 entries, and matter.js 0.17.9 validates
+   * an endpoint's whole initial state against the model when it registers
+   * (ServerBehaviorBacking -> Datasource.validate), so a robot with no mop and
+   * no announced suction levels — one mode, Vacuum — would not register. With
+   * one mode there is no choice to offer, and the cluster is optional for an
+   * RVC, so it is left out.
+   */
   private isCleanModeEnabled(): boolean {
-    return this.platform.platformConfig.enableMatterCleanMode !== false;
+    return (
+      this.platform.platformConfig.enableMatterCleanMode !== false &&
+      this.getSupportedCleanModes().length >= 2
+    );
   }
 
   private isExtendedOperationalStateEnabled(): boolean {
