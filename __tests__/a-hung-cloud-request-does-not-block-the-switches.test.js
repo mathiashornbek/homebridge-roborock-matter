@@ -109,7 +109,7 @@ test("a Routine run the server never answers gives up, and the next Routine stil
   await second;
 
   expect(platform.log.warn.mock.calls.join("\n")).toMatch(
-    /Unable to run Roborock routine "Morning": timeout/
+    /Accepted Home routine "Morning" for duid-1 failed: timeout/
   );
   expect(cloud.requestsTo("/user/scene/2/execute")).toHaveLength(1);
 });
