@@ -4198,13 +4198,16 @@ export default class RoborockMatterVacuumAccessory {
     const unfinished = this.serviceAreaStopRequested
       ? SERVICE_AREA_PROGRESS.SKIPPED
       : SERVICE_AREA_PROGRESS.COMPLETED;
+    // A room already settled keeps its answer: Skipped was not cleaned.
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
       status:
         entry.status === SERVICE_AREA_PROGRESS.COMPLETED ||
-        this.liveConfirmedServiceAreaIds.has(entry.areaId)
-          ? SERVICE_AREA_PROGRESS.COMPLETED
-          : unfinished,
+        entry.status === SERVICE_AREA_PROGRESS.SKIPPED
+          ? entry.status
+          : this.liveConfirmedServiceAreaIds.has(entry.areaId)
+            ? SERVICE_AREA_PROGRESS.COMPLETED
+            : unfinished,
     }));
     this.resetLiveRoomVisits();
     this.serviceAreaCurrentArea = null;

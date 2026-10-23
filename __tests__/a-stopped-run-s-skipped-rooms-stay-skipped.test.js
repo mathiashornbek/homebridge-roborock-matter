@@ -89,6 +89,30 @@ test("a restored run that was already settled keeps its Skipped and Completed ro
   expect(robot.store.read("serviceArea", "progress")).toEqual(restored);
 });
 
+test("a Skipped room stays Skipped when the rest of its run completes", async () => {
+  // A list restored with one room already settled Skipped and one still
+  // operating (Homebridge was down when the run ended): the operating one
+  // completes; the Skipped one was not cleaned and stays so.
+  const robot = await createRealApiVacuum({
+    rooms: ROOMS,
+    savedContext: {
+      serviceAreaProgressState: {
+        currentArea: null,
+        progress: [
+          { areaId: KITCHEN, status: SKIPPED },
+          { areaId: HALL, status: 1 },
+        ],
+      },
+    },
+  });
+  await robot.localReply(DOCKED);
+  await robot.settle();
+  expect(robot.store.read("serviceArea", "progress")).toEqual([
+    { areaId: KITCHEN, status: SKIPPED },
+    { areaId: HALL, status: COMPLETED },
+  ]);
+});
+
 test("a restored run that was still going completes when the robot is found docked", async () => {
   // Unchanged: a run that ended while Homebridge was down is a run that ended.
   const robot = await createRealApiVacuum({
