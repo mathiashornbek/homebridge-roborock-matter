@@ -180,6 +180,22 @@ describe("a state refresh never spends the caller's budget", () => {
     transport.cleanup();
   });
 
+  test("a B01 robot's command is not read back with a v1 read it cannot answer", async () => {
+    const transport = createTransport({ hangMs: 10 });
+    const adapter = createAdapter(transport);
+    adapter.isB01Device = () => true;
+    const robot = new vacuum(adapter, "roborock.vacuum.sc05");
+
+    await robot.command("device-1", "set_custom_mode", [3], {
+      throwOnError: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(transport.methods()).toEqual(["set_custom_mode"]);
+    expect(adapter.catchError).not.toHaveBeenCalled();
+    transport.cleanup();
+  });
+
   test("getParameter carries the caller's options on branches other than get_status", async () => {
     const transport = createTransport({ hangMs: 10 });
     const robot = new vacuum(createAdapter(transport), "roborock.vacuum.a144");

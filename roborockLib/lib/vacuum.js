@@ -483,8 +483,11 @@ class vacuum {
   refreshStateAfterCommand(duid, parameter, options) {
     const getCommand = parameter.replace("set", "get");
     // Nothing to read back: a command with no `set` in its name would other-
-    // wise be re-sent to the robot as its own "refresh".
-    if (getCommand === parameter) {
+    // wise be re-sent to the robot as its own "refresh". A B01 robot has no v1
+    // reads at all — its state comes from its own status loop and pushes —
+    // and reading back its suction logged "Unknown parameter: []" after
+    // every start from Apple Home.
+    if (getCommand === parameter || this.adapter.isB01Device?.(duid)) {
       return;
     }
 
