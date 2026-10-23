@@ -241,57 +241,14 @@ function describeOutlineBounds(resolution) {
 }
 
 /**
- * The raw SCMap fields behind a live-room miss.
- *
- * Two Q7s reported a position of exactly (1100, 1100) — the same value on two
- * robots, two maps and twelve minutes of active cleaning. A constant is not a
- * position, so the number being read as the robot's position is not the
- * robot's position.
- *
- * Rather than guess another field number, this prints what the payload
- * actually contains: the size of every top-level field and every scalar in
- * the small ones. Two consecutive lines are then a diff — the value that
- * changed while the robot was driving is the position, and the submessage
- * that grew is the trail it left. That turns the next fix into a reading
- * rather than a fourth guess.
- *
- * @param {{rawSurvey?: {fields?: Array<{field: number, count: number, bytes: number}>,
- *                      scalars?: Record<string, number>,
- *                      truncated?: boolean} | null}} parsed
- * @returns {string}
- */
-function describeRawMapFields(parsed) {
-  const survey = parsed?.rawSurvey;
-  const fields = survey?.fields;
-  if (!Array.isArray(fields) || fields.length === 0) {
-    return "";
-  }
-
-  const shape = fields
-    .map(
-      (entry) =>
-        `${entry.field}:${entry.bytes}B${entry.count > 1 ? `x${entry.count}` : ""}`
-    )
-    .join(" ");
-
-  const scalars = Object.entries(survey?.scalars || {})
-    .map(([path, value]) => `${path}=${formatSurveyScalar(value)}`)
-    .join(" ");
-
-  return `, map fields ${shape}${scalars ? `, scalars ${scalars}` : ""}${
-    survey?.truncated ? " (truncated)" : ""
-  }`;
-}
-
-/**
- * A survey value short enough to sit in a log line, precise enough to see a
+ * A map coordinate short enough to sit in a log line, precise enough to see a
  * robot move. Three decimals of a metre is a millimetre; three decimals of a
  * millimetre is far below anything a vacuum reports.
  *
  * @param {number} value
  * @returns {string}
  */
-function formatSurveyScalar(value) {
+function formatMapCoordinate(value) {
   if (!Number.isFinite(value)) {
     return String(value);
   }
@@ -6400,7 +6357,7 @@ class Roborock {
         if (!liveState.current && !liveState.savedMapReported) {
           liveState.savedMapReported = true;
           const pose = savedMap.pose
-            ? `, its pose ${formatSurveyScalar(savedMap.pose.x)},${formatSurveyScalar(savedMap.pose.y)}${savedMap.pose.update !== undefined ? ` (update flag ${savedMap.pose.update})` : ""}`
+            ? `, its pose ${formatMapCoordinate(savedMap.pose.x)},${formatMapCoordinate(savedMap.pose.y)}${savedMap.pose.update !== undefined ? ` (update flag ${savedMap.pose.update})` : ""}`
             : "";
           this.log.info(
             `Live room for ${this.describeDevice(duid)}: no live map (map type 0) has arrived from the robot in the last ${B01_LIVE_FRAME_FRESH_MS / 1000}s of this run, and the map it returns on request is a saved map (map type ${savedMap.mapType}${pose}) that carries no live position, so no room is reported until the robot pushes one.`
@@ -6467,7 +6424,7 @@ class Roborock {
       }
 
       liveState.unresolvedPoseCount = (liveState.unresolvedPoseCount || 0) + 1;
-      const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}${describeRawMapFields(parsed)}).`;
+      const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}).`;
       if (liveState.unresolvedPoseCount % 5 === 0) {
         this.log.info(message);
       } else {

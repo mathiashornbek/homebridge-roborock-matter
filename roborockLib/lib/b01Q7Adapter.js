@@ -509,14 +509,6 @@ function forEachField(buf, visit) {
   }
 }
 
-// Bounds for the raw field survey below. They exist to keep a diagnostic
-// from becoming a liability: the survey is pointed at fields whose schema is
-// unknown, so it must not be able to produce an unbounded log line, walk the
-// occupancy grid as if it were protobuf, or recurse without end.
-const RAW_SURVEY_MAX_SCALARS = 48;
-const RAW_SURVEY_MAX_SUBMESSAGE_BYTES = 16384;
-const RAW_SURVEY_MAX_DEPTH = 2;
-
 /**
  * RoomDataInfo: roomId (1, varint) and roomName (2, string).
  * @param {Buffer} buf
@@ -562,11 +554,6 @@ function parseRoomsFromScMap(buffer) {
  *   mapType: number,
  *   head: {sizeX: number, sizeY: number, minX: number, minY: number, maxX: number, maxY: number, resolution: number} | null,
  *   pose: {x: number, y: number, update?: number} | null,
- *   rawSurvey: {
- *     fields: Array<{field: number, count: number, bytes: number}>,
- *     scalars: Record<string, number>,
- *     truncated: boolean,
- *   },
  *   rooms: Array<{roomId: number, roomName: string}>,
  *   roomChains: Array<{roomId: number, points: Array<{x: number, y: number}>}>,
  * }}
@@ -579,19 +566,6 @@ function parseScMapLiveState(buffer) {
   let head = null;
   /** @type {{x: number, y: number, update?: number} | null} */
   let pose = null;
-  // Diagnostic. Both Q7s in the field reported a pose of exactly
-  // (1100.0, 1100.0) — the same value on two robots, two maps and twelve
-  // minutes of active cleaning. That is a constant, not a position, so the
-  // number being read as the robot's position is not the robot's position.
-  //
-  // The survey records every scalar of the small top-level fields, varints as
-  // well as floats, one level deep: repeated paths overwrite, which leaves
-  // the last point of a trail sitting in the log under a stable key.
-  /** @type {Array<{field: number, count: number, bytes: number}>} */
-  const surveyFields = [];
-  /** @type {Record<string, number>} */
-  const surveyScalars = {};
-  let surveyTruncated = false;
   /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */
   const roomChains = [];
   /** @type {Array<{roomId: number, roomName: string}>} */
@@ -664,92 +638,13 @@ function parseScMapLiveState(buffer) {
     return chain;
   }
 
-  /**
-   * Record that a top-level field was seen, and how many bytes it carried.
-   * @param {number} field
-   * @param {number} bytes
-   */
-  function noteField(field, bytes) {
-    const seen = surveyFields.find((entry) => entry.field === field);
-    if (seen) {
-      seen.count += 1;
-      seen.bytes += bytes;
-    } else if (surveyFields.length < RAW_SURVEY_MAX_SCALARS) {
-      surveyFields.push({ field, count: 1, bytes });
-    } else {
-      surveyTruncated = true;
-    }
-  }
-
-  /**
-   * @param {string} path
-   * @param {number} value
-   */
-  function noteScalar(path, value) {
-    if (
-      surveyScalars[path] === undefined &&
-      Object.keys(surveyScalars).length >= RAW_SURVEY_MAX_SCALARS
-    ) {
-      surveyTruncated = true;
-      return;
-    }
-    // Deliberately last-wins. A repeated submessage collapses to its final
-    // occurrence, which for a pose trail is the current position.
-    surveyScalars[path] = value;
-  }
-
-  /**
-   * Walk a submessage recording every scalar it contains, keyed by dotted
-   * field path, to a bounded depth. Diagnostic only: bytes that are not
-   * protobuf at all will reach it, so the caller swallows a throw.
-   *
-   * @param {Buffer} buf
-   * @param {string} prefix
-   * @param {number} depth
-   */
-  function surveyMessage(buf, prefix, depth) {
-    forEachField(buf, (field, wireType, value) => {
-      const path = `${prefix}.${field}`;
-      if (wireType === 2) {
-        if (depth > 1 && value.length > 0) {
-          surveyMessage(value, path, depth - 1);
-        }
-      } else {
-        noteScalar(path, value);
-      }
-    });
-  }
-
-  /**
-   * @param {Buffer} buf
-   * @param {number} field
-   */
-  function surveyTopLevelSubmessage(buf, field) {
-    if (buf.length > RAW_SURVEY_MAX_SUBMESSAGE_BYTES) {
-      // The occupancy grid is tens of kilobytes of raw cells, not protobuf.
-      // Its size is recorded; walking it would be nonsense and slow.
-      return;
-    }
-    try {
-      surveyMessage(buf, String(field), RAW_SURVEY_MAX_DEPTH);
-    } catch {
-      surveyTruncated = true;
-    }
-  }
-
   forEachField(buffer, (field, wireType, value) => {
     if (field === 1 && wireType === 0) {
       mapType = value;
     }
     if (wireType !== 2) {
-      // A position could just as easily be a bare float or varint on the
-      // RobotMap itself, so top-level scalars are surveyed too.
-      noteField(field, 0);
-      noteScalar(String(field), value);
       return;
     }
-    noteField(field, value.length);
-    surveyTopLevelSubmessage(value, field);
     if (field === 3) {
       head = parseMapHead(value);
     } else if (field === 8) {
@@ -771,11 +666,6 @@ function parseScMapLiveState(buffer) {
     mapType,
     head,
     pose,
-    rawSurvey: {
-      fields: surveyFields,
-      scalars: surveyScalars,
-      truncated: surveyTruncated,
-    },
     rooms,
     roomChains,
   };
