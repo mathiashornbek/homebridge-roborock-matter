@@ -189,21 +189,7 @@ class RoborockUiServer {
       successMessage: "Login completed and token saved.",
       failureLogLabel: "2FA verification failed:",
       failureFallbackMessage: "Verification failed.",
-      performLogin: async (loginApi, nonce, k) => {
-        const region = await roborockAuth.getLoginRegion(
-          loginApi,
-          email,
-          this.loginServer(payload)
-        );
-        return roborockAuth.loginWithCode(loginApi, {
-          email,
-          code: payload.code,
-          country: region.country,
-          countryCode: region.countryCode,
-          k,
-          s: nonce,
-        });
-      },
+      credentials: { code: payload.code },
     });
   }
 
@@ -230,27 +216,15 @@ class RoborockUiServer {
       failureLogLabel: "Login failed:",
       failureFallbackMessage: "Login failed. Check your credentials.",
       checkTwoFactorRequired: true,
-      performLogin: async (loginApi, nonce, k) => {
-        const region = await roborockAuth.getLoginRegion(
-          loginApi,
-          email,
-          this.loginServer(payload)
-        );
-        return roborockAuth.loginByPassword(loginApi, {
-          email,
-          password,
-          country: region.country,
-          k,
-          s: nonce,
-        });
-      },
+      credentials: { password },
     });
   }
 
   // Shared by verifyTwoFactorCode and loginWithPassword: both build a login
-  // API, sign a nonce, invoke a login function with the resulting `k`, then
-  // map the response to the same success/failure shape (loginWithPassword
-  // additionally treats code 2031 as "two-factor required").
+  // API, log in through roborockAuth.signedLogin (the plugin's own login
+  // uses it too), then map the response to the same success/failure shape
+  // (loginWithPassword additionally treats code 2031 as "two-factor
+  // required").
   private async performSignedLogin(options: {
     email: string;
     baseURL?: string;
@@ -261,7 +235,7 @@ class RoborockUiServer {
     failureLogLabel: string;
     failureFallbackMessage: string;
     checkTwoFactorRequired?: boolean;
-    performLogin: (loginApi: any, nonce: string, k: string) => Promise<any>;
+    credentials: { code: string } | { password: string };
   }) {
     const {
       email,
@@ -273,19 +247,17 @@ class RoborockUiServer {
       failureLogLabel,
       failureFallbackMessage,
       checkTwoFactorRequired,
-      performLogin,
+      credentials,
     } = options;
 
     let loginResult;
     try {
       const loginApi = await this.buildLoginApi({ email, baseURL, serverURL });
-      const nonce = this.buildNonce();
-      const signData = await roborockAuth.signRequest(loginApi, nonce);
-      if (!signData || !signData.k) {
-        return { ok: false, message: "Failed to create login signature." };
-      }
-
-      loginResult = await performLogin(loginApi, nonce, signData.k);
+      loginResult = await roborockAuth.signedLogin(loginApi, {
+        email,
+        server: this.loginServer({ baseURL, serverURL }),
+        ...credentials,
+      });
     } catch (error: any) {
       console.error(requestFailedLogLabel, error?.message || error);
       return {
@@ -878,15 +850,6 @@ class RoborockUiServer {
     const code = error?.code ? `${error.code}: ` : "";
     const message = error?.message || String(error);
     return `${code}${message}`;
-  }
-
-  private buildNonce(): string {
-    return crypto
-      .randomBytes(12)
-      .toString("base64")
-      .substring(0, 16)
-      .replace(/\+/g, "X")
-      .replace(/\//g, "Y");
   }
 
   private readJsonFile(filePath: string): any | null {

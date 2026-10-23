@@ -212,6 +212,52 @@ async function signRequest(loginApi, s) {
   return res.data && res.data.data ? res.data.data : null;
 }
 
+/** Sixteen random characters for `api/v3/key/sign`, as the app sends. */
+function loginNonce() {
+  return crypto
+    .randomBytes(12)
+    .toString("base64")
+    .substring(0, 16)
+    .replace(/\+/g, "X")
+    .replace(/\//g, "Y");
+}
+
+/**
+ * One login, the same for the plugin and the settings page: a fresh
+ * `api/v3/key/sign` signature (python-roborock signs every login; reusing
+ * one across attempts was finding 12), the account's country from the login
+ * server, then the code login or the password login with the agreement
+ * version for that country.
+ *
+ * @param {import("axios").AxiosInstance} loginApi
+ * @param {{email: string, server: string | undefined, code?: string, password?: string}} credentials
+ * @returns {Promise<Record<string, any>>} Roborock's answer envelope
+ */
+async function signedLogin(loginApi, { email, server, code, password }) {
+  const s = loginNonce();
+  const signData = await signRequest(loginApi, s);
+  if (!signData || !signData.k) {
+    throw new Error("Failed to create login signature.");
+  }
+  const region = await getLoginRegion(loginApi, email, server);
+  return code !== undefined
+    ? loginWithCode(loginApi, {
+        email,
+        code,
+        country: region.country,
+        countryCode: region.countryCode,
+        k: signData.k,
+        s,
+      })
+    : loginByPassword(loginApi, {
+        email,
+        password,
+        country: region.country,
+        k: signData.k,
+        s,
+      });
+}
+
 /**
  * The account's country and phone country code, as python-roborock's
  * `_get_iot_login_info` reads them from `api/v1/getUrlByEmail` on the server
@@ -453,6 +499,7 @@ module.exports = {
   getRegionConfig,
   loginRefusedError,
   parseServerURL,
+  signedLogin,
   signRequest,
   requestEmailCode,
   loginWithCode,

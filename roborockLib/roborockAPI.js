@@ -2364,22 +2364,10 @@ class Roborock {
         return null;
       }
 
-      const signData = await this.createLoginSignature();
-      if (!signData) {
-        throw new Error("Failed to obtain login signature.");
-      }
-
-      const region = await roborockAuth.getLoginRegion(
-        loginApi,
-        this.config.username,
-        this.loginServer
-      );
-      const loginResult = await roborockAuth.loginByPassword(loginApi, {
+      const loginResult = await roborockAuth.signedLogin(loginApi, {
         email: this.config.username,
         password: this.config.password,
-        country: region.country,
-        k: signData.k,
-        s: signData.s,
+        server: this.loginServer,
       });
 
       if (loginResult && loginResult.code === 200 && loginResult.data) {
@@ -2449,30 +2437,6 @@ class Roborock {
 
   isValidUserData(userdata) {
     return userdata && userdata.token && userdata.rriot;
-  }
-
-  /**
-   * A fresh `api/v3/key/sign` signature for ONE login attempt, as
-   * python-roborock signs every login. A failed attempt used to leave its
-   * signature cached, so every retry sent the same one.
-   */
-  async createLoginSignature() {
-    if (!this.loginApi) {
-      throw new Error("Login API is not initialized.");
-    }
-
-    const s = crypto
-      .randomBytes(12)
-      .toString("base64")
-      .substring(0, 16)
-      .replace(/\+/g, "X")
-      .replace(/\//g, "Y");
-    const signData = await roborockAuth.signRequest(this.loginApi, s);
-    if (!signData || !signData.k) {
-      return null;
-    }
-
-    return { k: signData.k, s };
   }
 
   async getNetworkInfo() {
