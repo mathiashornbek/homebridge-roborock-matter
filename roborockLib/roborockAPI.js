@@ -6798,8 +6798,9 @@ class Roborock {
     if (previous && previous.segmentId === roomId && missedBeforeThis > 0) {
       // Re-entering the room it was already in resets the miss counter
       // without printing anything, which made the "attempt N" numbers look
-      // as if they reset at random. Say it happened.
-      this.log.info(
+      // as if they reset at random. Say it happened — at debug: with live
+      // frames a Q7 does this every minute or so, and nothing changed.
+      this.log.debug(
         `Live room for ${this.describeDevice(duid)}: back in ${roomName} (${roomId}) after ${missedBeforeThis} unresolved position(s).`
       );
     }
