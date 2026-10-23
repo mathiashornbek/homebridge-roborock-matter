@@ -87,9 +87,11 @@ function buildPixels() {
   return pixels;
 }
 
-// World mm for the center of pixel (px, py) in map coordinates.
+// World mm 10 mm into pixel (px, py) in map coordinates: inside the pixel
+// under any rounding (the half-way tie is pinned in
+// a-classic-live-room-reads-the-map-as-python-does.test.js).
 function pixelToMm(px, py) {
-  return [(LEFT + px) * 50 + 25, (TOP + py) * 50 + 25];
+  return [(LEFT + px) * 50 + 10, (TOP + py) * 50 + 10];
 }
 
 function buildMapWithRobotAt(px, py) {

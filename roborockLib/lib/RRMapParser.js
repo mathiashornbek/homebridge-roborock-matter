@@ -69,21 +69,21 @@ RRMapParser.resolveLiveSegmentFromMapBuffer = function (buf) {
     }
 
     if (type === TYPES.IMAGE && hlength > 24) {
-      const offset1 = buf.readUInt8(dataPosition + 2); // == hlength low byte
+      // top/left/height/width are the last four int32 of the block header.
       image = {
-        pixelsAt: dataPosition + offset1,
-        top: buf.readInt32LE(dataPosition + offset1 - 0x10),
-        left: buf.readInt32LE(dataPosition + offset1 - 0x0c),
-        height: buf.readInt32LE(dataPosition + offset1 - 0x08),
-        width: buf.readInt32LE(dataPosition + offset1 - 0x04),
+        pixelsAt: dataPosition + hlength,
+        top: buf.readInt32LE(dataPosition + hlength - 0x10),
+        left: buf.readInt32LE(dataPosition + hlength - 0x0c),
+        height: buf.readInt32LE(dataPosition + hlength - 0x08),
+        width: buf.readInt32LE(dataPosition + hlength - 0x04),
         length,
       };
-    } else if (type === TYPES.ROBOT_POSITION) {
-      const offset1 = buf.readUInt8(dataPosition + 2);
-      position = [
-        buf.readInt32LE(dataPosition + offset1),
-        buf.readInt32LE(dataPosition + (length >= 12 ? offset1 + 4 : offset1)),
-      ];
+    } else if (type === TYPES.ROBOT_POSITION && length >= 8) {
+      // x at data+0 and y at data+4, whether or not an angle follows
+      // (vacuum-map-parser-roborock _parse_object_position). Reading y at
+      // the x offset on an 8-byte block placed the robot on the diagonal.
+      const dataAt = dataPosition + hlength;
+      position = [buf.readInt32LE(dataAt), buf.readInt32LE(dataAt + 4)];
     }
 
     dataPosition += hlength + length;
@@ -93,8 +93,10 @@ RRMapParser.resolveLiveSegmentFromMapBuffer = function (buf) {
     return null;
   }
 
-  const pixelX = Math.floor(position[0] / 50) - image.left;
-  const pixelY = Math.floor(position[1] / 50) - image.top;
+  // round(x/50 - left), as the reference computes the pixel under the robot
+  // (Python rounds half to even).
+  const pixelX = roundHalfToEven(position[0] / 50 - image.left);
+  const pixelY = roundHalfToEven(position[1] / 50 - image.top);
   if (
     pixelX < 0 ||
     pixelY < 0 ||
@@ -109,13 +111,27 @@ RRMapParser.resolveLiveSegmentFromMapBuffer = function (buf) {
     return null;
   }
 
-  const pixelByte = buf.readUInt8(image.pixelsAt + pixelIndex);
-  const pixelType = pixelByte & 0x07;
-  if (pixelType === 0 || pixelType === 1) {
-    return null; // outside the map or an obstacle pixel
+  // vacuum-map-parser-roborock get_room_at_pixel: a pixel is a room's only
+  // when its low three bits are 7, and 0xFF (floor no room has claimed, read
+  // as "room 31" before) and 0x07 (scanned) are not rooms at all.
+  const pixel = buf.readUInt8(image.pixelsAt + pixelIndex);
+  if (pixel === 0xff || pixel === 0x07 || (pixel & 0x07) !== 0x07) {
+    return null;
   }
-  const segmentId = (pixelByte & 248) >> 3;
-  return segmentId !== 0 ? segmentId : null;
+  return pixel >> 3;
 };
+
+/**
+ * Python's round(): to the nearest integer, ties to the even one.
+ * @param {number} value
+ */
+function roundHalfToEven(value) {
+  const floor = Math.floor(value);
+  const fraction = value - floor;
+  if (fraction !== 0.5) {
+    return Math.round(value);
+  }
+  return floor % 2 === 0 ? floor : floor + 1;
+}
 
 module.exports = RRMapParser;
