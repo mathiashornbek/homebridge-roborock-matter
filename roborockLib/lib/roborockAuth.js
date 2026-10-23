@@ -81,6 +81,65 @@ function createLoginApi({ baseURL, username, clientID, language }) {
   });
 }
 
+/**
+ * getHomeDetail's answer for a session Roborock no longer accepts. It is the
+ * one answer python-roborock reads as RoborockInvalidCredentials, and Home
+ * Assistant re-authenticates on it instead of retrying.
+ */
+const SESSION_REJECTED_CODE = 2010;
+
+/** @param {{msg?: unknown} | undefined} envelope */
+function sessionRejectedError(envelope) {
+  const detail = typeof envelope?.msg === "string" ? `, "${envelope.msg}"` : "";
+  const error = /** @type {Error & {code: number, sessionRejected: true}} */ (
+    new Error(
+      `Roborock no longer accepts the saved login session (code ${SESSION_REJECTED_CODE}${detail})`
+    )
+  );
+  error.code = SESSION_REJECTED_CODE;
+  error.sessionRejected = true;
+  return error;
+}
+
+/** @param {unknown} error */
+function isSessionRejected(error) {
+  return Boolean(
+    error && /** @type {{sessionRejected?: unknown}} */ (error).sessionRejected
+  );
+}
+
+/**
+ * The account's home id from `api/v1/getHomeDetail`, read the way
+ * python-roborock reads it: the envelope's `code` decides, and 2010 means the
+ * session is dead rather than the network being down. Roborock answers in a
+ * 200; local_roborock_server sends the same envelope with HTTP 401, which
+ * axios throws, so the envelope is read from either.
+ *
+ * @param {import("axios").AxiosInstance} loginApi with the session token set
+ * @returns {Promise<string | number>}
+ */
+async function getHomeId(loginApi) {
+  let envelope;
+  try {
+    envelope = (await loginApi.get("api/v1/getHomeDetail")).data;
+  } catch (error) {
+    envelope = /** @type {any} */ (error)?.response?.data;
+    if (!envelope || typeof envelope !== "object" || !("code" in envelope)) {
+      throw error;
+    }
+  }
+  if (envelope?.code === SESSION_REJECTED_CODE) {
+    throw sessionRejectedError(envelope);
+  }
+  const homeId = envelope?.data?.rrHomeId;
+  if (envelope?.code !== 200 || homeId === undefined || homeId === null) {
+    throw new Error(
+      `Roborock answered the home details with ${JSON.stringify(envelope)}`
+    );
+  }
+  return homeId;
+}
+
 async function signRequest(loginApi, s) {
   const res = await loginApi.post(`${API_V3_SIGN}?s=${s}`);
   return res.data && res.data.data ? res.data.data : null;
@@ -168,6 +227,9 @@ async function loginByPassword(loginApi, { email, password, k, s }) {
 }
 
 module.exports = {
+  SESSION_REJECTED_CODE,
+  getHomeId,
+  isSessionRejected,
   createLoginApi,
   getRegionConfig,
   signRequest,

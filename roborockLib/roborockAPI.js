@@ -456,6 +456,10 @@ const MATTER_CLEAN_TYPE_PREP_LABELS = new Set(["water mode", "clean type"]);
 // return room segments. Retrying lets newly named/segmented maps appear without
 // switching maps on every poll cycle.
 const SERVICE_AREA_ROOM_MAP_REFRESH_TTL_MS = 6 * 60 * 60 * 1000;
+// The shortest gap between two automatic password logins after Roborock has
+// rejected a session: python-roborock's maximum MQTT back-off after an
+// authorisation failure (mqtt/roborock_session.py MAX_BACKOFF_INTERVAL).
+const SESSION_RELOGIN_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 class Roborock {
   constructor(options) {
@@ -1948,10 +1952,8 @@ class Roborock {
 
     // Get home details.
     try {
-      const homeDetail = await this.loginApi.get("api/v1/getHomeDetail");
-      if (homeDetail) {
-        const homeId = homeDetail.data.data.rrHomeId;
-
+      const homeId = await roborockAuth.getHomeId(this.loginApi);
+      if (homeId) {
         if (this.api) {
           const homedata = await this.api.get(`v2/user/homes/${homeId}`);
           const homedataResult = homedata.data.result;
@@ -2121,6 +2123,10 @@ class Roborock {
         }
       }
     } catch (error) {
+      if (roborockAuth.isSessionRejected(error)) {
+        await this.handleRejectedSession(error);
+        return;
+      }
       // Not an error with a stack: this catch is reached by Roborock
       // maintenance, a rate-limited response and plain DNS failure. The stack
       // tells the user nothing and the line used to end without saying what
@@ -4195,6 +4201,18 @@ class Roborock {
         delay / 60000
       )} minute(s); the robots appear in Apple Home as soon as it succeeds, without a restart.`
     );
+    this.armStartServiceRetry(delay);
+  }
+
+  /**
+   * Arm the one retry timer, unless one is armed or the adapter is stopped.
+   *
+   * @param {number} delay ms
+   */
+  armStartServiceRetry(delay) {
+    if (this.startServiceRetryTimer || this.stopped) {
+      return;
+    }
     const timer = setTimeout(() => {
       this.startServiceRetryTimer = null;
       // `bInited` alone let a cleared-too-late timer restart a shut-down
@@ -4219,6 +4237,101 @@ class Roborock {
       timer.unref();
     }
     this.startServiceRetryTimer = timer;
+  }
+
+  /**
+   * Roborock no longer accepts the session (getHomeDetail code 2010).
+   *
+   * python-roborock raises RoborockInvalidCredentials for this answer and Home
+   * Assistant starts re-authentication; nothing retries with the same session.
+   * This plugin used to: every 10 minutes for good, under a "temporary
+   * problem" label, never trying the configured password because the stored
+   * session always won — and at runtime MQTT kept reconnecting every second
+   * with credentials derived from it.
+   *
+   * So the dead session is dropped everywhere it could be picked up again
+   * (memory, which also holds the copy from the plugin settings, and disk),
+   * the cloud side stops using it (the refresh, the hourly MQTT check, MQTT
+   * itself), and then:
+   * - with a password configured, one fresh login, and the start runs again
+   *   with the new session; at most once per SESSION_RELOGIN_MIN_INTERVAL_MS,
+   *   python's maximum back-off after an authorisation failure, because each
+   *   login counts against Roborock's sign-in limits (9004 blocks sign-in for
+   *   7 days);
+   * - without one, one error that says what to do. Nothing in this process
+   *   could make the session good again, so nothing retries.
+   *
+   * Also the entry point for any other place that learns the session is dead.
+   *
+   * @param {unknown} error the rejection
+   */
+  async handleRejectedSession(error) {
+    if (this.stopped) {
+      return;
+    }
+    const reason = /** @type {any} */ (error)?.message || String(error);
+
+    this.userData = null;
+    await this.deleteStateAsync("UserData");
+    for (const interval of ["homedataInterval", "reconnectIntervall"]) {
+      if (this[interval]) {
+        this.clearInterval(this[interval]);
+        this[interval] = null;
+      }
+    }
+    this.rr_mqtt_connector?.disconnect?.();
+
+    if (!this.config.password) {
+      this.log.error(
+        `${reason}, so the plugin has stopped using the Roborock cloud. To continue, log in again in the plugin settings and restart the Roborock bridge.`
+      );
+      return;
+    }
+
+    const sinceLastLogin =
+      this.now() - (this.lastSessionReloginAt ?? -Infinity);
+    if (sinceLastLogin < SESSION_RELOGIN_MIN_INTERVAL_MS) {
+      const waitMs = SESSION_RELOGIN_MIN_INTERVAL_MS - sinceLastLogin;
+      this.log.error(
+        `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log in again in the plugin settings.`
+      );
+      this.bInited = false;
+      this.armStartServiceRetry(waitMs);
+      return;
+    }
+
+    this.lastSessionReloginAt = this.now();
+    this.log.warn(
+      `${reason}; logging in again with the password from the plugin settings.`
+    );
+    this.bInited = false;
+    this.clearTimersAndIntervals();
+    await this.startService();
+  }
+
+  /**
+   * After a failed cloud read, ask the account API whether the session is
+   * still good, which is the question python-roborock asks to decide that a
+   * session is dead. A failed read alone does not say: the network may be
+   * down, or the IoT API may refuse for its own reasons.
+   *
+   * @param {unknown} error what the read failed with
+   * @returns {Promise<unknown>} the rejection, or null when the session is
+   *   fine or the question could not be answered
+   */
+  async findSessionRejection(error) {
+    if (roborockAuth.isSessionRejected(error)) {
+      return error;
+    }
+    if (!this.loginApi) {
+      return null;
+    }
+    try {
+      await roborockAuth.getHomeId(this.loginApi);
+      return null;
+    } catch (check) {
+      return roborockAuth.isSessionRejected(check) ? check : null;
+    }
   }
 
   clearTimersAndIntervals() {
@@ -4294,6 +4407,11 @@ class Roborock {
           this.log.warn("homedata failed to download");
         }
       } catch (error) {
+        const rejection = await this.findSessionRejection(error);
+        if (rejection && !this.stopped) {
+          await this.handleRejectedSession(rejection);
+          return;
+        }
         this.log.error(`Failed to update updateHomeData with error: ${error}`);
       }
     }

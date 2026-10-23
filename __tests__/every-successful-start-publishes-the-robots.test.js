@@ -19,69 +19,32 @@
 
 jest.mock("mqtt");
 
-const EventEmitter = require("events");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const mqtt = require("mqtt");
 
-const { Roborock } = require("../roborockLib/roborockAPI");
 const {
   startFakeRoborockCloud,
 } = require("../test-support/fake-roborock-cloud");
+const {
+  createAdapterOnFakeCloud,
+  fakeMqttClient,
+  homeData,
+  quiet,
+  robot,
+  useFakeTimersAroundRealIo,
+  waitFor,
+} = require("../test-support/roborock-on-fake-cloud");
 const { createFakeHomebridge } = require("../test-support/fake-homebridge");
 const { encryptSession } = require("../src/crypto");
 const RoborockPlatform = require("../src/platform").default;
 
 const DUID = "duid-stueetage";
-const HOME_DATA = {
-  products: [
-    {
-      id: "p1",
-      model: "roborock.vacuum.a70",
-      schema: [
-        { id: 121, code: "state" },
-        { id: 122, code: "battery" },
-        { id: 123, code: "fan_power" },
-        { id: 124, code: "water_box_mode" },
-      ],
-    },
-  ],
-  devices: [
-    {
-      duid: DUID,
-      name: "Stueetage",
-      productId: "p1",
-      pv: "1.0",
-      localKey: "0123456789abcdef",
-      online: true,
-      sn: "SN-STUE",
-      deviceStatus: { 121: 8, 122: 100, 123: 102, 124: 200 },
-    },
-  ],
-  receivedDevices: [],
+const HOME_DATA = homeData({
+  devices: [robot(DUID, "Stueetage")],
   rooms: [{ id: 11, name: "Kitchen" }],
-};
-
-function fakeMqttClient() {
-  const client = new EventEmitter();
-  client.subscribe = jest.fn();
-  client.publish = jest.fn();
-  client.end = jest.fn();
-  setImmediate(() => client.emit("connect", { returnCode: 0 }));
-  return client;
-}
-
-/** Real-time wait for an asynchronous condition (network I/O is real). */
-async function waitFor(condition, what) {
-  const deadline = process.hrtime.bigint() + 5_000_000_000n;
-  while (!condition()) {
-    if (process.hrtime.bigint() > deadline) {
-      throw new Error(`timed out waiting for ${what}`);
-    }
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-}
+});
 
 let cloud;
 const adapters = [];
@@ -97,15 +60,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   mqtt.connect.mockImplementation(() => fakeMqttClient());
-  jest.useFakeTimers({
-    doNotFake: [
-      "nextTick",
-      "setImmediate",
-      "queueMicrotask",
-      "hrtime",
-      "performance",
-    ],
-  });
+  useFakeTimersAroundRealIo();
 });
 
 afterEach(async () => {
@@ -115,34 +70,10 @@ afterEach(async () => {
   jest.useRealTimers();
 });
 
-function quiet(api) {
-  // The first status poll and the network probe go to the robot over MQTT,
-  // which this fake does not answer; neither is what is under test.
-  api.initializeDeviceUpdates = jest.fn(async () => undefined);
-  api.getNetworkInfo = jest.fn(async () => undefined);
-  api.startB01StatusLoop = jest.fn();
-  api.superviseDeviceIntervals = jest.fn();
-  // The broker handshake is the fake client's "connect", not under test.
-  api.rr_mqtt_connector.waitUntilConnected = jest.fn(async () => true);
-  return api;
-}
-
 function makeAdapter(extra = {}) {
-  const api = new Roborock({
-    username: cloud.config.email,
-    baseURL: cloud.host,
-    cloudOnlyMode: true,
-    log: {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-    },
-    storagePath: fs.mkdtempSync(path.join(os.tmpdir(), "ready-")),
-    ...extra,
-  });
+  const api = createAdapterOnFakeCloud(cloud, extra);
   adapters.push(api);
-  return quiet(api);
+  return api;
 }
 
 describe("the library says ready after every successful start", () => {

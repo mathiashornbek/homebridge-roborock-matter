@@ -13,7 +13,7 @@
 //   api/v3/app/agreement/latest, POST api/v4/email/code/send, POST
 //   api/v4/auth/email/login/code, POST api/v4/auth/email/login/pwd and GET
 //   api/v1/getHomeDetail (token in `Authorization`);
-// - IoT API (`rriot.r.a`, Hawk-signed): GET v2/user/homes/{id}, GET
+// - IoT API (`rriot.r.a`, Hawk-signed): GET [v2/]user/homes/{id}, GET
 //   user/scene/device/{duid}, GET user/deviceshare/query/{duid}/rooms.
 //
 // Failure answers are the server's own: a wrong email or PIN, and a token it
@@ -37,6 +37,22 @@ const CERT = fs.readFileSync(
 const KEY = fs.readFileSync(
   path.join(__dirname, "local-roborock-server", "test-only-key.pem")
 );
+
+/** The app's password encryption, reversed: AES-128-ECB keyed by the signed k. */
+function decryptPassword(encrypted, k) {
+  try {
+    const decipher = crypto.createDecipheriv(
+      "aes-128-ecb",
+      Buffer.from(k.slice(4) + k.slice(0, 4), "utf8"),
+      null
+    );
+    return (
+      decipher.update(encrypted, "base64", "utf8") + decipher.final("utf8")
+    );
+  } catch {
+    return null;
+  }
+}
 
 const md5hex = (value) => crypto.createHash("md5").update(value).digest("hex");
 const hex = (bytes) => crypto.randomBytes(bytes).toString("hex");
@@ -250,7 +266,7 @@ async function startFakeRoborockCloud(options = {}) {
         });
       }
       const secretOk = isPassword
-        ? Boolean(config.password) && form.get("password")
+        ? decryptPassword(form.get("password"), k) === config.password
         : form.get("code") === config.pin;
       if (!secretOk) {
         return send(res, 401, {
@@ -288,10 +304,9 @@ async function startFakeRoborockCloud(options = {}) {
         data: { reason: hawk.reason },
       });
     }
-    if (
-      req.method === "GET" &&
-      pathname === `/v2/user/homes/${config.homeId}`
-    ) {
+    // local_roborock_server serves the home under /, /v2, /v3 and /v4.
+    const home = pathname.match(/^\/(?:v[234]\/)?user\/homes\/(\d+)$/);
+    if (req.method === "GET" && home && Number(home[1]) === config.homeId) {
       return send(res, 200, { success: true, result: config.homeData });
     }
     const scenes = pathname.match(/^\/user\/scene\/device\/([^/]+)$/);
