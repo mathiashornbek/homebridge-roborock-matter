@@ -1266,26 +1266,39 @@ describe("Per-cluster publish isolation (frozen-tile defense)", () => {
 });
 
 describe("Battery resync nudge (stuck-controller-cache defense)", () => {
+  // Written into the matter.js 0.17.9 store replay, which Homebridge lets the
+  // plugin read back: "publishes nothing" below means the store already held
+  // the value, not that the plugin remembered having sent it.
   function createRegisteredVacuum(matterUpdates) {
+    const {
+      createMatterStore,
+    } = require("../test-support/matter-0.17.9-store");
     const platform = createMatterPlatformB01();
     platform.platformConfig.enableMatterChargingDockedStates = true;
+    // The cloud snapshot already carries a battery reading, so the endpoint
+    // registers with it — the case the nudge exists for.
+    platform.roborockAPI.getVacuumDeviceStatus = (duid, property) =>
+      property === "battery" ? 100 : "";
+    let store;
     platform.getMatterApi = () => ({
       updateAccessoryState: async (uuid, cluster, attributes) => {
         matterUpdates.push({ cluster, attributes });
+        await store.updateAccessoryState(uuid, cluster, attributes);
       },
+      getAccessoryState: (uuid, cluster) =>
+        store.getAccessoryState(uuid, cluster),
     });
     const RoborockMatterVacuumAccessory =
       require("../src/matter_vacuum_accessory").default;
     const accessory = { UUID: "uuid-q7", context: { duid: "duid-q7" } };
-    return {
-      vacuum: new RoborockMatterVacuumAccessory(
-        platform,
-        accessory,
-        { duid: "duid-q7" },
-        true
-      ),
+    const vacuum = new RoborockMatterVacuumAccessory(
       platform,
-    };
+      accessory,
+      { duid: "duid-q7" },
+      true
+    );
+    store = createMatterStore(accessory.clusters);
+    return { vacuum, platform };
   }
 
   test("first status publish nudges battery attributes, once per boot", async () => {
@@ -1314,8 +1327,8 @@ describe("Battery resync nudge (stuck-controller-cache defense)", () => {
       expect.stringContaining("Battery resync for Q7 Test")
     );
 
-    // A second, IDENTICAL live update publishes nothing at all (publish
-    // diffing) — and certainly does not nudge again.
+    // A second, IDENTICAL live update writes nothing at all (the store
+    // already holds it) — and certainly does not nudge again.
     matterUpdates.length = 0;
     await vacuum.notifyDeviceUpdater("CloudMessage", {
       duid: "duid-q7",
@@ -1357,15 +1370,18 @@ describe("Service Area cleaning progress (the 'Forbereder' fix)", () => {
     );
   }
 
-  test("room-clean start marks the first area operating and names it current", () => {
+  test("room-clean start marks every requested area operating and names none current", () => {
+    // Which requested room the robot is in is not known until live tracking
+    // says so; naming the first one stuck for a whole run on robots without
+    // live rooms (#24).
     const vacuum = createRoomVacuum();
     vacuum.beginServiceAreaProgress([10, 11]);
 
     const cluster = vacuum.buildServiceAreaCluster();
-    expect(cluster.currentArea).toBe(10);
+    expect(cluster.currentArea).toBeNull();
     expect(cluster.progress).toEqual([
       { areaId: 10, status: 1 }, // operating
-      { areaId: 11, status: 0 }, // pending
+      { areaId: 11, status: 1 }, // operating
     ]);
   });
 
@@ -1527,7 +1543,8 @@ describe("A run the plugin did not start is still a run", () => {
 
     const cluster = vacuum.buildServiceAreaCluster();
     expect(cluster.progress).toEqual([{ areaId: 11, status: 1 }]);
-    expect(cluster.currentArea).toBe(11);
+    // Not named before the robot reports cleaning there (getCurrentServiceArea).
+    expect(cluster.currentArea).toBeNull();
   });
 });
 
@@ -1549,6 +1566,8 @@ describe("Service Area progress persistence across restarts", () => {
       false
     );
     first.beginServiceAreaProgress([10]);
+    first.serviceAreaCurrentArea = 10; // live tracking resolved the room
+    first.persistServiceAreaProgress();
     expect(context.serviceAreaProgressState).toEqual({
       currentArea: 10,
       progress: [{ areaId: 10, status: 1 }],

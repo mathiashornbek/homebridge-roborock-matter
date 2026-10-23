@@ -46,6 +46,22 @@ function operationalStateCluster(matterUpdates) {
     }
 
     Object.assign(cluster, update.attributes);
+
+    // matter.js 0.17.9 also forces the state to Error the moment a fault is
+    // written (RvcOperationalStateServer#handleOperationalError, see
+    // test-support/matter-0.17.9-store.js). Without this the helper could
+    // report a state beside a fault that the real store never holds.
+    const errorStateId = cluster.operationalError?.errorStateId;
+    if (
+      Object.prototype.hasOwnProperty.call(
+        update.attributes,
+        "operationalError"
+      ) &&
+      typeof errorStateId === "number" &&
+      errorStateId !== 0
+    ) {
+      cluster.operationalState = 3;
+    }
   }
 
   return cluster;

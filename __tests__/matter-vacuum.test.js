@@ -98,6 +98,17 @@ function createPlatform({
   };
 }
 
+/**
+ * The value a publish would carry for one attribute — the snapshot the
+ * accessory builds, read without writing it. (Homebridge never reads an
+ * accessory's `getState`; the tests used it as this probe, so the probe lives
+ * here now.)
+ */
+function attachSnapshotReader(accessory, vacuum) {
+  accessory.getState = async (cluster, attribute) =>
+    vacuum.buildClusters()[cluster]?.[attribute];
+}
+
 function createAccessory(platform, isRegistered = false) {
   const accessory = { UUID: "uuid-1", context: { duid: "device-1" } };
   const vacuum = new RoborockMatterVacuumAccessory(
@@ -106,19 +117,35 @@ function createAccessory(platform, isRegistered = false) {
     { duid: "device-1" },
     isRegistered
   );
+  attachSnapshotReader(accessory, vacuum);
   return { accessory, vacuum };
 }
 
 describe("Matter clean mode capabilities", () => {
   test("is exposed by default", () => {
-    const platform = createPlatform();
+    const platform = createPlatform({
+      capabilities: { canVacuum: true, canMop: true },
+    });
     const { accessory } = createAccessory(platform);
 
     expect(accessory.clusters.rvcCleanMode).toBeDefined();
     expect(accessory.handlers.rvcCleanMode).toBeDefined();
-    expect(accessory.clusters.rvcCleanMode.supportedModes).toHaveLength(1);
+    expect(accessory.clusters.rvcCleanMode.supportedModes).toHaveLength(3);
     expect(accessory.clusters.rvcCleanMode).not.toHaveProperty("startUpMode");
     expect(accessory.clusters.rvcCleanMode).not.toHaveProperty("onMode");
+  });
+
+  test("is not announced with fewer than the two modes Matter requires", () => {
+    // ModeBase SupportedModes is constrained to 2-255 entries, and matter.js
+    // validates an endpoint's initial state when it registers: a robot with
+    // no mop and no suction levels has only "Vacuum", and no choice to offer.
+    const platform = createPlatform({
+      capabilities: { canVacuum: true, canMop: false },
+    });
+    const { accessory } = createAccessory(platform);
+
+    expect(accessory.clusters.rvcCleanMode).toBeUndefined();
+    expect(accessory.handlers.rvcCleanMode).toBeUndefined();
   });
 
   test("can be disabled independently for controller compatibility", async () => {
@@ -167,18 +194,24 @@ describe("Matter clean mode capabilities", () => {
 
   test("hides mop modes for vacuum-only models", () => {
     const platform = createPlatform({
-      capabilities: { canVacuum: true, canMop: false },
+      capabilities: {
+        canVacuum: true,
+        canMop: false,
+        canControlFanPower: true,
+      },
     });
     const { accessory } = createAccessory(platform);
 
     const labels = accessory.clusters.rvcCleanMode.supportedModes.map(
       (mode) => mode.label
     );
-    expect(labels).toEqual(["Vacuum"]);
+    expect(labels).not.toContain("Mop");
+    expect(labels).not.toContain("Vacuum + Mop");
+    expect(labels[0]).toBe("Vacuum");
   });
 });
 
-describe("Matter getState", () => {
+describe("the published snapshot", () => {
   test("returns a value for the requested cluster only", async () => {
     const platform = createPlatform({
       capabilities: { canVacuum: true, canMop: true },
@@ -285,52 +318,68 @@ describe("Matter startup state updates", () => {
     ).toBeNull();
   });
 
-  test("skips unchanged clusters on refresh; the forced heartbeat republishes in full", async () => {
+  test("writes only what the store does not hold, so a refused write comes back on the next publish", async () => {
+    // What Homebridge 2.4.0 lets the plugin see: the store, read back with
+    // api.matter.getAccessoryState. A write matter.js refuses is only logged
+    // by Homebridge; the plugin finds out by reading the store.
+    const {
+      createMatterStore,
+    } = require("../test-support/matter-0.17.9-store");
+    let store;
+    let refuseNextRunModeWrite = false;
     const matterUpdates = [];
     const platform = createPlatform({
       enableMatterCleanMode: false,
       enableMatterPowerSource: false,
       enableMatterServiceArea: false,
-      matterUpdates,
       status: { state: 8, battery: 100 },
     });
-    const { vacuum } = createAccessory(platform, true);
+    const { accessory, vacuum } = createAccessory(platform, true);
+    store = createMatterStore(accessory.clusters);
+    const matter = {
+      // A refused write resolves like any other: Homebridge only logs it.
+      updateAccessoryState: async (uuid, cluster, attributes) => {
+        matterUpdates.push({ uuid, cluster, attributes });
+        if (cluster === "rvcRunMode" && refuseNextRunModeWrite) {
+          refuseNextRunModeWrite = false;
+          return;
+        }
+        await store.updateAccessoryState(uuid, cluster, attributes);
+      },
+      getAccessoryState: (uuid, cluster) =>
+        store.getAccessoryState(uuid, cluster),
+    };
+    platform.getMatterApi = () => matter;
 
     await vacuum.updateMatterStateFromRoborock();
-    const firstBatch = matterUpdates.map((update) => ({ ...update }));
-    expect(firstBatch.length).toBeGreaterThan(0);
-
-    // Identical snapshot: nothing is re-sent. Tracking entries are recorded
-    // only after each cluster write is CONFIRMED and all publishes are
-    // serialized, so the store cannot drift silently — and the forced
-    // heartbeat below rewrites everything periodically as the safety net.
+    // The registration defaults already hold most of it.
     matterUpdates.length = 0;
+
+    // Identical snapshot: the store holds all of it, nothing is written —
+    // not by a refresh and not by the heartbeat.
     await vacuum.updateMatterStateFromRoborock();
+    await vacuum.publishCurrentMatterState("heartbeat test");
     expect(matterUpdates).toEqual([]);
 
-    // The heartbeat path (publishCurrentMatterState) forces a full write —
-    // with exactly one carve-out, added in 3.30.0. `operationalState` is not
-    // re-written when it has not moved, because in @matter/main 0.17.9 any
-    // write of it clears `operationalError`, and the forced heartbeat was
-    // therefore clearing and re-raising a standing tank fault once a minute
-    // (#5, #9, #26). Everything else in the snapshot still goes out.
-    await vacuum.publishCurrentMatterState("heartbeat test");
+    // The robot starts cleaning, and matter.js refuses the run-mode write.
+    platform.roborockAPI.getVacuumDeviceStatus = (duid, property) =>
+      ({ state: 5, battery: 100 })[property] ?? "";
+    refuseNextRunModeWrite = true;
+    await vacuum.updateMatterStateFromRoborock();
+    expect(store.read("rvcRunMode", "currentMode")).toBe(RUN_MODE_IDLE);
 
-    const withoutUnchangedState = firstBatch.map((update) => {
-      if (update.cluster !== "rvcOperationalState") {
-        return update;
-      }
-      const { operationalState, ...rest } = update.attributes;
-      return { ...update, attributes: rest };
-    });
-    expect(matterUpdates).toEqual(withoutUnchangedState);
-
-    // And the carve-out is only that: the rest of the cluster is still there.
-    const republished = matterUpdates.find(
-      (update) => update.cluster === "rvcOperationalState"
-    );
-    expect(republished.attributes.operationalStateList).toBeDefined();
-    expect(republished.attributes).not.toHaveProperty("operationalState");
+    // The very next ordinary publish writes it again: nothing remembered
+    // it as published.
+    matterUpdates.length = 0;
+    await vacuum.updateMatterStateFromRoborock();
+    expect(matterUpdates).toEqual([
+      {
+        uuid: "uuid-1",
+        cluster: "rvcRunMode",
+        attributes: { currentMode: RUN_MODE_CLEANING },
+      },
+    ]);
+    expect(store.read("rvcRunMode", "currentMode")).toBe(RUN_MODE_CLEANING);
   });
 
   test("a heartbeat re-asserts operationalState once the robot actually moves", async () => {
@@ -406,15 +455,17 @@ describe("Matter startup state updates", () => {
 
     // The newest snapshot is the last one written, so the Matter store always
     // converges on the latest Roborock state.
-    const operationalWrites = writeLog.filter(
-      (write) => write.cluster === "rvcOperationalState"
+    const stateWrites = writeLog.filter(
+      (write) =>
+        write.cluster === "rvcOperationalState" &&
+        "operationalState" in write.attributes
     );
-    expect(operationalWrites.at(-1).attributes.operationalState).toBe(
+    expect(stateWrites.at(-1).attributes.operationalState).toBe(
       RVC_OPERATIONAL_STATE_RUNNING
     );
   });
 
-  test("background heartbeat republishes the full snapshot without identify or phase churn", async () => {
+  test("background heartbeat republishes the snapshot without identify or phase churn", async () => {
     jest.useFakeTimers();
     const matterUpdates = [];
     const platform = createPlatform({
@@ -438,18 +489,6 @@ describe("Matter startup state updates", () => {
       matterUpdates.find((update) => update.cluster === "rvcRunMode").attributes
         .currentMode
     ).toBe(RUN_MODE_CLEANING);
-    // The robot has not moved since the message above, so the heartbeat does
-    // not re-write `operationalState` — that is the 3.30.0 rule, and it is
-    // what stops the tank fault being cleared and re-raised every minute
-    // (#5, #9, #26). The store still holds Running; the heartbeat just does
-    // not touch it.
-    expect(
-      matterUpdates.find((update) => update.cluster === "rvcOperationalState")
-        .attributes
-    ).not.toHaveProperty("operationalState");
-    expect(vacuum.publishedOperationalState).toBe(
-      RVC_OPERATIONAL_STATE_RUNNING
-    );
     expect(
       matterUpdates.find((update) => update.cluster === "rvcOperationalState")
         .attributes.currentPhase
@@ -457,41 +496,6 @@ describe("Matter startup state updates", () => {
     expect(matterUpdates.some((update) => update.cluster === "identify")).toBe(
       false
     );
-  });
-
-  test("serves HomeKit reads from cache without triggering publishes", async () => {
-    jest.useFakeTimers();
-    const matterUpdates = [];
-    const platform = createPlatform({
-      enableMatterCleanMode: false,
-      enableMatterPowerSource: false,
-      enableMatterServiceArea: false,
-      matterUpdates,
-      status: { state: 8, battery: 100, charge_status: 1 },
-    });
-    const { accessory } = createAccessory(platform, true);
-
-    // Docked at 100% reads as Docked since Charging/Docked began defaulting
-    // on. What is being pinned is that the read is served from cache.
-    expect(
-      await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
-    expect(await accessory.getState("rvcRunMode", "currentMode")).toBe(
-      RUN_MODE_IDLE
-    );
-
-    await jest.advanceTimersByTimeAsync(0);
-
-    expect(matterUpdates).toEqual([]);
-    expect(matterUpdates.some((update) => update.cluster === "identify")).toBe(
-      false
-    );
-
-    matterUpdates.length = 0;
-    await accessory.getState("rvcRunMode", "currentMode");
-    await jest.advanceTimersByTimeAsync(0);
-
-    expect(matterUpdates).toEqual([]);
   });
 
   test("uses full room mapping refreshes when service area is disabled", async () => {
@@ -516,31 +520,6 @@ describe("Matter startup state updates", () => {
     expect(
       matterUpdates.some((update) => update.cluster === "serviceArea")
     ).toBe(false);
-  });
-
-  test("retries state refresh when Homebridge endpoint is still initializing", async () => {
-    jest.useFakeTimers();
-    const matterUpdates = [];
-    const updateAccessoryState = jest
-      .fn()
-      .mockRejectedValueOnce(new Error("uuid-1 is still initializing"))
-      .mockImplementation(async (uuid, cluster, attributes) => {
-        matterUpdates.push({ uuid, cluster, attributes });
-      });
-    const platform = createPlatform({ updateAccessoryState });
-    const { vacuum } = createAccessory(platform, true);
-
-    await vacuum.updateMatterStateFromRoborock();
-
-    expect(platform.log.debug).toHaveBeenCalledWith(
-      expect.stringContaining("endpoint is still initializing")
-    );
-    expect(matterUpdates.length).toBeGreaterThan(0);
-
-    await jest.advanceTimersByTimeAsync(1000);
-    await jest.advanceTimersByTimeAsync(0);
-
-    expect(updateAccessoryState.mock.calls.length).toBeGreaterThan(3);
   });
 });
 

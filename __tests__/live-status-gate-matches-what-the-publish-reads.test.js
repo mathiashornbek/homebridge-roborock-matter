@@ -15,6 +15,11 @@
 // So this file pins the RULE, not the two field names: every field the publish
 // path reads out of a live frame must also open the gate. A field added
 // tomorrow is covered the moment it is read.
+//
+// Since the fix for #28 the list no longer decides what is REMEMBERED from an
+// accepted frame — every numeric field is (rememberLiveStatusFrame) — so the
+// list only has to say which fields make a frame a status. The last test below
+// pins that a field on no list at all still reaches the cache.
 
 const fs = require("fs");
 const path = require("path");
@@ -140,7 +145,7 @@ describe("the live-status gate names every field the publish reads", () => {
 
   test("the caller derives its emptiness check from the same shared list", () => {
     expect(source).toMatch(
-      /MEANINGFUL_LIVE_STATUS_FIELDS\.every\(\s*\(field\) => meaningfulValues\[field\] === null\s*\)/
+      /MEANINGFUL_LIVE_STATUS_FIELDS\.every\(\s*\(field\) => this\.getNumberFromValue\(status\[field\]\) === null\s*\)/
     );
   });
 
@@ -148,7 +153,7 @@ describe("the live-status gate names every field the publish reads", () => {
     const declared = readMeaningfulFieldList(source);
     const read = readFieldsThePublishReads(source);
 
-    expect(read.length).toBeGreaterThanOrEqual(7);
+    expect(read.length).toBeGreaterThanOrEqual(1);
     const missing = read.filter((field) => !declared.includes(field));
     expect(missing).toEqual([]);
   });
@@ -209,5 +214,17 @@ describe("a frame carrying only one meaningful field still reaches Matter", () =
     ]);
 
     expect(matterUpdates).toEqual([]);
+  });
+
+  test("a field on no list is still remembered from an accepted frame", async () => {
+    const platform = createPlatform({ status: { state: 5, battery: 60 } });
+    const { vacuum } = createAccessory(platform);
+
+    // `in_cleaning` is in every get_status reply and nowhere in HomeData.
+    await vacuum.notifyDeviceUpdater("CloudMessage", [
+      { state: 10, in_cleaning: 3 },
+    ]);
+
+    expect(vacuum.getNumberStatus("in_cleaning")).toBe(3);
   });
 });

@@ -1,4 +1,7 @@
-import { setTimeout as nodeSetTimeout } from "node:timers";
+import {
+  setImmediate as nodeSetImmediate,
+  setTimeout as nodeSetTimeout,
+} from "node:timers";
 
 import RoborockPlatform from "./platform";
 import { getLiveMessageForThisAccessory } from "./live_message";
@@ -26,7 +29,6 @@ type MatterAccessory = {
   context: Record<string, unknown>;
   clusters?: Record<string, Record<string, unknown>>;
   handlers?: Record<string, Record<string, unknown>>;
-  getState?: (cluster: string, attribute: string) => Promise<unknown>;
 };
 
 type MatterClusterState = Record<string, Record<string, unknown>>;
@@ -183,11 +185,13 @@ interface RoborockApi {
     options?: RoborockStatusRefreshOptions
   ): Promise<void>;
   getTransportDiagnostics?(): Record<string, unknown> | null | undefined;
+  getLastKnownLiveStatus?(duid: string): unknown;
 }
 
 const RUN_MODE_IDLE = 0;
 const RUN_MODE_CLEANING = 1;
-// Live status entries older than this fall back to the HomeData snapshot.
+// Live status entries older than this give way to the HomeData snapshot for
+// the fields HomeData carries (see getNumberStatus).
 const LIVE_STATUS_STALENESS_MS = 15 * 60 * 1000;
 
 // The status fields a live frame can carry that the Matter publish actually
@@ -208,6 +212,12 @@ const LIVE_STATUS_STALENESS_MS = 15 * 60 * 1000;
 // remembered — and Roborock sends sparse frames as a matter of course. That
 // is the same bug 3.12.1 fixed one layer up, and the gate test caught the
 // second attempt at it.
+//
+// This list only decides WHETHER a frame is a status. What is remembered from
+// an accepted frame is every numeric field it carries (rememberLiveStatusFrame),
+// so a field read later can no longer be missing from a hand-written list.
+// `water_box_mode` is here because the robot pushes it alone (dps 124) when the
+// water level is changed in the Roborock app.
 const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "state",
   "charge_status",
@@ -215,6 +225,7 @@ const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "clean_area",
   "clean_time",
   "fan_power",
+  "water_box_mode",
   "matter_clean_type",
   "dock_error_status",
   "water_shortage_status",
@@ -312,7 +323,7 @@ const ROBOROCK_WATER_BOX_MILD = 201;
  * Floor on how many DISTINCT live-room observations a room needs before the
  * plugin will call it visited. This is only a floor: the dwell below is what
  * actually separates cleaning a room from crossing it. See
- * `liveRoomVisitAreaId`.
+ * `liveRoomVisit`.
  */
 const LIVE_ROOM_READINGS_TO_CONFIRM = 2;
 
@@ -413,32 +424,96 @@ const DOCK_TYPES_WITHOUT_TANKS: ReadonlySet<number> = new Set([0, 1, 5]);
  */
 const OPERATIONAL_STATE_CLUSTER = "rvcOperationalState";
 
-/**
- * How many forced publishes (heartbeats) may pass before `operationalState`
- * is re-written even though it has not changed.
- *
- * 10 heartbeats is about 10 minutes. That restores the self-healing the
- * heartbeat provided before 3.30.0, at a rate far too low for the
- * wipe/raise pair matter.js 0.17.9 performs to become a notification anyone
- * notices — the fault cycle needed one every single minute.
- */
-const RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES = 10;
+/** The part of Homebridge's `api.matter` this class writes through. */
+type MatterStoreApi = {
+  updateAccessoryState: (
+    uuid: string,
+    cluster: string,
+    attributes: Record<string, unknown>
+  ) => Promise<unknown>;
+  getAccessoryState?: (
+    uuid: string,
+    cluster: string
+  ) => Promise<Record<string, unknown> | undefined>;
+};
 
 /**
- * Roborock states that mean the robot is busy, but that getRoborockOperational
- * State() has no arm for (python-roborock `RoborockStateCode`): 25 washing the
- * mop, 28 in a call, 30 egg attack, 32 patrol, 33/34 attaching/detaching the
- * mop, 6301-6310 the mopping states. Not at rest, so never beside a fault.
+ * A Matter value in a form that compares equal however its keys came back.
+ *
+ * Homebridge's `getAccessoryState` hands back matter.js's own copy of a
+ * struct, whose key order need not be the order this class built it in, and
+ * which may carry optional fields as `undefined`.
  */
-function isRoborockBusyStateWithoutAName(state: number): boolean {
+function canonicalMatterValue(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    inner !== null && typeof inner === "object" && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner as Record<string, unknown>)
+            .filter(([, entry]) => entry !== undefined)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        )
+      : inner
+  );
+}
+
+function isSameMatterValue(a: unknown, b: unknown): boolean {
+  return canonicalMatterValue(a) === canonicalMatterValue(b);
+}
+
+/**
+ * The attributes of `wanted` the store does not already hold — all of them
+ * when the store could not be read.
+ */
+function attributesTheStoreLacks(
+  wanted: Record<string, unknown>,
+  stored: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!stored) {
+    return { ...wanted };
+  }
+  return Object.fromEntries(
+    Object.entries(wanted).filter(
+      ([attribute, value]) => !isSameMatterValue(value, stored[attribute])
+    )
+  );
+}
+
+/**
+ * One turn of the event loop's check phase. Homebridge applies each
+ * `updateAccessoryState` in a setImmediate (StateManager.js), so a publish
+ * that waits for this before the next one reads the store back reads what it
+ * wrote. node:timers' own function on purpose: it must be the real check
+ * phase, also under a test's fake timers.
+ */
+function afterDeferredMatterWrites(): Promise<void> {
+  return new Promise((resolve) => nodeSetImmediate(resolve));
+}
+
+/**
+ * Roborock states that say the robot is busy with something Matter has no
+ * operational state for (python-roborock `RoborockStateCode`): 28 in a call,
+ * 30 egg attack, 32 patrol, 33/34 attaching/detaching the mop. They keep the
+ * operational state the robot was last in (getRoborockOperationalState), the
+ * way a dock chore keeps the run mode: DSimeone's a144 reports 33 with
+ * `in_cleaning: 3` in the middle of a room clean (#22), and at an idle dock
+ * after one.
+ */
+function isRoborockStateWithoutAMatterName(state: number): boolean {
   return (
-    state === 25 ||
-    state === 28 ||
-    state === 30 ||
-    state === 32 ||
-    state === 33 ||
-    state === 34 ||
-    (state >= 6301 && state <= 6310)
+    state === 28 || state === 30 || state === 32 || state === 33 || state === 34
+  );
+}
+
+/** python-roborock's mopping states: 6301-6309 on the floor, 6310 heading home to wash. */
+const ROBOROCK_MOPPING_STATE_FIRST = 6301;
+const ROBOROCK_MOPPING_STATE_LAST_ON_THE_FLOOR = 6309;
+const ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER = 6310;
+
+function isRoborockMoppingOnTheFloor(state: number | null): boolean {
+  return (
+    state !== null &&
+    state >= ROBOROCK_MOPPING_STATE_FIRST &&
+    state <= ROBOROCK_MOPPING_STATE_LAST_ON_THE_FLOOR
   );
 }
 
@@ -460,9 +535,9 @@ const IN_CLEANING_SEGMENT = 3;
  * stopped. Issue #35 decoded exactly that off the wire: the plugin logged
  * Running with fault 68, the report carried operationalState 3, and the tile
  * said "Refill the water tank" while the robot mopped two rooms. A robot that
- * is working, paused, driving home or busy at the dock is not blocked by an
- * empty tank, so only a robot at rest — or one that really is in Error — gets
- * the fault.
+ * is working, paused or driving home from a run is not blocked by an empty
+ * tank, so a fault is only raised beside one of these states. One already
+ * standing is kept through housekeeping at an idle dock (canCarryAFault).
  */
 const OPERATIONAL_STATES_THAT_CARRY_A_FAULT: ReadonlySet<number> = new Set([
   RVC_OPERATIONAL_STATE.STOPPED,
@@ -480,22 +555,22 @@ const OPERATIONAL_STATES_THAT_CARRY_A_FAULT: ReadonlySet<number> = new Set([
  * 0 is `NoError` and has to be published too: an error attribute that is only
  * ever written when something is wrong never clears.
  *
- * WHY THIS LIST STOPS AT 71.
+ * THE CODES ABOVE 71.
  *
- * The enum continues: the specification adds LowBattery (72),
- * CannotReachTargetArea (73), DirtyWaterTankFull (74), DirtyWaterTankMissing
- * (75), WheelsJammed (76), BrushJammed (77) and NavigationSensorObscured (78).
- * Several of those name a Roborock fault exactly, and mapping to them would
- * read better than the generic codes used below.
+ * The enum continues: LowBattery (72), CannotReachTargetArea (73),
+ * DirtyWaterTankFull (74), DirtyWaterTankMissing (75), WheelsJammed (76),
+ * BrushJammed (77) and NavigationSensorObscured (78). They came with RVC
+ * Operational State cluster revision 3 in Matter 1.4.2 — the revision that
+ * also added the dock states 0x43-0x46 this plugin publishes and Apple Home
+ * draws — and matter.js 0.17.9, the build Homebridge 2.4.0 ships, defines and
+ * accepts all of them (@matter/types rvc-operational-state ErrorState, enforced
+ * by its ValueValidator). Whether Apple Home renders them is unmeasured.
  *
- * They are all Matter 1.5. Everything from 0 to 71 has been in the cluster
- * since 1.2. Nothing here establishes which revision Apple implements, and
- * this file already carries one measurement of what Apple does with a value
- * it does not recognise: a manufacturer-range id in `operationalStateList`
- * leaves the tile in "Connecting" forever. A fault that renders as nothing
- * would only cost the message; a fault that wedges the accessory costs the
- * robot. Until somebody looks at a tile with 76 on it, the 1.2 set is what
- * gets published, and the accurate 1.5 name goes in the log line instead.
+ * DirtyWaterTankFull is published, because nothing else can say it (#26). The
+ * robot faults keep their ≤71 codes with the closer name in the log line,
+ * until somebody looks at a tile with 76 on it. DirtyWaterTankMissing is not
+ * published: no Roborock signal tells a missing dirty tank from a full one
+ * (see isDirtyWaterTankFull).
  */
 const RVC_OPERATIONAL_ERROR = {
   NO_ERROR: 0,
@@ -509,6 +584,7 @@ const RVC_OPERATIONAL_ERROR = {
   WATER_TANK_MISSING: 69,
   WATER_TANK_LID_OPEN: 70,
   MOP_CLEANING_PAD_MISSING: 71,
+  DIRTY_WATER_TANK_FULL: 74,
 } as const;
 
 /**
@@ -559,6 +635,7 @@ const RVC_OPERATIONAL_ERROR_NAMES: Readonly<Record<number, string>> = {
   [RVC_OPERATIONAL_ERROR.WATER_TANK_MISSING]: "Water tank missing",
   [RVC_OPERATIONAL_ERROR.WATER_TANK_LID_OPEN]: "Water tank lid open",
   [RVC_OPERATIONAL_ERROR.MOP_CLEANING_PAD_MISSING]: "Mop pad missing",
+  [RVC_OPERATIONAL_ERROR.DIRTY_WATER_TANK_FULL]: "Dirty water tank full",
 };
 
 /**
@@ -574,9 +651,9 @@ const RVC_OPERATIONAL_ERROR_NAMES: Readonly<Record<number, string>> = {
  * `roborock` is the plugin's own text and is logged, not published — the
  * `ErrorStateLabel`/`ErrorStateDetails` fields that could carry it are
  * unmeasured on Apple Home and this attribute has a history of being brittle.
- * `spec` names the Matter 1.5 code that would be more accurate than the id
- * actually sent, and is logged for the same reason: so the next person can see
- * what the mapping gave up and why.
+ * `spec` names the Matter 1.4.2 code (cluster revision 3) that would be more
+ * accurate than the id actually sent, and is logged for the same reason: so
+ * the next person can see what the mapping gave up and why.
  */
 const ROBOROCK_ERROR_TO_MATTER: ReadonlyMap<
   number,
@@ -790,13 +867,18 @@ const DOCK_ACTIVITY_STATES: ReadonlySet<number> = new Set([
 // that never left its dock stays Idle through the one-second transit blip the
 // dock leaves behind after emptying the dust bin (issue #9, second report).
 //
-// This happens to hold the same members as EXTENDED_OPERATIONAL_STATES today.
+// A robot that halts is the same: stuck under the sofa mid-run it has not
+// finished, and at an idle dock it has not started. Deciding Idle for it told
+// Apple Home a stuck robot had finished its run.
+//
+// The transit and chore members happen to match EXTENDED_OPERATIONAL_STATES.
 // That is a coincidence of Roborock's state table, not a shared meaning — one
 // says what a toggle may display, the other says what may claim a cleaning —
 // so do not merge them.
 const RUN_MODE_INHERITED_STATES: ReadonlySet<number> = new Set([
   ...DOCK_ACTIVITY_STATES,
   RVC_OPERATIONAL_STATE.SEEKING_CHARGER,
+  RVC_OPERATIONAL_STATE.ERROR,
 ]);
 
 // The states that the "Extended Operational States" toggle unlocks. Publishing
@@ -864,17 +946,12 @@ const MATTER_RETURN_TO_DOCK_STATUS_REFRESH_DELAYS_MS = [
   2000, 15000, 30000, 60000, 90000, 120000, 150000, 180000,
 ] as const;
 const MATTER_RETURN_TO_DOCK_RETRY_DELAY_MS = 7000;
-// Slow hosts (Raspberry Pi class hardware, busy child-bridge restarts) can
-// keep the Homebridge Matter endpoint initializing well past 14 seconds, so
-// back off further before giving up and waiting for the next live update.
-const MATTER_INITIALIZATION_RETRY_DELAYS_MS = [
-  1000, 3000, 10000, 30000, 60000,
-] as const;
 const ROOM_CLEAN_STATE = 18;
 const PAUSED_STATE = 10;
-// Low-frequency safety net. Every publish is a full coherent snapshot and
-// matter.js suppresses no-op writes, so this generates no Matter traffic
-// unless the store actually drifted from the latest Roborock state.
+// Low-frequency safety net. Every publish reads the store back and writes
+// only what differs, so this generates no Matter traffic unless the store
+// actually drifted from the latest Roborock state (or a timed overlay, such
+// as the optimistic state after a command, expired).
 const MATTER_STATE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 /** The optimistic overlay a start, area clean or resume lays over the tile. */
@@ -902,13 +979,16 @@ export default class RoborockMatterVacuumAccessory {
   private selectedServiceAreaIds: number[] = [];
   private roomCleaningAreaConfirmed = false;
   private lastServiceAreaSummary = "";
+  private lastReportedRoomsWithoutAMap = "";
   // ONE stamp for the whole cache, deliberately. 3.35.0 tried one per field
   // and review found the cost: the tank fields arrive only with a full
   // get_status, so between status replies they expired while battery pushes
   // kept everything else fresh — the tank verdict went unknown, HomeData's
   // `error_code: 0` then read as "nothing wrong", the standing tank fault was
   // cleared and raised again on the next status: a second notification for
-  // one empty tank, the very thing #9 and #26 were about.
+  // one empty tank, the very thing #9 and #26 were about. The same thing then
+  // happened to the whole cache after 15 quiet minutes, until stale values
+  // stopped giving way to HomeData for fields HomeData does not carry.
   private liveStatusUpdatedAt = 0;
   // The last "Matter publish for …" line actually written to the log. The
   // emit decision compares rendered lines rather than a hand-picked field
@@ -956,30 +1036,26 @@ export default class RoborockMatterVacuumAccessory {
    * `Date.now()` at processing time: it is the interval the robot was actually
    * seen in the room, not the interval during which we happened to look.
    */
-  private liveRoomVisitAreaId: number | null = null;
-  private liveRoomVisitReadings = 0;
-  // First and most recent observation timestamps of the CURRENT visit. Their
-  // difference is the dwell. In-memory only, like liveConfirmedServiceAreaIds.
-  private liveRoomVisitFirstSeenAt: number | null = null;
-  private liveRoomVisitLastSeenAt: number | null = null;
-  // Per-cluster JSON of the last CONFIRMED publish. Used to skip republishing
-  // identical cluster payloads on every poll/heartbeat. Safe against the
-  // historical "Updating..." desync (see updateMatterState comment) because
-  // (a) all publishes are serialized through matterPublishChain, (b) entries
-  // are recorded only after the individual cluster write succeeded and are
-  // dropped on failure, and (c) the heartbeat performs a forced full publish
-  // every cycle, self-healing any residual divergence within a minute.
-  private readonly lastPublishedClusterJson = new Map<string, string>();
-  // What the RvcOperationalState store is believed to hold, per attribute
-  // rather than per cluster, because those two attributes interfere with each
-  // other inside matter.js. See writeOperationalStateCluster().
-  private publishedOperationalState: number | undefined;
-  private publishedOperationalError: number | undefined;
-  // How many forced publishes in a row have skipped operationalState. See
-  // writeOperationalStateCluster(): without this, a write matter.js rejects
-  // silently can never come back.
-  private forcedWritesSinceOperationalState = 0;
+  // The current visit: the room, how many distinct readings saw the robot
+  // in it, and the first and most recent of their timestamps (the dwell is
+  // their difference). In-memory only, like liveConfirmedServiceAreaIds.
+  private liveRoomVisit: {
+    areaId: number;
+    readings: number;
+    firstSeenAt: number;
+    lastSeenAt: number;
+  } | null = null;
   private serviceAreaProgress: Array<{ areaId: number; status: number }> = [];
+  // What the room list said before a Matter start announced its rooms, kept
+  // until the robot is seen running. A start that fails, or that the robot
+  // acknowledges and never acts on, puts it back: those rooms were not cleaned.
+  private serviceAreaProgressBeforeStart: {
+    currentArea: number | null;
+    progress: Array<{ areaId: number; status: number }>;
+  } | null = null;
+  // Matter asked the robot to stop this run, so the rooms it was not seen
+  // cleaning end Skipped rather than Completed.
+  private serviceAreaStopRequested = false;
   private selectedCleanMode = CLEAN_MODE_VACUUM;
   private selectedCleanModeNeedsApply = false;
   private selectedCleanModeLiveConfirmationExpiresAt = 0;
@@ -998,6 +1074,10 @@ export default class RoborockMatterVacuumAccessory {
   // resolveRunMode(). Idle is the honest starting point: a plugin that boots
   // while the dock is emptying knows of no run in progress.
   private lastRunMode = RUN_MODE_IDLE;
+  // The operational state the robot last reported through a state that has a
+  // Matter name. A state without one (isRoborockStateWithoutAMatterName) keeps
+  // it. Null until a live frame has said, so the default arm decides.
+  private lastNamedRoborockOperationalState: number | null = null;
   // The run mode as it went out to Matter, optimistic overlay included. The
   // read-only "Cleaning" state sensor answers from this so it and the Apple
   // Home tile always say the same thing. Null until the first publish.
@@ -1028,15 +1108,13 @@ export default class RoborockMatterVacuumAccessory {
   private lastVacuumFanPower: number | null = null;
   private lastWaterBoxMode: number | null = null;
   private readonly reportedUnmappedErrorCodes = new Set<number>();
-  private matterInitializationRetryAttempt = 0;
-  private matterInitializationRetryPending = false;
   private returnToDockRetryPending = false;
   private matterStateHeartbeatTimer: ReturnType<typeof nodeSetTimeout> | null =
     null;
-  // Serializes every Matter publish so concurrent publishers (live messages,
-  // refreshes, command paths) cannot land out of order. Homebridge defers each
-  // updateAccessoryState via setImmediate, so without this chain an older
-  // snapshot can overwrite a newer one and leave Apple Home on stale state.
+  // Serializes every Matter publish (live messages, refreshes, command
+  // paths, the heartbeat). Each publish reads the store back and writes only
+  // what differs, so it must not read while the previous publish's writes are
+  // still queued in Homebridge — see updateMatterState().
   private matterPublishChain: Promise<void> = Promise.resolve();
   // Freshest status values seen from live Roborock messages. Preferred over the
   // slower HomeData snapshot when rebuilding clusters so registration snapshots
@@ -1050,8 +1128,28 @@ export default class RoborockMatterVacuumAccessory {
     isRegistered = false
   ) {
     this.registered = isRegistered;
-    this.updateMetadata(device);
+    this.seedFromLastKnownLiveStatus(device.duid);
+    // Before the registration defaults are built, so they carry it.
     this.restoreServiceAreaProgress();
+    this.updateMetadata(device);
+  }
+
+  /**
+   * Start from the status the robot has already reported, if there is one.
+   *
+   * Homebridge 2.4.0 registers an external accessory with the clusters built
+   * here as the endpoint's initial state and restores nothing over them (its
+   * cache is loaded after registration). Built from HomeData alone they said
+   * nothing about the tanks, so a standing tank fault was raised again on the
+   * first live status after every restart — one more notification (#26). The
+   * first `get_status` is waited for before discovery, so it is usually known
+   * by now; remembered without publishing, the defaults below carry it.
+   */
+  private seedFromLastKnownLiveStatus(duid: string): void {
+    const status = this.asRecord(this.api.getLastKnownLiveStatus?.(duid));
+    if (status) {
+      this.rememberStatusFrame(status);
+    }
   }
 
   private get api(): RoborockApi {
@@ -1247,12 +1345,14 @@ export default class RoborockMatterVacuumAccessory {
    * One 2-bit tank field out of the dock's `dss` word (python-roborock
    * `v1_containers.py`: clean water at bit 2, dirty water at 4, cleaning fluid
    * at 10). 1 means the tank needs attention — empty, full or not fitted,
-   * depending on the tank — and any other non-zero value means it is fine.
+   * depending on the tank — and any other value means it is fine, 0 included:
+   * python-roborock reads a 0 clean- or dirty-water field as "okay". Reading
+   * it as "not said" let a lingering `water_shortage_status` call a dock that
+   * said "fine" empty (#26's "still empty after refilling").
    *
-   * Null when there is no word, the word is 0 (a dock that reports none of
-   * this), or the field itself is 0 (python-roborock reads that as
-   * "not supported" for the fluid field; here it means "not said" for all
-   * three, so the older signals still decide).
+   * Null when there is no word or the word is 0 (a dock that reports none of
+   * this), and for a cleaning-fluid field of 0, which python-roborock reads as
+   * "not supported" — so the older signals still decide.
    */
   private getDockTankField(shift: number): number | null {
     const dss = this.getNumberStatus("dss");
@@ -1269,13 +1369,16 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
     const value = (dss >> shift) & 3;
-    return value === 0 ? null : value;
+    return value === 0 && shift === DSS_CLEANING_FLUID_SHIFT ? null : value;
   }
 
   /**
    * The dock's dirty-water tank is full (or missing). `dock_error_status` 39
    * says it on the docks that use it; the `dss` word says it on the ones that
-   * carry it, separately from the clean tank.
+   * carry it, separately from the clean tank. Neither tells full from
+   * missing: python-roborock names the `dss` value 1 `full_not_installed` and
+   * dock code 39 `waste_water_tank_full`, "check tank placement or empty as
+   * required". So it goes to Matter as DirtyWaterTankFull either way.
    */
   private isDirtyWaterTankFull(): boolean | null {
     const dockError = this.getNumberStatus("dock_error_status");
@@ -1326,6 +1429,18 @@ export default class RoborockMatterVacuumAccessory {
         text: "Clean water tank empty",
       };
     }
+    // Second, and for the same reasons as the clean tank: the dock cannot wash
+    // a mop with nowhere to put the water, and a vacuum-only run does not
+    // need it. 68 wins when both are flagged — one fault at a time, and 68
+    // is the one measured rendering on a tile.
+    const dirtyTankFull = this.isDirtyWaterTankFull();
+    if (dirtyTankFull === true && !this.isVacuumOnlyModeChosen()) {
+      return {
+        id: RVC_OPERATIONAL_ERROR.DIRTY_WATER_TANK_FULL,
+        text: "full, or not fitted: the dock does not tell them apart",
+      };
+    }
+    const tankKnown = tankEmpty !== null || dirtyTankFull !== null;
 
     const errorCode = this.getNumberStatus("error_code");
     // Which numbering `error_code` is in is asked, not inferred: a Q7 answer
@@ -1346,9 +1461,20 @@ export default class RoborockMatterVacuumAccessory {
       // tank through `dock_error_status` and `dss`, which is what the tank
       // fault above is built from. Known, so not reported as unmapped — #22
       // was asked to report all three pulses — and not a second fault.
-      return tankEmpty !== null
+      return tankKnown
         ? { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" }
         : null;
+    }
+    if (
+      errorCode !== null &&
+      errorCode !== 0 &&
+      !this.isFaultReportingEnabled()
+    ) {
+      // "Report faults" off promises a halted robot keeps reading Ready, and
+      // in matter.js 0.17.9 any fault written here forces the Error state —
+      // so the robot's own fault is not published either. The tank has its
+      // own setting and was decided above.
+      return { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" };
     }
     if (errorCode !== null && errorCode !== 0) {
       // The table is Roborock's v1 numbering. A B01 robot's `fault` field is
@@ -1387,7 +1513,7 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
 
-    if (tankEmpty !== null || errorCode === 0) {
+    if (tankKnown || errorCode === 0) {
       // At least one source affirmatively says it is fine and neither says
       // otherwise. Requiring both to be known would mean a robot that never
       // reports `error_code` could never clear a tank warning after a refill,
@@ -1699,13 +1825,8 @@ export default class RoborockMatterVacuumAccessory {
 
   markRegistered(): void {
     this.registered = true;
-    // Fresh registration: nothing is published on the new node yet.
-    this.lastPublishedClusterJson.clear();
-    this.publishedOperationalState = undefined;
-    this.publishedOperationalError = undefined;
-    this.forcedWritesSinceOperationalState = 0;
-    // …and nothing has been stated about it either, so the evidence line is
-    // restated for the new node instead of being suppressed as unchanged.
+    // Nothing has been stated about the new node yet, so the evidence line is
+    // restated for it instead of being suppressed as unchanged.
     this.lastLoggedMatterPublishLine = null;
   }
 
@@ -1786,12 +1907,8 @@ export default class RoborockMatterVacuumAccessory {
       this.accessory.context = {};
     }
     this.accessory.context.duid = duid;
-    this.accessory.clusters = this.buildClusters();
+    this.accessory.clusters = this.asRegistrationDefaults(this.buildClusters());
     this.accessory.handlers = this.buildHandlers();
-    this.accessory.getState = async (cluster, attribute) => {
-      const clusterState = this.buildCluster(cluster);
-      return clusterState ? clusterState[attribute] : undefined;
-    };
   }
 
   async notifyDeviceUpdater(id: string, data: unknown): Promise<void> {
@@ -1886,7 +2003,7 @@ export default class RoborockMatterVacuumAccessory {
     const heldBackText =
       faultText === "" &&
       typeof opState?.operationalState === "number" &&
-      !this.canCarryAFault(opState.operationalState) &&
+      !this.canCarryAFault() &&
       matterFault !== null &&
       matterFault.id !== RVC_OPERATIONAL_ERROR.NO_ERROR &&
       this.isFaultAttributeEnabled()
@@ -1908,8 +2025,8 @@ export default class RoborockMatterVacuumAccessory {
    * battery happened to tick down. Comparing rendered lines — rather than a
    * hand-written list of interesting fields — means any value the line names
    * triggers it, including one added to the message later. A heartbeat's
-   * forced republish of unchanged values still says nothing new, so the
-   * self-healing full write stays silent at INFO.
+   * republish of unchanged values still says nothing new, so it stays silent
+   * at INFO.
    *
    * It is not silent at debug, and that gap cost issue #7 a round trip. A
    * docked robot at 100 % renders an identical line every time, so its publish
@@ -1987,9 +2104,10 @@ export default class RoborockMatterVacuumAccessory {
   private async identifyVacuum(
     surface: string = MATTER_SURFACE
   ): Promise<void> {
-    await this.publishCurrentMatterState(`${surface} identify command`, {
-      clearOptimistic: true,
-    });
+    // The optimistic overlay is left alone: locating a robot says nothing
+    // about whether it is starting, and clearing it snapped the tile back to
+    // Docked after a Start the robot had not reported yet (#4).
+    await this.publishCurrentMatterState(`${surface} identify command`);
 
     const findMe = this.api.find_me;
     if (typeof findMe !== "function") {
@@ -2012,10 +2130,7 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     await this.publishCurrentMatterState(
-      `${surface} identify command complete`,
-      {
-        clearOptimistic: true,
-      }
+      `${surface} identify command complete`
     );
   }
 
@@ -2042,6 +2157,7 @@ export default class RoborockMatterVacuumAccessory {
           operationalState: RVC_OPERATIONAL_STATE.STOPPED,
         },
       };
+      this.serviceAreaStopRequested = true;
       this.setAndScheduleOptimisticState(state, "stop");
       this.dispatchRoborockMatterCommand("stop", () =>
         this.api.app_stop(duid, this.getMatterCommandOptions())
@@ -2092,6 +2208,7 @@ export default class RoborockMatterVacuumAccessory {
         `Starting ${name} from ${surfacePhrase(surface)} for selected service area(s): ${selectedAreaNames.join(", ")}.`
       );
       const state = cleaningOptimisticState();
+      this.rememberServiceAreaProgressBeforeStart();
       this.beginServiceAreaProgress(areasToClean.map((area) => area.areaId));
       this.setAndScheduleOptimisticState(state, "selected-area start");
       this.dispatchRoborockMatterCommand(
@@ -2112,6 +2229,7 @@ export default class RoborockMatterVacuumAccessory {
 
     this.platform.log.info(`Starting ${name} from ${surfacePhrase(surface)}.`);
     const state = cleaningOptimisticState();
+    this.rememberServiceAreaProgressBeforeStart();
     this.beginFullCleanServiceAreaProgress();
     this.setAndScheduleOptimisticState(state, "start");
     this.dispatchRoborockMatterCommand(
@@ -2444,147 +2562,73 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
-   * Write the RvcOperationalState cluster, one attribute group at a time.
+   * Write the RvcOperationalState cluster against what the store holds.
    *
-   * THE BUG THIS EXISTS FOR, MEASURED. In @matter/main 0.17.9 — the build
-   * Homebridge 2.4.0 actually ships — writing `operationalState` CLEARS a
-   * standing `operationalError` to `{ errorStateId: 0 }`. Measured on 17 Sep
-   * 2026 against 0.17.9, one attribute at a time, with a standing
-   * `operationalError: 68` (Clean water tank empty). The "same value" row was
-   * read at the time as "every write wipes it"; the source says why it did:
-   * the standing fault had already forced the stored state to Error (3), so
-   * writing 0x42 was a change OUT of Error, which is what clears the error
-   * (`RvcOperationalStateServer#assertOperationalState`). The rules below are
-   * the 3.35.0 ones, built on that.
+   * WHAT matter.js 0.17.9 DOES WITH THIS CLUSTER (the build Homebridge 2.4.0
+   * ships; RvcOperationalStateServer, replayed in
+   * test-support/matter-0.17.9-store.js):
    *
-   *   operationalState, same value (0x42) ....... 68 -> 0   WIPED
-   *   operationalState, different value (0x41) .. 68 -> 0   WIPED
-   *   currentPhase, same value .................. 68 -> 68  kept
-   *   currentPhase, different value ............. 68 -> 68  kept
-   *   phaseList ................................. 68 -> 68  kept
-   *   operationalStateList ...................... 68 -> 68  kept
+   * - writing any `operationalError` other than NoError FORCES
+   *   `operationalState` to Error (3) and emits the OperationalError event —
+   *   the event Apple Home turns into a push notification;
+   * - writing an `operationalState` other than Error while the store is in
+   *   Error with a fault standing CLEARS the fault; clearing the fault alone
+   *   does not give the old state back.
    *
-   * So the plugin's own 60-second heartbeat, which re-writes the whole
-   * cluster with force=true, was clearing the tank fault and re-raising it
-   * once a minute — and matter.js emits the cluster's `OperationalError`
-   * EVENT on the 0 -> 68 edge. Six heartbeats produced six attribute changes
-   * and three events: one roughly every two minutes.
+   * Measured on 17 Sep 2026 against 0.17.9 with a standing 68: a write of the
+   * same state (0x42) and of a different one (0x41) both wiped it; phase and
+   * list writes did not. The 60-second heartbeat re-wrote the state, so the
+   * fault was cleared and raised once a minute — the 2-minute "refill the
+   * water tank" in #9, #5 and #26.
    *
-   * That is the notification vp-debug12 reported in #9 ("Rellena el depósito
-   * de agua…", repeating every 2 minutes), Wazza151 in #5, and
-   * n0rt0nthec4t in #26 ("repeated notifications in Home App"). Apple was not
-   * re-raising a standing block, as the comment on isWaterTankEmpty() said
-   * for three releases: the plugin was genuinely re-raising it, through a
-   * matter.js behaviour nobody had measured on the version people run. The
-   * earlier measurement that said otherwise was taken against 0.18.0-alpha,
-   * which does not behave this way.
+   * THE RULES, all decided from the store as it is read back, never from what
+   * this class believes it wrote:
    *
-   * THE RULES (3.30.0, corrected in 3.31.0 and 3.35.0):
+   * 1. A fault being raised is written ALONE. matter.js puts the state at
+   *    Error anyway, and a state written first would only be a second change.
+   * 2. While a fault stands and the snapshot names the same fault, or names
+   *    none (nothing is known — the 3.12.1 rule that an unknown robot clears
+   *    nobody's warning), `operationalState` is not written at all.
+   * 3. NoError is a state write: the robot's real state replaces Error, which
+   *    clears the fault, and the tile gets that state straight back.
+   * 4. Everything else in the cluster is written where it differs; none of it
+   *    touches the fault.
    *
-   * 1. `operationalState` is written only when it differs from what the
-   *    store is believed to hold — Error while a fault stands — and, when no
-   *    fault stands, once every RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES
-   *    heartbeats to heal a write matter.js threw away. While a fault stands
-   *    it is never written at all.
-   * 2. Everything else in the cluster is written normally — none of it
-   *    touches the error.
-   * 3. `operationalError` is written LAST, in its own transaction, and only
-   *    when it differs from what is believed published (or on the resync,
-   *    where the same value is a no-op). Writing `operationalState` out of
-   *    Error invalidates that belief, so the error is re-asserted right
-   *    after a state change.
-   *
-   * Replayed against a model of the real 0.17.9 reactors
-   * (test-support/matter-0.17.9-store.js): an hour of heartbeats with a
-   * standing tank fault raises its event once; clearing it puts the robot's
-   * real state back in the same publish; raising it again is one event.
+   * Because the store is read back, a write matter.js refused is simply
+   * written again on the next publish — and none of the rules depends on a
+   * write having landed, so a store read a moment early can at worst repeat a
+   * write, never wipe a fault and raise it again.
    */
   private async writeOperationalStateCluster(
-    matter: { updateAccessoryState: (...args: any[]) => Promise<unknown> },
+    matter: MatterStoreApi,
     attributes: Record<string, unknown>,
-    options: { force?: boolean } = {}
+    stored: Record<string, unknown> | undefined
   ): Promise<void> {
     const { operationalState, operationalError, ...rest } = attributes;
-    const errorStateId =
-      operationalError === undefined
-        ? undefined
-        : (operationalError as { errorStateId?: number })?.errorStateId;
-
-    // THE STORE, AS 0.17.9 REALLY KEEPS IT (issue #35).
-    //
-    // A fault written into this cluster drags `operationalState` to Error,
-    // and clearing the fault leaves it there. So while a fault stands the
-    // store reads Error whatever the plugin last wrote, and the bookkeeping
-    // below says so instead of trusting `publishedOperationalState`. Three
-    // rules follow:
-    //
-    // 1. While a fault stands, `operationalState` is never written — not on
-    //    a change, not on the resync. matter.js shows Error regardless, and
-    //    a write from Error with an error standing wipes it, after which
-    //    re-asserting the fault fires the OperationalError event again. That
-    //    was a fresh "Refill the water tank" every ~10 minutes through the
-    //    resync below. (Raising a NEW fault writes the state first, as it
-    //    always has; the error follows straight after and wins.)
-    // 2. When the fault goes, the intended state is written FIRST. Writing
-    //    NoError alone left the tile on Error-with-no-error until the robot
-    //    changed state or the 10th heartbeat came round.
-    // 3. When nothing is known about the fault (null from getMatterFault),
-    //    a standing fault is left alone and so is the state under it: the
-    //    3.12.1 rule that an unknown robot clears nobody's warning.
+    const wantedError = (
+      operationalError as { errorStateId?: unknown } | undefined
+    )?.errorStateId;
+    const storedError = (
+      stored?.operationalError as { errorStateId?: unknown } | undefined
+    )?.errorStateId;
     const faultStands =
-      this.publishedOperationalError !== undefined &&
-      this.publishedOperationalError !== RVC_OPERATIONAL_ERROR.NO_ERROR;
+      typeof storedError === "number" &&
+      storedError !== RVC_OPERATIONAL_ERROR.NO_ERROR;
     const raisingFault =
-      errorStateId !== undefined &&
-      errorStateId !== RVC_OPERATIONAL_ERROR.NO_ERROR;
-    const keepingUnknownFault = errorStateId === undefined && faultStands;
+      typeof wantedError === "number" &&
+      wantedError !== RVC_OPERATIONAL_ERROR.NO_ERROR;
 
-    // THE HOLE 3.30.0 LEFT, AND WHY IT NEEDED CLOSING.
-    //
-    // Suppressing an unchanged `operationalState` is what stops the tank
-    // fault being cleared and re-raised every minute. But the whole dedup
-    // design rests on the heartbeat being a forced full write that self-heals
-    // any divergence within a minute — and a cluster write can be rejected by
-    // matter.js AFTER `updateAccessoryState` has already resolved. This file
-    // documents that elsewhere: `OperationalStateServer.#assertCurrentPhase`
-    // throws, and Homebridge swallows the throw, so the whole cluster write
-    // is silently rejected and the controller keeps what it last accepted.
-    //
-    // Believing such a write landed and then never writing that attribute
-    // again turns a one-off rejection into a permanently stale tile,
-    // recoverable only by the robot reaching a different state or a restart.
-    // Before 3.30.0 the heartbeat repaired it inside a minute.
-    //
-    // So: never on an ordinary publish, but a forced write re-asserts once
-    // every RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES heartbeats — the
-    // state when no fault stands, and the fault itself when one does (the
-    // same value again is a no-op in matter.js, so it costs no event).
-    let resyncDue = false;
-    if (options.force === true && operationalState !== undefined) {
-      this.forcedWritesSinceOperationalState += 1;
-      if (
-        this.forcedWritesSinceOperationalState >=
-        RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES
-      ) {
-        resyncDue = true;
-        this.forcedWritesSinceOperationalState = 0;
-      }
-    }
-
-    const believedStoreState = faultStands
-      ? RVC_OPERATIONAL_STATE.ERROR
-      : this.publishedOperationalState;
     const writeState =
       operationalState !== undefined &&
-      !keepingUnknownFault &&
-      !(raisingFault && faultStands) &&
-      (operationalState !== believedStoreState || resyncDue);
+      !raisingFault &&
+      !(wantedError === undefined && faultStands) &&
+      (stored === undefined ||
+        !isSameMatterValue(operationalState, stored.operationalState));
 
-    const first: Record<string, unknown> = { ...rest };
+    const first = attributesTheStoreLacks(rest, stored);
     if (writeState) {
       first.operationalState = operationalState;
     }
-
     if (Object.keys(first).length > 0) {
       await matter.updateAccessoryState(
         this.accessory.UUID,
@@ -2593,54 +2637,50 @@ export default class RoborockMatterVacuumAccessory {
       );
     }
 
-    if (writeState) {
-      this.publishedOperationalState = operationalState as number;
-      this.forcedWritesSinceOperationalState = 0;
-      // A state write out of Error has just cleared any standing error, so
-      // what we believed is no longer true. Deliberately UNKNOWN rather than
-      // 0: the error is then always re-asserted after a state change, which
-      // writes a 0 onto a 0 when the robot is healthy — matter.js drops it,
-      // at no cost — and keeps the contract that the plugin publishes NoError
-      // for a healthy robot, which several tests and one field report rely on.
-      this.publishedOperationalError = undefined;
-    } else if (!raisingFault && !keepingUnknownFault) {
-      this.publishedOperationalState = operationalState as number | undefined;
-    }
-
-    if (errorStateId === undefined) {
+    if (typeof wantedError !== "number") {
       return;
     }
-
-    if (
-      errorStateId === this.publishedOperationalError &&
-      !(raisingFault && resyncDue)
-    ) {
+    // A state written over a standing fault has just cleared it (rule 3).
+    const errorAfterStateWrite =
+      writeState && faultStands ? RVC_OPERATIONAL_ERROR.NO_ERROR : storedError;
+    if (stored !== undefined && wantedError === errorAfterStateWrite) {
       return;
     }
-
     await matter.updateAccessoryState(
       this.accessory.UUID,
       OPERATIONAL_STATE_CLUSTER,
       { operationalError }
     );
-    this.publishedOperationalError = errorStateId;
-    if (raisingFault && operationalState !== undefined) {
-      // Remembered so the moment the fault goes, rule 2 knows which state to
-      // write back over the Error matter.js is holding.
-      this.publishedOperationalState = operationalState as number;
+  }
+
+  /** The cluster as the Matter store holds it, or undefined if it cannot say. */
+  private async readMatterStore(
+    matter: MatterStoreApi,
+    cluster: string
+  ): Promise<Record<string, unknown> | undefined> {
+    if (typeof matter.getAccessoryState !== "function") {
+      return undefined;
+    }
+    try {
+      const stored = await matter.getAccessoryState(
+        this.accessory.UUID,
+        cluster
+      );
+      return stored && typeof stored === "object" ? stored : undefined;
+    } catch {
+      return undefined;
     }
   }
 
   private async updateMatterState(
     partialClusters: Record<string, Record<string, unknown>>,
-    reason = "state update",
-    options: { force?: boolean } = {}
+    reason = "state update"
   ): Promise<boolean> {
     if (!this.registered) {
       return false;
     }
 
-    const matter = this.platform.getMatterApi();
+    const matter = this.platform.getMatterApi() as MatterStoreApi | null;
     if (!matter || typeof matter.updateAccessoryState !== "function") {
       return false;
     }
@@ -2649,70 +2689,61 @@ export default class RoborockMatterVacuumAccessory {
       return false;
     }
 
-    // Every publish is a full snapshot and writes are serialized in submission
-    // order. matter.js suppresses no-op attribute writes at its store level, so
-    // no plugin-side change tracking is needed; tracking published values here
-    // previously allowed racing publishers to desynchronize the plugin from the
-    // Matter store, leaving Apple Home stuck on stale state ("Updating...").
-    // Per-cluster fault isolation: one misbehaving cluster (bad attribute
-    // shape, transient matter.js error) must never block the others — a
-    // frozen battery reading because the operational-state publish failed is
-    // exactly the failure mode this prevents. Only a TOTAL failure is
-    // rethrown, preserving the initialization-retry semantics below.
+    // WRITTEN AGAINST THE STORE, NOT AGAINST A MEMORY OF WHAT WAS WRITTEN.
+    //
+    // Homebridge 2.x's `updateAccessoryState` validates, emits and returns;
+    // the store write runs later in a setImmediate, and a write matter.js
+    // refuses is only logged by Homebridge ("Failed to update state for
+    // accessory …", StateManager.js). This class used to record each write as
+    // published the moment the call returned and skip anything identical, so
+    // a refused write was believed for a minute (the heartbeat) or ten (the
+    // operational state). Reading the cluster back with
+    // `api.matter.getAccessoryState` (present since Homebridge 2.0.0) and
+    // writing only what differs makes a refused write come back on the very
+    // next publish, and needs no record at all.
+    //
+    // Publishes are serialized, and each one that reads the store back ends
+    // after Homebridge has applied its writes (afterDeferredMatterWrites), so
+    // the next one reads them back rather than the store as it was before.
+    // Without that, the once-per-boot battery nudge (null, then the value)
+    // read the value back from before the null landed and skipped it.
+    //
+    // What can fail here: the synchronous assertMatterReady refusal
+    // (Homebridge not launched / Matter not enabled). Each cluster is written
+    // on its own, so one that throws can never block the others — a frozen
+    // battery reading because the operational state failed is the failure
+    // this isolation exists for.
     const clusterEntries = Object.entries(partialClusters);
+    const readsBack = typeof matter.getAccessoryState === "function";
     const publishTask = this.matterPublishChain.then(async () => {
       const failures: unknown[] = [];
-      await Promise.all(
-        clusterEntries.map(async ([cluster, attributes]) => {
-          try {
-            if (cluster === OPERATIONAL_STATE_CLUSTER) {
-              await this.writeOperationalStateCluster(matter, attributes, {
-                force: options.force === true,
-              });
-            } else {
-              await matter.updateAccessoryState(
-                this.accessory.UUID,
-                cluster,
-                attributes
-              );
-            }
-            this.lastPublishedClusterJson.set(
+      for (const [cluster, attributes] of clusterEntries) {
+        try {
+          const stored = await this.readMatterStore(matter, cluster);
+          if (cluster === OPERATIONAL_STATE_CLUSTER) {
+            await this.writeOperationalStateCluster(matter, attributes, stored);
+            continue;
+          }
+          const changed = attributesTheStoreLacks(attributes, stored);
+          if (Object.keys(changed).length > 0) {
+            await matter.updateAccessoryState(
+              this.accessory.UUID,
               cluster,
-              JSON.stringify(attributes)
-            );
-          } catch (error) {
-            // Drop the record so the cluster is retried on the next snapshot
-            // even if its payload is unchanged.
-            this.lastPublishedClusterJson.delete(cluster);
-            if (cluster === OPERATIONAL_STATE_CLUSTER) {
-              // A half-written cluster leaves the store in a state nothing
-              // here can describe, so forget both and let the next snapshot
-              // re-assert them.
-              this.publishedOperationalState = undefined;
-              this.publishedOperationalError = undefined;
-              this.forcedWritesSinceOperationalState = 0;
-            }
-
-            failures.push(error);
-            this.platform.log.debug(
-              `Matter publish for cluster ${cluster} on ${this.accessory.UUID} failed: ${error instanceof Error ? error.message : String(error)}`
+              changed
             );
           }
-        })
-      );
-      if (failures.length > 0) {
-        if (failures.length === clusterEntries.length) {
-          throw failures[0];
+        } catch (error) {
+          failures.push(error);
+          this.platform.log.debug(
+            `Matter publish (${reason}) of cluster ${cluster} for ${this.getVacuumName()} failed: ${this.getErrorMessage(error)}`
+          );
         }
-        // Partial failure: the surviving clusters have landed (that is the
-        // isolation), but an initializing endpoint should still get its
-        // retry so the failed cluster receives its value too.
-        const initFailure = failures.find((failure) =>
-          this.isMatterInitializingError(failure)
-        );
-        if (initFailure) {
-          this.scheduleMatterInitializationRetry(reason, initFailure);
-        }
+      }
+      if (readsBack) {
+        await afterDeferredMatterWrites();
+      }
+      if (failures.length === clusterEntries.length) {
+        throw failures[0];
       }
     });
     this.matterPublishChain = publishTask.then(
@@ -2720,19 +2751,8 @@ export default class RoborockMatterVacuumAccessory {
       () => undefined
     );
 
-    try {
-      await publishTask;
-      this.matterInitializationRetryAttempt = 0;
-      this.matterInitializationRetryPending = false;
-      return true;
-    } catch (error) {
-      if (this.isMatterInitializingError(error)) {
-        this.scheduleMatterInitializationRetry(reason, error);
-        return false;
-      }
-
-      throw error;
-    }
+    await publishTask;
+    return true;
   }
 
   /**
@@ -2756,44 +2776,14 @@ export default class RoborockMatterVacuumAccessory {
    */
   private async publishRoborockSnapshot(
     clusters: MatterClusterState,
-    reason: string,
-    options: { force?: boolean } = {}
+    reason: string
   ): Promise<boolean> {
-    // Skip clusters whose payload is byte-identical to the last confirmed
-    // publish: every 15s poll and every heartbeat otherwise re-submits 4-6
-    // unchanged clusters per robot through the Homebridge/matter.js stack.
-    // The heartbeat passes force=true, keeping a periodic full write as the
-    // self-healing safety net.
-    // The full snapshot as built, kept across the diff below so the evidence
-    // line always reports every value — not just the clusters that changed.
-    const snapshot = clusters;
-
-    // Before the diff below, and before the early return it can take: this is
-    // the one place every Roborock-driven state change passes through, so it is
-    // the only hook that cannot miss one. The unchanged-payload path matters
-    // just as much as the changed one — a listener's first reading after a
-    // restart usually arrives on a poll whose clusters are byte-identical to
-    // what the previous process already published.
-    this.rememberPublishedRunMode(snapshot);
+    // This is the one place every Roborock-driven state change passes
+    // through, so it is the only hook that cannot miss one — including a poll
+    // whose clusters the store already holds, which is how a listener's first
+    // reading after a restart usually arrives.
+    this.rememberPublishedRunMode(clusters);
     this.notifyStateListener();
-
-    if (options.force !== true) {
-      const changed: MatterClusterState = {};
-      for (const [cluster, attributes] of Object.entries(clusters)) {
-        if (
-          JSON.stringify(attributes) !==
-          this.lastPublishedClusterJson.get(cluster)
-        ) {
-          changed[cluster] = attributes;
-        }
-      }
-      if (Object.keys(changed).length === 0) {
-        // Everything already published: a no-op is a successful publish.
-        this.logMatterPublishIfChanged(snapshot, reason);
-        return true;
-      }
-      clusters = changed;
-    }
 
     const power = clusters.powerSource as Record<string, unknown> | undefined;
     const resyncEligible =
@@ -2815,14 +2805,9 @@ export default class RoborockMatterVacuumAccessory {
       );
     }
 
-    // `force` is carried down so writeOperationalStateCluster can tell a
-    // heartbeat from an ordinary publish; it is the only cluster for which
-    // the distinction still means anything.
-    const updated = await this.updateMatterState(clusters, reason, {
-      force: options.force === true,
-    });
+    const updated = await this.updateMatterState(clusters, reason);
     if (updated) {
-      this.logMatterPublishIfChanged(snapshot, reason);
+      this.logMatterPublishIfChanged(clusters, reason);
     }
     if (updated && resyncEligible) {
       this.powerSourceResyncDone = true;
@@ -2881,18 +2866,8 @@ export default class RoborockMatterVacuumAccessory {
 
     const state = this.getNumberFromValue(status.state);
     const chargeStatus = this.getNumberFromValue(status.charge_status);
-    const battery = this.getNumberFromValue(status.battery);
     const cleanArea = this.getNumberFromValue(status.clean_area);
     const cleanTime = this.getNumberFromValue(status.clean_time);
-    const fanPower = this.getNumberFromValue(status.fan_power);
-    const matterCleanType = this.getNumberFromValue(status.matter_clean_type);
-    const dockErrorStatus = this.getNumberFromValue(status.dock_error_status);
-    const waterShortageStatus = this.getNumberFromValue(
-      status.water_shortage_status
-    );
-    const errorCode = this.getNumberFromValue(status.error_code);
-    const dryStatus = this.getNumberFromValue(status.dry_status);
-    const dockStationStatus = this.getNumberFromValue(status.dss);
 
     // Fan power and clean type count as meaningful updates too. A suction or
     // mop-mode change made in the Roborock app (or chosen by SmartPlan) pushes
@@ -2904,26 +2879,9 @@ export default class RoborockMatterVacuumAccessory {
     //
     // Derived from MEANINGFUL_LIVE_STATUS_FIELDS rather than spelled out, so
     // this check and extractStatusUpdate's gate always name the same fields.
-    const meaningfulValues: Record<
-      (typeof MEANINGFUL_LIVE_STATUS_FIELDS)[number],
-      number | null
-    > = {
-      state,
-      charge_status: chargeStatus,
-      battery,
-      clean_area: cleanArea,
-      clean_time: cleanTime,
-      fan_power: fanPower,
-      matter_clean_type: matterCleanType,
-      dock_error_status: dockErrorStatus,
-      water_shortage_status: waterShortageStatus,
-      dss: dockStationStatus,
-      error_code: errorCode,
-      dry_status: dryStatus,
-    };
     if (
       MEANINGFUL_LIVE_STATUS_FIELDS.every(
-        (field) => meaningfulValues[field] === null
+        (field) => this.getNumberFromValue(status[field]) === null
       )
     ) {
       return;
@@ -2946,49 +2904,7 @@ export default class RoborockMatterVacuumAccessory {
       this.roomCleaningAreaConfirmed = false;
     }
 
-    this.rememberLiveStatus("state", state);
-    this.rememberLiveStatus("charge_status", chargeStatus);
-    this.rememberLiveStatus("battery", battery);
-    this.rememberLiveStatus("clean_area", cleanArea);
-    this.rememberLiveStatus("clean_time", cleanTime);
-    // Fan power and clean type drive the live RvcCleanMode derivation, so
-    // cleans (re)configured outside Apple Home surface within one update.
-    this.rememberLiveStatus("fan_power", fanPower);
-    this.rememberLiveStatus("matter_clean_type", matterCleanType);
-    // The tank fields, and this is why they have to be here.
-    //
-    // getNumberStatus reads the live cache first and the HomeData snapshot
-    // second. These 2 fields are not in the snapshot, so if the live cache
-    // does not remember them there is nowhere left to read them from and
-    // isWaterTankEmpty() answers null forever. That is exactly what happened:
-    // 3.10.0 shipped the Water Tank Empty sensor, 3.12.0 shipped the Matter
-    // fault, both were correct, and neither could ever fire on a real robot
-    // while the Roborock app showed "Out of water" on the same dock.
-    //
-    // The unit tests did not catch it because they stub
-    // getVacuumDeviceStatus, so they proved the logic and nothing about the
-    // plumbing.
-    this.rememberLiveStatus("dock_error_status", dockErrorStatus);
-    this.rememberLiveStatus("water_shortage_status", waterShortageStatus);
-    // The dock's packed status word: one 2-bit field per tank. See
-    // getDockTankField().
-    this.rememberLiveStatus("dss", dockStationStatus);
-    // Which kind of dock it is decides whether `dss` has tanks at all.
-    this.rememberLiveStatus(
-      "dock_type",
-      this.getNumberFromValue(status.dock_type)
-    );
-    // Same reasoning for the robot's own fault: a robot that gets stuck
-    // mid-run announces it in a live frame, and the HomeData snapshot behind
-    // it can be minutes old. Remembering it here is what makes a fault reach
-    // the tile while the robot is still stuck rather than after the next
-    // cloud refresh.
-    this.rememberLiveStatus("error_code", errorCode);
-    // Drying is a dock job, so it arrives while the robot itself is idle and
-    // the frames are at their sparsest. Without the cache a single frame
-    // carrying only `dry_status` would light the phase and the next heartbeat
-    // would put it out again.
-    this.rememberLiveStatus("dry_status", dryStatus);
+    this.rememberStatusFrame(status);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -3010,9 +2926,18 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     if (state !== null) {
-      this.completeServiceAreaProgressIfDone(
-        this.getOperationalState(state, chargeStatus)
+      const robotState = this.getRoborockOperationalState(
+        state,
+        this.getNumberStatus("charge_status")
       );
+      if (
+        robotState === RVC_OPERATIONAL_STATE.RUNNING ||
+        robotState === RVC_OPERATIONAL_STATE.PAUSED
+      ) {
+        // The start has been acted on; its rooms now belong to a real run.
+        this.serviceAreaProgressBeforeStart = null;
+      }
+      this.completeServiceAreaProgressIfDone(robotState);
       this.beginFullCleanServiceAreaProgressIfUnannounced(state, chargeStatus);
     }
 
@@ -3092,46 +3017,6 @@ export default class RoborockMatterVacuumAccessory {
 
     const { operationalError: _withheld, ...rest } = cluster;
     return { ...clusters, rvcOperationalState: rest };
-  }
-
-  private buildCluster(cluster: string): Record<string, unknown> | undefined {
-    let clusterState: Record<string, unknown> | undefined;
-
-    switch (cluster) {
-      case "rvcRunMode":
-        clusterState = this.buildRunModeCluster();
-        break;
-      case "rvcCleanMode":
-        clusterState = this.isCleanModeEnabled()
-          ? this.buildCleanModeCluster()
-          : undefined;
-        break;
-      case "rvcOperationalState":
-        clusterState = this.buildOperationalStateCluster();
-        break;
-      case "powerSource":
-        clusterState = this.isPowerSourceEnabled()
-          ? this.buildPowerSourceCluster()
-          : undefined;
-        break;
-      case "serviceArea":
-        clusterState =
-          this.isServiceAreaEnabled() && this.hasServiceAreasToExpose()
-            ? this.buildServiceAreaCluster()
-            : undefined;
-        break;
-      default:
-        return undefined;
-    }
-
-    if (!clusterState) {
-      return undefined;
-    }
-
-    const optimisticCluster = this.getActiveOptimisticState()?.[cluster];
-    return optimisticCluster
-      ? { ...clusterState, ...optimisticCluster }
-      : clusterState;
   }
 
   private buildRunModeCluster(): Record<string, unknown> {
@@ -3459,9 +3344,7 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
 
-    const waterBoxMode =
-      this.getNumberStatus("water_box_custom_mode") ??
-      this.getNumberStatus("water_box_mode");
+    const waterBoxMode = this.getWaterBoxModeStatus();
     if (waterBoxMode === null) {
       return null;
     }
@@ -3793,10 +3676,16 @@ export default class RoborockMatterVacuumAccessory {
     return this.lastVacuumFanPower ?? ROBOROCK_FAN_POWER_BALANCED;
   }
 
+  /**
+   * The water level, from the robot's own `get_status` (`water_box_mode`, also
+   * pushed alone as dps 124) — the field python-roborock reads. A product
+   * schema's `water_box_custom_mode` exists only in the HomeData snapshot, so
+   * it answers only when the robot has never said.
+   */
   private getWaterBoxModeStatus(): number | null {
     return (
-      this.getNumberStatus("water_box_custom_mode") ??
-      this.getNumberStatus("water_box_mode")
+      this.getNumberStatus("water_box_mode") ??
+      this.getNumberStatus("water_box_custom_mode")
     );
   }
 
@@ -3829,30 +3718,32 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
-   * Whether the robot is at rest (or really in Error), judged on BOTH the
-   * state Apple Home is sent and the robot's own state before the controller
-   * mapping. With "Dock & Returning Status" off, a robot driving home is sent
-   * as Stopped, which on its own would let a fault through (found in review).
+   * Whether a fault may stand: the robot is not in a cleaning run, or it has
+   * really halted.
+   *
+   * In matter.js 0.17.9 any fault IS the Error state (see
+   * OPERATIONAL_STATES_THAT_CARRY_A_FAULT), so a robot that is cleaning,
+   * paused or on its way home from a run is published without one: Error
+   * would hide the clean (#35). A robot idle in its dock is not in a run while
+   * the dock empties the bin, washes, dries or swaps the mop, or reports the
+   * "returning" blip after emptying. Withdrawing a standing tank fault there
+   * and raising it again afterwards was one more notification per chore for a
+   * tank nobody had touched (#26). Run membership is the run mode those states
+   * inherit (resolveRunMode) — the answer Apple Home is given, read here
+   * without advancing it.
    */
-  private canCarryAFault(publishedState: number): boolean {
-    const rawState = this.getNumberStatus("state");
-    // A state this plugin does not name falls through to Charging or Stopped
-    // in getRoborockOperationalState(), and both of those may carry a fault.
-    // Several of those states are a run in progress — DSimeone's a144 reports
-    // 33 "attaching the mop" with `in_cleaning: 3` mid room clean — so a
-    // mop swap during a run raised the tank fault and the Error with it,
-    // once per swap (found in review).
-    if (rawState !== null && isRoborockBusyStateWithoutAName(rawState)) {
-      return false;
-    }
+  private canCarryAFault(): boolean {
     const robotState = this.getRoborockOperationalState(
-      rawState,
+      this.getNumberStatus("state"),
       this.getNumberStatus("charge_status")
     );
-    return (
-      OPERATIONAL_STATES_THAT_CARRY_A_FAULT.has(publishedState) &&
-      OPERATIONAL_STATES_THAT_CARRY_A_FAULT.has(robotState)
-    );
+    if (robotState === RVC_OPERATIONAL_STATE.ERROR) {
+      return true;
+    }
+    const inRun = RUN_MODE_INHERITED_STATES.has(robotState)
+      ? this.lastRunMode === RUN_MODE_CLEANING
+      : this.isInCleaningRunMode(robotState);
+    return !inRun;
   }
 
   private buildOperationalStateCluster(): Record<string, unknown> {
@@ -3913,18 +3804,16 @@ export default class RoborockMatterVacuumAccessory {
     // for what that is worth and what it costs.
     if (this.isFaultAttributeEnabled()) {
       const fault = this.getMatterFault();
-      if (!this.canCarryAFault(operationalState)) {
-        // A robot that is cleaning, paused, driving home or busy at the dock
-        // is not blocked, so it gets NoError — whatever the tank or the
-        // robot's own error field says. In matter.js 0.17.9 a fault IS the
-        // Error state (see OPERATIONAL_STATES_THAT_CARRY_A_FAULT), and Error
-        // is what hid a running clean in issue #35. Writing NoError here is
-        // affirmative, not invented: the state itself says the robot works.
-        if (fault !== null || this.publishedOperationalError !== undefined) {
-          cluster.operationalError = {
-            errorStateId: RVC_OPERATIONAL_ERROR.NO_ERROR,
-          };
-        }
+      if (!this.canCarryAFault()) {
+        // A robot in a run — cleaning, paused, driving home, or busy at the
+        // dock in the middle of one — is not blocked, so it gets NoError,
+        // whatever the tank or the robot's own error field says. In matter.js
+        // 0.17.9 a fault IS the Error state, and Error is what hid a running
+        // clean in issue #35. Writing NoError here is affirmative, not
+        // invented: the run itself says the robot works.
+        cluster.operationalError = {
+          errorStateId: RVC_OPERATIONAL_ERROR.NO_ERROR,
+        };
       } else if (fault !== null) {
         // Null means neither the dock nor the robot has said. Publishing
         // NoError on their behalf would clear a warning nobody has
@@ -4018,9 +3907,9 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private persistServiceAreaProgress(): void {
-    // Best-effort: Homebridge persists accessory context periodically and on
-    // shutdown, so a restart mid-clean restores the room display instead of
-    // silently dropping back to a generic label.
+    // Kept across a restart (the platform saves the Matter accessories'
+    // context at shutdown), so a restart mid-clean restores the room display
+    // instead of silently dropping back to a generic label.
     this.accessory.context.serviceAreaProgressState = {
       currentArea: this.serviceAreaCurrentArea,
       progress: this.serviceAreaProgress.map((entry) => ({ ...entry })),
@@ -4028,6 +3917,15 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private restoreServiceAreaProgress(): void {
+    // The selection too: without it Apple Home snapped back to "no rooms"
+    // after every restart, and Start cleaned the whole house.
+    const selection = this.accessory.context?.selectedServiceAreaIds;
+    if (Array.isArray(selection)) {
+      this.selectedServiceAreaIds = selection.filter(
+        (areaId): areaId is number =>
+          typeof areaId === "number" && Number.isInteger(areaId)
+      );
+    }
     const persisted = this.accessory.context?.serviceAreaProgressState as
       | { currentArea?: unknown; progress?: unknown }
       | undefined;
@@ -4052,17 +3950,18 @@ export default class RoborockMatterVacuumAccessory {
       this.clearServiceAreaProgress();
       return;
     }
-    // We know which rooms were requested; until live map-position tracking
-    // reports which one the robot is actually inside, the first requested
-    // area is shown as operating and the rest as pending.
+    // We know which rooms were requested, not which one the robot is in.
+    // Naming the first one as current and Operating said so for the whole run
+    // on a robot without live rooms (#24: "the progress indicator on Kitchen"
+    // while the S8 cleaned elsewhere). So, as for a full clean: every
+    // requested room Operating, none current, until live map-position
+    // tracking resolves one (see beginFullCleanServiceAreaProgress).
     this.resetLiveRoomVisits();
-    this.serviceAreaCurrentArea = areaIds[0];
-    this.serviceAreaProgress = areaIds.map((areaId, index) => ({
+    this.serviceAreaStopRequested = false;
+    this.serviceAreaCurrentArea = null;
+    this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
-      status:
-        index === 0
-          ? SERVICE_AREA_PROGRESS.OPERATING
-          : SERVICE_AREA_PROGRESS.PENDING,
+      status: SERVICE_AREA_PROGRESS.OPERATING,
     }));
     this.persistServiceAreaProgress();
   }
@@ -4104,6 +4003,7 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
     this.resetLiveRoomVisits();
+    this.serviceAreaStopRequested = false;
     this.serviceAreaCurrentArea = null;
     this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
@@ -4159,16 +4059,14 @@ export default class RoborockMatterVacuumAccessory {
       return;
     }
 
+    this.serviceAreaProgressBeforeStart = null;
     this.beginFullCleanServiceAreaProgress();
   }
 
   /** Every run boundary starts live-room confirmation from nothing. */
   private resetLiveRoomVisits(): void {
     this.liveConfirmedServiceAreaIds = new Set();
-    this.liveRoomVisitAreaId = null;
-    this.liveRoomVisitReadings = 0;
-    this.liveRoomVisitFirstSeenAt = null;
-    this.liveRoomVisitLastSeenAt = null;
+    this.liveRoomVisit = null;
   }
 
   private clearServiceAreaProgress(): void {
@@ -4178,22 +4076,89 @@ export default class RoborockMatterVacuumAccessory {
     this.persistServiceAreaProgress();
   }
 
-  private completeServiceAreaProgressIfDone(operationalState: number): void {
+  /**
+   * Settle the room list once the robot is out of a run — but only the run
+   * that actually happened.
+   *
+   * - A robot that halted (Error) has not finished: the list stays as it is
+   *   for the run to resume or end.
+   * - A Matter start the robot was never seen acting on — refused, or
+   *   acknowledged and ignored — gives the list back as it was before the
+   *   start, once the plugin itself has stopped showing the start
+   *   (isMatterStartStillPending). Those rooms were not cleaned.
+   * - A run Matter stopped ends with the rooms the robot was not seen
+   *   cleaning Skipped (Matter's own value for it); any other end of a run
+   *   completes every room, as before.
+   *
+   * `robotState` is the robot's own operational state, not the one the
+   * extended-states toggle displays: driving home is still part of the run.
+   */
+  private completeServiceAreaProgressIfDone(robotState: number): void {
     if (this.serviceAreaProgress.length === 0) {
       return;
     }
-    if (this.isInCleaningRunMode(operationalState)) {
+    if (
+      this.isInCleaningRunMode(robotState) ||
+      robotState === RVC_OPERATIONAL_STATE.ERROR
+    ) {
       return;
     }
-    // The run ended (docked, charging, stopped): everything requested is
-    // reported as completed and no area is current anymore.
-    this.resetLiveRoomVisits();
-    this.serviceAreaCurrentArea = null;
+    if (this.serviceAreaProgressBeforeStart) {
+      if (!this.isMatterStartStillPending()) {
+        this.restoreServiceAreaProgressFromBeforeStart();
+      }
+      return;
+    }
+    const unfinished = this.serviceAreaStopRequested
+      ? SERVICE_AREA_PROGRESS.SKIPPED
+      : SERVICE_AREA_PROGRESS.COMPLETED;
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
-      status: SERVICE_AREA_PROGRESS.COMPLETED,
+      status:
+        entry.status === SERVICE_AREA_PROGRESS.COMPLETED ||
+        this.liveConfirmedServiceAreaIds.has(entry.areaId)
+          ? SERVICE_AREA_PROGRESS.COMPLETED
+          : unfinished,
     }));
+    this.resetLiveRoomVisits();
+    this.serviceAreaCurrentArea = null;
+    this.serviceAreaStopRequested = false;
     this.persistServiceAreaProgress();
+  }
+
+  private rememberServiceAreaProgressBeforeStart(): void {
+    // A second start before the first was acted on keeps the original list.
+    this.serviceAreaProgressBeforeStart ??= {
+      currentArea: this.serviceAreaCurrentArea,
+      progress: this.serviceAreaProgress.map((entry) => ({ ...entry })),
+    };
+  }
+
+  /** A failed or ignored start gives back the list it replaced. */
+  private restoreServiceAreaProgressFromBeforeStart(): void {
+    const before = this.serviceAreaProgressBeforeStart;
+    if (!before) {
+      return;
+    }
+    this.serviceAreaProgressBeforeStart = null;
+    this.serviceAreaStopRequested = false;
+    this.resetLiveRoomVisits();
+    this.serviceAreaCurrentArea = before.currentArea;
+    this.serviceAreaProgress = before.progress;
+    this.persistServiceAreaProgress();
+  }
+
+  /**
+   * Whether the plugin is still showing a start the robot has not acted on:
+   * the optimistic Running is up, or the start is inside the window in which
+   * a slow robot (cloud-only S8, #4) still reports docked.
+   */
+  private isMatterStartStillPending(): boolean {
+    return (
+      this.hasRecentlyCommandedCleaning() ||
+      this.getActiveOptimisticState()?.rvcOperationalState?.operationalState ===
+        RVC_OPERATIONAL_STATE.RUNNING
+    );
   }
 
   /**
@@ -4231,38 +4196,31 @@ export default class RoborockMatterVacuumAccessory {
   /**
    * Fold one live-room observation into the current visit, and promote the
    * room to confirmed once the visit is long enough to be a clean rather than
-   * a crossing. See `liveRoomVisitAreaId` for why both conditions are needed.
+   * a crossing. See `liveRoomVisit` for why both conditions are needed.
    */
   private recordLiveRoomVisit(areaId: number, observedAt: number): void {
-    if (this.liveRoomVisitAreaId !== areaId) {
+    let visit = this.liveRoomVisit;
+    if (!visit || visit.areaId !== areaId) {
       // A different room ends the previous visit outright: dwell is never
       // accumulated across separate passes through the same room.
-      this.liveRoomVisitAreaId = areaId;
-      this.liveRoomVisitReadings = 1;
-      this.liveRoomVisitFirstSeenAt = observedAt;
-      this.liveRoomVisitLastSeenAt = observedAt;
-    } else if (
-      this.liveRoomVisitLastSeenAt === null ||
-      observedAt > this.liveRoomVisitLastSeenAt
-    ) {
+      visit = {
+        areaId,
+        readings: 1,
+        firstSeenAt: observedAt,
+        lastSeenAt: observedAt,
+      };
+      this.liveRoomVisit = visit;
+    } else if (observedAt > visit.lastSeenAt) {
       // A genuinely new sighting. Re-reading the cached sample — which happens
       // whenever a publish cycle runs faster than the live-room refetch — adds
       // neither a reading nor dwell, because nothing new was observed.
-      this.liveRoomVisitReadings += 1;
-      this.liveRoomVisitLastSeenAt = observedAt;
-      if (this.liveRoomVisitFirstSeenAt === null) {
-        this.liveRoomVisitFirstSeenAt = observedAt;
-      }
+      visit.readings += 1;
+      visit.lastSeenAt = observedAt;
     }
 
-    const dwellMs =
-      this.liveRoomVisitFirstSeenAt !== null &&
-      this.liveRoomVisitLastSeenAt !== null
-        ? this.liveRoomVisitLastSeenAt - this.liveRoomVisitFirstSeenAt
-        : 0;
     if (
-      this.liveRoomVisitReadings >= LIVE_ROOM_READINGS_TO_CONFIRM &&
-      dwellMs >= LIVE_ROOM_DWELL_TO_CONFIRM_MS
+      visit.readings >= LIVE_ROOM_READINGS_TO_CONFIRM &&
+      visit.lastSeenAt - visit.firstSeenAt >= LIVE_ROOM_DWELL_TO_CONFIRM_MS
     ) {
       this.liveConfirmedServiceAreaIds.add(areaId);
     }
@@ -4384,13 +4342,13 @@ export default class RoborockMatterVacuumAccessory {
     const supportedMaps = this.getMatterServiceAreaMaps(areas);
     const includeMapNamesInAreaLabels = supportedMaps.length > 1;
     const supportedAreaIds = new Set(areas.map((area) => area.areaId));
+    // Filtered for matter.js, which refuses a selection naming a room that is
+    // not in supportedAreas — but not stored back: the list is momentarily
+    // partial while a map refreshes, and trimming the selection here dropped
+    // those rooms from it for good.
     const selectedAreas = this.selectedServiceAreaIds.filter((areaId) =>
       supportedAreaIds.has(areaId)
     );
-
-    if (selectedAreas.length !== this.selectedServiceAreaIds.length) {
-      this.selectedServiceAreaIds = selectedAreas;
-    }
 
     this.logMatterServiceAreaSummary(areas, supportedMaps);
 
@@ -4538,6 +4496,7 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     this.selectedServiceAreaIds = selectedAreas;
+    this.accessory.context.selectedServiceAreaIds = [...selectedAreas];
     // A SELECTION MADE BETWEEN RUNS HAS NO PROGRESS YET — #24.
     //
     // Progress is persisted, so the finished rooms of the morning's run were
@@ -4638,7 +4597,34 @@ export default class RoborockMatterVacuumAccessory {
       });
     }
 
-    return areas;
+    // A room filed under no map (roborockLib keeps a `-1` bucket for a status
+    // that had no `map_status`) cannot sit beside rooms on a real map:
+    // matter.js refuses the whole serviceArea write ("Areas must not have a
+    // null mapId when supportedMaps is defined"), every time. It cannot be
+    // cleaned from a map selection either, so it is left out while real maps
+    // exist.
+    if (!areas.some((area) => area.mapId !== null)) {
+      return areas;
+    }
+    const withoutMap = areas.filter((area) => area.mapId === null);
+    this.reportRoomsWithoutAMap(withoutMap);
+    return withoutMap.length > 0
+      ? areas.filter((area) => area.mapId !== null)
+      : areas;
+  }
+
+  /** Say once per distinct set which rooms were left out, and why. */
+  private reportRoomsWithoutAMap(rooms: MatterServiceArea[]): void {
+    const names = rooms.map((room) => room.name).join(", ");
+    if (names === this.lastReportedRoomsWithoutAMap) {
+      return;
+    }
+    this.lastReportedRoomsWithoutAMap = names;
+    if (names) {
+      this.platform.log.info(
+        `${this.getVacuumName()}: room(s) ${names} belong to no Roborock map while other rooms do, so they are not offered in Apple Home (Matter refuses a room list that mixes the two). They come back once the robot reports them on a map.`
+      );
+    }
   }
 
   private getMatterServiceAreaMaps(
@@ -4996,8 +4982,20 @@ export default class RoborockMatterVacuumAccessory {
     return this.platform.platformConfig.enableMatterPowerSource !== false;
   }
 
+  /**
+   * Whether the RvcCleanMode cluster is announced at all. Matter constrains
+   * ModeBase SupportedModes to 2-255 entries, and matter.js 0.17.9 validates
+   * an endpoint's whole initial state against the model when it registers
+   * (ServerBehaviorBacking -> Datasource.validate), so a robot with no mop and
+   * no announced suction levels — one mode, Vacuum — would not register. With
+   * one mode there is no choice to offer, and the cluster is optional for an
+   * RVC, so it is left out.
+   */
   private isCleanModeEnabled(): boolean {
-    return this.platform.platformConfig.enableMatterCleanMode !== false;
+    return (
+      this.platform.platformConfig.enableMatterCleanMode !== false &&
+      this.getSupportedCleanModes().length >= 2
+    );
   }
 
   private isExtendedOperationalStateEnabled(): boolean {
@@ -5191,12 +5189,28 @@ export default class RoborockMatterVacuumAccessory {
       case 22: // Emptying dust container
         return RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN;
       case 23: // Washing the mop
+      case 25: // Washing the mop (python-roborock washing_the_mop_2)
         return RVC_OPERATIONAL_STATE.CLEANING_MOP;
       case 29: // Mapping
         return RVC_OPERATIONAL_STATE.UPDATING_MAPS;
       case 100: // Fully Charged
         return RVC_OPERATIONAL_STATE.DOCKED;
+      case ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER:
+        return RVC_OPERATIONAL_STATE.SEEKING_CHARGER;
       default:
+        if (isRoborockMoppingOnTheFloor(state)) {
+          return RVC_OPERATIONAL_STATE.RUNNING;
+        }
+        // Before the default arm on purpose: Charging or Stopped is what made
+        // a mop swap mid-run read as a finished run (see
+        // isRoborockStateWithoutAMatterName).
+        if (
+          state !== null &&
+          isRoborockStateWithoutAMatterName(state) &&
+          this.lastNamedRoborockOperationalState !== null
+        ) {
+          return this.lastNamedRoborockOperationalState;
+        }
         if (chargeStatus !== null && chargeStatus !== 0) {
           return RVC_OPERATIONAL_STATE.CHARGING;
         }
@@ -5279,19 +5293,83 @@ export default class RoborockMatterVacuumAccessory {
     }
   }
 
-  private rememberLiveStatus(property: string, value: number | null): void {
-    if (value !== null) {
-      this.liveStatus.set(property, value);
+  /** Take in one status frame from the robot: its fields and its state. */
+  private rememberStatusFrame(status: Record<string, unknown>): void {
+    this.rememberLiveStatusFrame(status);
+    const state = this.getNumberFromValue(status.state);
+    if (state !== null && !isRoborockStateWithoutAMatterName(state)) {
+      this.lastNamedRoborockOperationalState = this.getRoborockOperationalState(
+        state,
+        this.getNumberStatus("charge_status")
+      );
+    }
+  }
+
+  /**
+   * The clusters as matter.js holds them once written: a fault forces the
+   * Error state (RvcOperationalStateServer#handleOperationalError). An
+   * endpoint registered with this as its initial state starts there — and
+   * matter.js emits no OperationalError event for an initial value.
+   */
+  private asRegistrationDefaults(
+    clusters: MatterClusterState
+  ): MatterClusterState {
+    const cluster = clusters.rvcOperationalState;
+    const errorStateId = (
+      cluster?.operationalError as { errorStateId?: unknown } | undefined
+    )?.errorStateId;
+    if (
+      !cluster ||
+      typeof errorStateId !== "number" ||
+      errorStateId === RVC_OPERATIONAL_ERROR.NO_ERROR
+    ) {
+      return clusters;
+    }
+    return {
+      ...clusters,
+      rvcOperationalState: {
+        ...cluster,
+        operationalState: RVC_OPERATIONAL_STATE.ERROR,
+      },
+    };
+  }
+
+  /**
+   * Remember every numeric field of a live status frame, under its own name.
+   *
+   * Not a list of the fields somebody thought to read. A hand-written list is
+   * what dropped the tank fields (3.10–3.12: the sensor and the fault could
+   * never fire), `in_cleaning` (#28: Resume always restarted a paused room
+   * clean as a whole-home run) and `water_box_mode` (#8: the clean mode
+   * followed the 180-second HomeData snapshot instead of the robot). HomeData
+   * is keyed by schema id and carries none of those, so a field the frame
+   * carried and this method dropped had nowhere else to come from.
+   */
+  private rememberLiveStatusFrame(status: Record<string, unknown>): void {
+    let remembered = false;
+    for (const [field, raw] of Object.entries(status)) {
+      const value = this.getNumberFromValue(raw);
+      if (value !== null) {
+        this.liveStatus.set(field, value);
+        remembered = true;
+      }
+    }
+    if (remembered) {
       this.liveStatusUpdatedAt = Date.now();
     }
   }
 
   private getNumberStatus(property: string): number | null {
-    // Prefer the freshest value from a live message, falling back to the
-    // HomeData snapshot for properties live messages do not carry.
-    // A stale live cache must not shadow the periodically refreshed cloud
-    // snapshot forever (dead poller, connectivity loss): live values older
-    // than the staleness window fall back to HomeData, which self-heals.
+    // Prefer the freshest value from a live message. A stale live cache must
+    // not shadow the periodically refreshed cloud snapshot forever (dead
+    // poller, connectivity loss), so a live value older than the staleness
+    // window gives way to HomeData — but only for a field HomeData actually
+    // has. HomeData is keyed by schema id and has no tank field, no
+    // `in_cleaning`, no `dss`; for those the robot's last word, however old,
+    // is the only evidence there is. Falling through to "unknown" instead let
+    // HomeData's `error_code: 0` read as "nothing wrong" and withdraw a
+    // standing tank fault after 15 quiet minutes, which the next reply then
+    // raised again: a second notification for one empty tank (#26).
     const liveValue = this.liveStatus.get(property);
     if (
       liveValue !== undefined &&
@@ -5300,9 +5378,11 @@ export default class RoborockMatterVacuumAccessory {
       return liveValue;
     }
 
-    const value = this.api.getVacuumDeviceStatus(this.getDuid(), property);
+    const snapshotValue = this.getNumberFromValue(
+      this.api.getVacuumDeviceStatus(this.getDuid(), property)
+    );
 
-    return this.getNumberFromValue(value);
+    return snapshotValue ?? liveValue ?? null;
   }
 
   private getNumberFromValue(value: unknown): number | null {
@@ -5567,13 +5647,9 @@ export default class RoborockMatterVacuumAccessory {
     if (options.clearOptimistic === true) {
       this.clearOptimisticState();
     }
-    // Forced: identify commands and the heartbeat must always reach the
-    // Matter layer — the heartbeat's forced full write is also the diff
-    // mechanism's self-healing safety net.
     const updated = await this.publishRoborockSnapshot(
       this.buildClusters(),
-      reason,
-      { force: true }
+      reason
     );
     if (updated) {
       this.ensureMatterStateHeartbeat();
@@ -5803,13 +5879,16 @@ export default class RoborockMatterVacuumAccessory {
       case 29: // Mapping
         return true;
       default:
-        return false;
+        return isRoborockMoppingOnTheFloor(state);
     }
   }
 
   private async recoverMatterStateAfterFailedCommand(
     action: string
   ): Promise<void> {
+    // A start that failed cleaned nothing; a failed command of any other kind
+    // finds no start waiting here.
+    this.restoreServiceAreaProgressFromBeforeStart();
     try {
       await this.publishCurrentMatterState(
         `${action} command failure recovery`,
@@ -5839,44 +5918,6 @@ export default class RoborockMatterVacuumAccessory {
     // Also match the upstream phrasing used by getServerTimers and
     // updateServerTimer ("Vacuum <duid> is not initialized.").
     return /is not initialized/i.test(this.getErrorMessage(error));
-  }
-
-  private isMatterInitializingError(error: unknown): boolean {
-    return /\bis still initializing\b/i.test(this.getErrorMessage(error));
-  }
-
-  private scheduleMatterInitializationRetry(
-    reason: string,
-    error: unknown
-  ): void {
-    if (this.matterInitializationRetryPending) {
-      return;
-    }
-
-    const delayMs =
-      MATTER_INITIALIZATION_RETRY_DELAYS_MS[
-        this.matterInitializationRetryAttempt
-      ];
-    if (delayMs === undefined) {
-      this.platform.log.debug(
-        `Matter state update after ${reason} for ${this.getVacuumName()} is still waiting on Homebridge endpoint initialization; suppressing additional startup retries. Last error: ${this.getErrorMessage(error)}`
-      );
-      return;
-    }
-
-    this.matterInitializationRetryAttempt += 1;
-    this.matterInitializationRetryPending = true;
-    this.platform.log.debug(
-      `Matter state update after ${reason} for ${this.getVacuumName()} was delayed because Homebridge says the endpoint is still initializing; retrying in ${delayMs} ms.`
-    );
-
-    const retryTimer = scheduleTimer(() => {
-      this.matterInitializationRetryPending = false;
-      this.scheduleMatterStateRefresh(
-        `endpoint initialization retry (${reason})`
-      );
-    }, delayMs);
-    unrefTimer(retryTimer);
   }
 
   private logMatterCommandDuration(

@@ -254,7 +254,10 @@ describe("Matter clean mode capability fallback", () => {
     const platform = createMatterPlatform({ capabilities: undefined });
     const { accessory } = createMatterAccessory(platform, false);
 
-    expect(accessory.clusters.rvcCleanMode.supportedModes).toHaveLength(1);
+    // Vacuum only: one mode is fewer than Matter allows, so the cluster is
+    // left out rather than built to be refused.
+    expect(accessory.clusters.rvcCleanMode).toBeUndefined();
+    expect(accessory.clusters.rvcRunMode).toBeDefined();
   });
 });
 

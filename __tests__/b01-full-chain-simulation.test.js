@@ -283,9 +283,9 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
     const areaPublish = [...matterUpdates]
       .reverse()
       .find((u) => u.uuid === `uuid-${GARAGE}` && u.cluster === "serviceArea");
-    expect(areaPublish.attributes.currentArea).toBe(
-      MAP_FIXTURE.expectedRooms[0].roomId
-    );
+    // Not named until live tracking or the robot's own room-clean report
+    // says the robot is in it.
+    expect(areaPublish.attributes.currentArea).toBeNull();
     expect(areaPublish.attributes.progress).toEqual([
       { areaId: MAP_FIXTURE.expectedRooms[0].roomId, status: 1 },
     ]);

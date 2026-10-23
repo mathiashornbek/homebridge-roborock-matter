@@ -24,7 +24,8 @@
  * These tests pin the ordering rule that fixes it. They are written against
  * the write calls the plugin makes, because that is the thing this codebase
  * controls; the matter.js behaviour itself is recorded in the measurement
- * table in writeOperationalStateCluster().
+ * table in writeOperationalStateCluster(). Each publish reads the store back
+ * first, as the plugin does through `api.matter.getAccessoryState`.
  */
 
 const fs = require("fs");
@@ -86,13 +87,20 @@ function makeAccessory() {
   } = require("../src/matter_vacuum_accessory");
   const accessory = Object.create(RoborockMatterVacuumAccessory.prototype);
   accessory.accessory = { UUID: "uuid-1" };
-  accessory.publishedOperationalState = undefined;
-  accessory.publishedOperationalError = undefined;
   return accessory;
 }
 
+/** One publish of the cluster, against the store as it reads back. */
+async function write(accessory, matter, attributes) {
+  const stored = await matter.getAccessoryState(
+    "uuid-1",
+    "rvcOperationalState"
+  );
+  await accessory.writeOperationalStateCluster(matter, attributes, stored);
+}
+
 async function publish(accessory, matter, operationalState, errorStateId) {
-  await accessory.writeOperationalStateCluster(matter, {
+  await write(accessory, matter, {
     operationalStateList: [0, 1, 2, 3, 64, 65, 66].map(
       (operationalStateId) => ({ operationalStateId })
     ),
@@ -137,27 +145,25 @@ describe("a standing tank fault is not re-raised every minute", () => {
     );
   });
 
-  test("the error is written after the state, never with it", async () => {
+  test("a fault is raised in a write of its own, never beside a state", async () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await publish(accessory, matter, DOCKED, TANK_EMPTY);
+    // From Charging: the state differs from the store, and is still not
+    // written — matter.js puts the store at Error the moment the fault lands.
+    await publish(accessory, matter, CHARGING, TANK_EMPTY);
 
-    for (const write of store.writes) {
+    for (const written of store.writes) {
       const both =
-        "operationalState" in write.attributes &&
-        "operationalError" in write.attributes;
+        "operationalState" in written.attributes &&
+        "operationalError" in written.attributes;
       expect(both).toBe(false);
     }
-
-    const stateAt = store.writes.findIndex(
-      (write) => "operationalState" in write.attributes
-    );
-    const errorAt = store.writes.findIndex(
-      (write) => "operationalError" in write.attributes
-    );
-    expect(stateAt).toBeGreaterThanOrEqual(0);
-    expect(errorAt).toBeGreaterThan(stateAt);
+    expect(
+      store.writes.some((written) => "operationalState" in written.attributes)
+    ).toBe(false);
+    expect(store.operationalState).toBe(ERROR);
+    expect(store.errorEvents).toBe(1);
   });
 
   test("a state change underneath a standing fault does not re-raise it", async () => {
@@ -211,22 +217,27 @@ describe("a standing tank fault is not re-raised every minute", () => {
 
     // The phase and the state list must keep flowing: they do not touch the
     // error, and suppressing them would be a different bug.
-    await accessory.writeOperationalStateCluster(matter, {
+    await write(accessory, matter, {
       operationalState: DOCKED,
       operationalError: { errorStateId: TANK_EMPTY },
-      currentPhase: 0,
       phaseList: ["Cleaning"],
+      currentPhase: 0,
     });
-    await accessory.writeOperationalStateCluster(matter, {
+    await write(accessory, matter, {
       operationalState: DOCKED,
       operationalError: { errorStateId: TANK_EMPTY },
-      currentPhase: 1,
       phaseList: ["Cleaning", "Drying"],
+      currentPhase: 1,
     });
 
-    const last = store.writes[store.writes.length - 1];
-    expect(last.attributes.currentPhase).toBe(1);
-    expect(last.attributes.phaseList).toEqual(["Cleaning", "Drying"]);
+    const phaseWrites = store.writes.filter(
+      (written) => "currentPhase" in written.attributes
+    );
+    expect(phaseWrites.at(-1).attributes.currentPhase).toBe(1);
+    expect(phaseWrites.at(-1).attributes.phaseList).toEqual([
+      "Cleaning",
+      "Drying",
+    ]);
     expect(store.errorEvents).toBe(1);
   });
 
@@ -234,9 +245,9 @@ describe("a standing tank fault is not re-raised every minute", () => {
     const { store, matter } = makeStore();
     const accessory = makeAccessory();
 
-    await accessory.writeOperationalStateCluster(matter, {
+    await write(accessory, matter, {
       operationalState: DOCKED,
-      currentPhase: 0,
+      currentPhase: null,
     });
 
     expect(

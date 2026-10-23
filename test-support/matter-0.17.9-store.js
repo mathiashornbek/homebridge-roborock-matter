@@ -23,6 +23,10 @@
  *
  * Reactors modelled, all from @matter/node 0.17.9 src/behaviors:
  *
+ *  behavior/state/validation/ValueValidator.ts:152-172 and
+ *  @matter/types clusters/rvc-operational-state.d.ts:512-610
+ *           operationalError.errorStateId must be a member of the RVC
+ *           ErrorStateEnum: 0-3 and 64-78 (DirtyWaterTankFull is 74).
  *  rvc-operational-state/RvcOperationalStateServer.ts
  *   :72-77  operationalState must be in operationalStateList, else throw.
  *   :78-84  leaving Error while an error stands clears operationalError.
@@ -46,6 +50,13 @@
  * emits an event and returns; the set runs later in a setImmediate and its
  * failure is only logged (StateManager.js:94-130). So `updateAccessoryState`
  * here resolves either way and the rejection is recorded in `rejected`.
+ * With `{ deferWrites: true }` the write is also applied in a setImmediate,
+ * as Homebridge applies it, instead of before the call returns.
+ *
+ * `getAccessoryState(uuid, cluster)` answers as Homebridge 2.4.0's does
+ * (MatterAPIImpl.js:363-392 -> StateManager.getAccessoryState): a copy of
+ * the cluster as the store holds it now, or undefined for a cluster the
+ * endpoint does not have.
  *
  * The model was checked against the real 0.17.9 library on an offline
  * ServerNode (memory storage, mDNS stubbed): every sequence in the tests that
@@ -54,6 +65,11 @@
 
 const ERROR = 3;
 const NO_ERROR = 0;
+
+// RvcOperationalState.ErrorState in @matter/types 0.17.9.
+const RVC_ERROR_STATE_IDS = new Set([
+  0, 1, 2, 3, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+]);
 
 function isDeepEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -90,6 +106,13 @@ const PRE_COMMIT = {
       ) {
         throw new ValidationError(
           `Current phase ${newValue} is out of bounds for phase list of length ${state.phaseList.length}`
+        );
+      }
+    },
+    operationalError(state, newValue) {
+      if (!RVC_ERROR_STATE_IDS.has(newValue?.errorStateId)) {
+        throw new ValidationError(
+          `operationalError.errorStateId: Value ${newValue?.errorStateId} is not defined in enum`
         );
       }
     },
@@ -219,7 +242,7 @@ function assertMode(state, newMode) {
  * @param {Record<string, Record<string, unknown>>} [initial] the endpoint as
  *   registered (Homebridge passes accessory.clusters as the defaults).
  */
-function createMatterStore(initial = {}) {
+function createMatterStore(initial = {}, { deferWrites = false } = {}) {
   const clusters = {};
   for (const [name, attributes] of Object.entries(initial)) {
     clusters[name] = clone(attributes);
@@ -291,8 +314,7 @@ function createMatterStore(initial = {}) {
     }
   }
 
-  async function updateAccessoryState(_uuid, cluster, attributes) {
-    writes.push({ cluster, attributes: clone(attributes) });
+  function apply(cluster, attributes) {
     const snapshot = clone(clusters[cluster]);
     try {
       const before = applyTransaction(cluster, attributes);
@@ -302,11 +324,27 @@ function createMatterStore(initial = {}) {
       clusters[cluster] = snapshot;
       rejected.push({
         cluster,
-        attributes: clone(attributes),
+        attributes,
         error: error.message,
       });
     }
+  }
+
+  async function updateAccessoryState(_uuid, cluster, attributes) {
+    writes.push({ cluster, attributes: clone(attributes) });
+    const copy = clone(attributes);
+    if (deferWrites) {
+      setImmediate(() => apply(cluster, copy));
+    } else {
+      apply(cluster, copy);
+    }
     // Resolves either way: Homebridge 2.4.0 never hands the failure back.
+  }
+
+  async function getAccessoryState(_uuid, cluster) {
+    return clusters[cluster] === undefined
+      ? undefined
+      : clone(clusters[cluster]);
   }
 
   return {
@@ -315,6 +353,7 @@ function createMatterStore(initial = {}) {
     rejected,
     writes,
     updateAccessoryState,
+    getAccessoryState,
     /** What a subscribed controller would read right now. */
     read(cluster, attribute) {
       return clusters[cluster]?.[attribute];

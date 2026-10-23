@@ -167,6 +167,15 @@ class vacuum {
     this.lastStatusPollAt = new Map();
 
     /**
+     * The robot's last `get_status` reply as it arrived, per duid. Startup
+     * waits for the first one before the Matter accessories exist, so this is
+     * how they can start from it (roborockAPI.getLastKnownLiveStatus).
+     *
+     * @type {Map<string, Record<string, unknown>>}
+     */
+    this.lastStatusReply = new Map();
+
+    /**
      * `get_status` attributes with no mapping in the robot's feature profile
      * that have already been reported, per duid. The set of unmapped fields a
      * given robot sends is fixed by its firmware, so reporting it once says
@@ -616,6 +625,10 @@ class vacuum {
           const deviceStatus = await sendParameterRequest("get_prop", [
             "get_status",
           ]);
+          if (deviceStatus?.[0] && typeof deviceStatus[0] === "object") {
+            // A copy: the loop below rewrites some fields in place.
+            this.lastStatusReply.set(duid, { ...deviceStatus[0] });
+          }
 
           await this.updateDiagnosticSnapshot(duid, "lastStatus", {
             method: "get_status",

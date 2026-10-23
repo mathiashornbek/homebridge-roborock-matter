@@ -118,6 +118,29 @@ describe("a halted robot stops claiming it is Ready", () => {
     );
   });
 
+  test("with the setting off, the store matter.js keeps shows Ready, and nothing is announced", async () => {
+    // Against the matter.js 0.17.9 replay rather than a reconstruction: any
+    // fault written to this cluster forces Error there, so "Ready" can only
+    // survive if the robot's own fault is not written at all.
+    const {
+      createMatterStore,
+    } = require("../test-support/matter-0.17.9-store");
+    const platform = createPlatform({
+      status: { state: ROBOROCK_STATE_IN_ERROR, error_code: 8, battery: 42 },
+      enableMatterFaultReporting: false,
+    });
+    const { accessory, vacuum } = createAccessory(platform);
+    const store = createMatterStore(accessory.clusters);
+    platform.getMatterApi = () => store;
+
+    await publishSnapshot(vacuum);
+
+    expect(store.read("rvcOperationalState", "operationalState")).toBe(
+      RVC_OPERATIONAL_STATE_STOPPED
+    );
+    expect(store.events).toEqual([]);
+  });
+
   test("with the setting off, the old Ready behaviour is untouched", async () => {
     const matterUpdates = [];
     const platform = createPlatform({
