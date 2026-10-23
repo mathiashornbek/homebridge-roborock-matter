@@ -94,7 +94,7 @@ async function publishWith(status, tank) {
   await vacuum.updateMatterStateFromRoborock("test");
 
   const cluster = operationalStateCluster(matterUpdates);
-  return { cluster, platform, accessory };
+  return { cluster, platform, accessory, matterUpdates };
 }
 
 describe("an empty clean-water tank reaches the Apple Home tile", () => {
@@ -154,7 +154,7 @@ describe("an empty clean-water tank reaches the Apple Home tile", () => {
     // #35), and that is the price of the warning. What the plugin itself
     // sends is still the robot's real state, so the moment the fault goes the
     // tile has something true to return to.
-    const { cluster } = await publishWith({
+    const { cluster, matterUpdates } = await publishWith({
       state: ROBOROCK_STATE_CHARGING,
       battery: 100,
       error_code: 0,
@@ -164,7 +164,12 @@ describe("an empty clean-water tank reaches the Apple Home tile", () => {
     expect(cluster.operationalError).toEqual({
       errorStateId: RVC_ERROR_WATER_TANK_EMPTY,
     });
-    expect(cluster.operationalState).not.toBe(RVC_OPERATIONAL_STATE_ERROR);
+    // The store reads Error; that is matter.js. No write of Error is ours.
+    const statesWritten = matterUpdates
+      .filter((update) => update.cluster === "rvcOperationalState")
+      .map((update) => update.attributes.operationalState)
+      .filter((state) => state !== undefined);
+    expect(statesWritten).not.toContain(RVC_OPERATIONAL_STATE_ERROR);
   });
 
   test("mid-clean it is held back, because a fault would stop the tile showing the clean (#35)", async () => {

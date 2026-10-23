@@ -1354,6 +1354,17 @@ export default class RoborockMatterVacuumAccessory {
         ? { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" }
         : null;
     }
+    if (
+      errorCode !== null &&
+      errorCode !== 0 &&
+      !this.isFaultReportingEnabled()
+    ) {
+      // "Report faults" off promises a halted robot keeps reading Ready, and
+      // in matter.js 0.17.9 any fault written here forces the Error state —
+      // so the robot's own fault is not published either. The tank has its
+      // own setting and was decided above.
+      return { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" };
+    }
     if (errorCode !== null && errorCode !== 0) {
       // The table is Roborock's v1 numbering. A B01/Q7 robot's `fault` field
       // is a different space entirely — 407, 2105 — passed through under the
