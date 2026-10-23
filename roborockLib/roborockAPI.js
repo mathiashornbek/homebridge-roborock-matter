@@ -32,10 +32,11 @@ const { describeDroppedFrames } = require("./lib/roborock_mqtt_connector");
 const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
 const { LateReplyTracker } = require("./lib/lateReplies");
 
-// v1 states in which the robot is actively doing something and state
-// transitions are imminent (cleaning, returning, spot/zone/segment runs,
-// docking, mop washing). Drives the adaptive B01 poll cadence.
-const B01_ACTIVE_V1_STATES = new Set([5, 6, 7, 11, 15, 16, 17, 18, 23, 26]);
+// The Q7 work statuses, in the v1 numbering mapStatusToV1 gives them, in
+// which the robot is actively doing something and state transitions are
+// imminent: cleaning (5), docking (15) and washing the mop (23). Drives the
+// adaptive Q7 poll cadence; no other value can reach it.
+const B01_ACTIVE_V1_STATES = new Set([5, 15, 23]);
 
 // v1 states in which the robot is physically moving through rooms, making
 // the SCMap currentPose worth fetching for live-room tracking (cleaning,

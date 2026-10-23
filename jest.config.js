@@ -15,9 +15,5 @@ module.exports = {
   // Individual real-I/O tests still set their own higher ceiling where a cold
   // interpreter start is involved.
   testTimeout: 20_000,
-  collectCoverageFrom: [
-    "roborockLib/**/*.js",
-    "!roborockLib/lib/sniffing/**",
-    "!roborockLib/lib/map/**",
-  ],
+  collectCoverageFrom: ["roborockLib/**/*.js"],
 };
