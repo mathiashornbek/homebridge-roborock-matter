@@ -614,15 +614,18 @@ class roborock_mqtt_connector {
             );
           }
         } else if (data.protocol == 301) {
-          // B01/Q7 map upload responses arrive on protocol 301 as an opaque
-          // base64 blob. Resolve the per-device pending map request first;
-          // classic v1 photo/map chunk handling continues below otherwise.
-          const pendingMap = this.adapter.pendingB01MapRequests?.get(duid);
-          if (pendingMap) {
-            this.adapter.clearTimeout(pendingMap.timeout);
-            this.adapter.pendingB01MapRequests.delete(duid);
-            this.sessionDiagnostics.noteActivity("correlated");
-            pendingMap.resolve(data.payload);
+          // A B01 robot's map frames are its own format, pushed unasked as
+          // well as sent on request. Every one goes to the B01 map handler,
+          // which decodes it once and routes it by map type; none reaches
+          // the classic photo/map parser below, which counted each push as a
+          // frame for another controller.
+          if (
+            typeof this.adapter.onB01MapFrame === "function" &&
+            this.adapter.isB01Device?.(duid)
+          ) {
+            if (this.adapter.onB01MapFrame(duid, data.payload)) {
+              this.sessionDiagnostics.noteActivity("correlated");
+            }
             return;
           }
 

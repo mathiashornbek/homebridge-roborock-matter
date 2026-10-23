@@ -761,31 +761,6 @@ describe("Q7 room discovery via the B01 map channel", () => {
     expect(b01.findCurrentMapId({ map_list: [] })).toBeNull();
   });
 
-  test("protocol 301 payloads resolve the pending per-device map request", () => {
-    const {
-      resolveB01PendingResponse: _unused,
-    } = require("../roborockLib/lib/roborock_mqtt_connector");
-    const adapter = {
-      pendingB01MapRequests: new Map(),
-      clearTimeout: jest.fn((t) => clearTimeout(t)),
-    };
-    const resolve = jest.fn();
-    adapter.pendingB01MapRequests.set("duid-1", {
-      resolve,
-      reject: jest.fn(),
-      timeout: setTimeout(() => undefined, 5000),
-    });
-
-    // Mirror the connector branch: pending map request wins on protocol 301.
-    const pendingMap = adapter.pendingB01MapRequests.get("duid-1");
-    adapter.clearTimeout(pendingMap.timeout);
-    adapter.pendingB01MapRequests.delete("duid-1");
-    pendingMap.resolve(Buffer.from("payload"));
-
-    expect(resolve).toHaveBeenCalledWith(Buffer.from("payload"));
-    expect(adapter.pendingB01MapRequests.size).toBe(0);
-  });
-
   test("cached rooms feed getRoomMappingsForDevice in the Matter shape", async () => {
     const api = new Roborock({
       log: createLog(),
@@ -821,9 +796,18 @@ describe("Q7 room discovery via the B01 map channel", () => {
         .fn()
         .mockResolvedValue({ map_list: [{ id: 4, cur: true }] }),
     };
+    // The map request resolves with the saved map, decoded once where the
+    // 301 frame arrives (onB01MapFrame).
     api.sendB01MapRequest = jest
       .fn()
-      .mockResolvedValue(Buffer.from(MAP_FIXTURE.payloadBase64, "ascii"));
+      .mockResolvedValue(
+        b01.parseScMapLiveState(
+          b01.decodeMapPayload(
+            Buffer.from(MAP_FIXTURE.payloadBase64, "ascii"),
+            b01.createMapKey(MAP_FIXTURE.serial, MAP_FIXTURE.model)
+          )
+        )
+      );
 
     const rooms = await api.refreshB01Rooms("duid-1");
     expect(rooms).toEqual(MAP_FIXTURE.expectedRooms);

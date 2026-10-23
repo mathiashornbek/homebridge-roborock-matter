@@ -136,11 +136,11 @@ describe("the source keeps the two legs apart", () => {
 
   test("the upload leg has its own catch, naming its own method", () => {
     const uploadAt = liveRoomFetch.indexOf(
-      "rawPayload = await this.sendB01MapRequest"
+      "savedMap = await this.sendB01MapRequest"
     );
     const region = liveRoomFetch.slice(
       uploadAt,
-      liveRoomFetch.indexOf("const serial = this.getVacuumDeviceInfo(duid,")
+      liveRoomFetch.indexOf("liveState.savedGeometry = savedMap")
     );
     expect(uploadAt).toBeGreaterThan(-1);
     expect(region).toMatch(/B01_MAP_UPLOAD_METHOD/);

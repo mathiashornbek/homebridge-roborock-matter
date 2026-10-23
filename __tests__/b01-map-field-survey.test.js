@@ -160,7 +160,8 @@ describe("a live-room miss reports what the payload actually contains", () => {
 
     expect(parsed.rawSurvey.truncated).toBe(true);
     // And the fields after the bad one are still parsed normally.
-    expect(parsed.pose).toEqual({ x: 1100, y: 1100 });
+    // The pose carries its `update` flag (DeviceCurrentPoseInfo field 2).
+    expect(parsed.pose).toEqual({ x: 1100, y: 1100, update: 1 });
     expect(parsed.rawSurvey.scalars["8.3"]).toBe(1100);
   });
 
@@ -208,7 +209,7 @@ describe("a live-room miss reports what the payload actually contains", () => {
     );
 
     expect(parsed.head).toMatchObject({ minX: -8, minY: -8, sizeX: 500 });
-    expect(parsed.pose).toEqual({ x: 1.5, y: 1.5 });
+    expect(parsed.pose).toEqual({ x: 1.5, y: 1.5, update: 1 });
     expect(parsed.rooms).toEqual([{ roomId: 16, roomName: "Stue" }]);
     expect(parsed.roomChains).toHaveLength(1);
     expect(parsed.roomChains[0].points).toHaveLength(3);

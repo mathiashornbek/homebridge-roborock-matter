@@ -118,26 +118,24 @@ describe("a position off the map is not a miss the user can act on", () => {
     }
   });
 
-  test("a header without a raster size falls back to the outlines", () => {
-    // Older or partial map payloads carry no size. There is nothing better to
-    // compare against then, so the outline span is used with a wide margin —
-    // wide enough that a doorway is never mistaken for a placeholder.
-    const headless = { minX: 0, minY: 0, resolution: 0.05 };
+  test("the map's bounds are minX..maxX by minY..maxY, as python-roborock's in_bounds reads them", () => {
+    // _WorldToPixel.in_bounds "rejects placeholder poses" on exactly this
+    // test, with no slack; the raster size stands in only when maxX/maxY are
+    // missing.
+    const bounded = { minX: 0, minY: 0, maxX: 5, maxY: 5, resolution: 0.05 };
+    const reason = (head, pose) =>
+      b01.describeLiveRoomResolution({ head, pose, roomChains: ROOMS }).reason;
 
+    expect(reason(bounded, { x: 1100, y: 1100 })).toBe("pose-placeholder");
+    expect(reason(bounded, { x: 5.01, y: 1 })).toBe("pose-placeholder");
+    expect(reason(bounded, { x: 55 * 0.05, y: 20 * 0.05 })).toBe(
+      "pose-outside-outlines"
+    );
+    // A header with neither bounds nor a raster size cannot rule a pose out;
+    // the outlines decide. Real frames always carry both (python's parser
+    // refuses a frame without a raster size).
     expect(
-      b01.describeLiveRoomResolution({
-        head: headless,
-        pose: { x: 1100, y: 1100 },
-        roomChains: ROOMS,
-      }).reason
-    ).toBe("pose-placeholder");
-
-    expect(
-      b01.describeLiveRoomResolution({
-        head: headless,
-        pose: { x: 55 * 0.05, y: 20 * 0.05 },
-        roomChains: ROOMS,
-      }).reason
+      reason({ minX: 0, minY: 0, resolution: 0.05 }, { x: 1100, y: 1100 })
     ).toBe("pose-outside-outlines");
   });
 });

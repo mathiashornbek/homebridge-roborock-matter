@@ -142,8 +142,16 @@ describe("Full-chain simulation: two Q7s + one classic robot", () => {
         return null;
       }),
     };
+    // The map request resolves with the saved map, decoded once where the
+    // 301 frame arrives (onB01MapFrame), through the REAL decode chain.
+    const b01 = require("../roborockLib/lib/b01Q7Adapter");
     api.sendB01MapRequest = jest.fn(async () =>
-      Buffer.from(MAP_FIXTURE.payloadBase64, "ascii")
+      b01.parseScMapLiveState(
+        b01.decodeMapPayload(
+          Buffer.from(MAP_FIXTURE.payloadBase64, "ascii"),
+          b01.createMapKey(MAP_FIXTURE.serial, MAP_FIXTURE.model)
+        )
+      )
     );
     // v1 runtime networking is out of scope here.
     api.getNetworkInfo = jest.fn(async () => undefined);

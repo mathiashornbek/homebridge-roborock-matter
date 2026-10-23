@@ -544,16 +544,19 @@ function parseRoomsFromScMap(buffer) {
  * 12). Every other field is skipped.
  *
  * Wire reference (python-roborock b01_scmap.proto):
+ * - RobotMap:               mapType=1 varint (0 = the live map of a run)
  * - MapHeadInfo:            sizeX=2 varint, sizeY=3 varint, minX=4 float,
- *                           minY=5 float, resolution=8 float
+ *                           minY=5 float, maxX=6 float, maxY=7 float,
+ *                           resolution=8 float
  * - DeviceCurrentPoseInfo:  poseId=1 varint, update=2 varint,
  *                           x=3 float, y=4 float, phi=5 float
  * - RoomOutlineInfo:        roomId=1 varint,
  *                           points=2 repeated {x=1 varint, y=2 varint}
  * @param {Buffer} buffer
  * @returns {{
- *   head: {sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null,
- *   pose: {x: number, y: number} | null,
+ *   mapType: number,
+ *   head: {sizeX: number, sizeY: number, minX: number, minY: number, maxX: number, maxY: number, resolution: number} | null,
+ *   pose: {x: number, y: number, update?: number} | null,
  *   rawSurvey: {
  *     fields: Array<{field: number, count: number, bytes: number}>,
  *     scalars: Record<string, number>,
@@ -564,9 +567,12 @@ function parseRoomsFromScMap(buffer) {
  * }}
  */
 function parseScMapLiveState(buffer) {
-  /** @type {{sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null} */
+  // RobotMap.mapType (field 1). proto2 reads an absent field as 0, and so
+  // does python-roborock's parse_map_type, so an untyped frame is live.
+  let mapType = 0;
+  /** @type {{sizeX: number, sizeY: number, minX: number, minY: number, maxX: number, maxY: number, resolution: number} | null} */
   let head = null;
-  /** @type {{x: number, y: number} | null} */
+  /** @type {{x: number, y: number, update?: number} | null} */
   let pose = null;
   // Diagnostic. Both Q7s in the field reported a pose of exactly
   // (1100.0, 1100.0) — the same value on two robots, two maps and twelve
@@ -588,7 +594,15 @@ function parseScMapLiveState(buffer) {
 
   /** @param {Buffer} buf */
   function parseMapHead(buf) {
-    const parsed = { sizeX: 0, sizeY: 0, minX: 0, minY: 0, resolution: 0.05 };
+    const parsed = {
+      sizeX: 0,
+      sizeY: 0,
+      minX: 0,
+      minY: 0,
+      maxX: 0,
+      maxY: 0,
+      resolution: 0.05,
+    };
     forEachField(buf, (field, wireType, value) => {
       if (wireType === 0) {
         if (field === 2) parsed.sizeX = value;
@@ -596,6 +610,8 @@ function parseScMapLiveState(buffer) {
       } else if (wireType === 5) {
         if (field === 4) parsed.minX = value;
         else if (field === 5) parsed.minY = value;
+        else if (field === 6) parsed.maxX = value;
+        else if (field === 7) parsed.maxY = value;
         else if (field === 8 && value > 0) parsed.resolution = value;
       }
     });
@@ -604,16 +620,20 @@ function parseScMapLiveState(buffer) {
 
   /** @param {Buffer} buf */
   function parseCurrentPose(buf) {
-    /** @type {{x: number | null, y: number | null}} */
+    /** @type {{x: number | null, y: number | null, update?: number}} */
     const parsed = { x: null, y: null };
     forEachField(buf, (field, wireType, value) => {
+      if (field === 2 && wireType === 0) parsed.update = value;
       if (wireType !== 5) return;
       if (field === 3) parsed.x = value;
       else if (field === 4) parsed.y = value;
     });
-    return parsed.x !== null && parsed.y !== null
+    if (parsed.x === null || parsed.y === null) {
+      return null;
+    }
+    return parsed.update === undefined
       ? { x: parsed.x, y: parsed.y }
-      : null;
+      : { x: parsed.x, y: parsed.y, update: parsed.update };
   }
 
   /** @param {Buffer} buf */
@@ -713,6 +733,9 @@ function parseScMapLiveState(buffer) {
   }
 
   forEachField(buffer, (field, wireType, value) => {
+    if (field === 1 && wireType === 0) {
+      mapType = value;
+    }
     if (wireType !== 2) {
       // A position could just as easily be a bare float or varint on the
       // RobotMap itself, so top-level scalars are surveyed too.
@@ -740,6 +763,7 @@ function parseScMapLiveState(buffer) {
   });
 
   return {
+    mapType,
     head,
     pose,
     rawSurvey: {
@@ -801,6 +825,20 @@ function describeLiveRoomResolution(liveState) {
   const cellY = (pose.y - head.minY) / resolution;
   const cell = { x: cellX, y: cellY };
 
+  // A pose outside the map is no position at all, whatever the outlines say:
+  // python-roborock's _WorldToPixel.in_bounds "rejects placeholder poses", and
+  // the saved map's (1100, 1100) is exactly such a pose.
+  if (!isPoseInMapBounds(pose, head)) {
+    return {
+      roomId: null,
+      reason: "pose-placeholder",
+      outlineCount,
+      cell,
+      outlineBounds: outlineBoundingBox(chains),
+      head: { minX: head.minX, minY: head.minY, resolution },
+    };
+  }
+
   if (!outlineCount) {
     return { roomId: null, reason: "no-room-outlines", outlineCount, cell };
   }
@@ -817,34 +855,6 @@ function describeLiveRoomResolution(liveState) {
 
   const outlineBounds = outlineBoundingBox(chains);
 
-  // A pose that is not merely outside the rooms but nowhere near the map is a
-  // different thing, and calling both "outside the outlines" sent every
-  // investigation down the same wrong path for three weeks.
-  //
-  // Measured on a Q7 over a 47-minute clean, 227 fetches: 226 of them placed
-  // the robot at cell 22280,22100 — the same cell every time — while the room
-  // outlines spanned 38-293 x 90-227. The underlying pose was exactly
-  // (1100, 1100) in every one, the same constant two other Q7s reported in
-  // August. The remaining fetches resolved a real room in the right order, so
-  // the robot DOES send a true pose sometimes; it just serves a placeholder in
-  // between, and those are the fetches that must not be counted as the robot
-  // being between rooms.
-  //
-  // The test is deliberately about distance rather than about the value 1100:
-  // a placeholder is a position further outside the map than the map is wide,
-  // which no real robot can be, and which stays true if Roborock picks a
-  // different constant tomorrow.
-  if (isOffTheMap(cell, head, outlineBounds)) {
-    return {
-      roomId: null,
-      reason: "pose-placeholder",
-      outlineCount,
-      cell,
-      outlineBounds,
-      head: { minX: head.minX, minY: head.minY, resolution },
-    };
-  }
-
   return {
     roomId: null,
     reason: "pose-outside-outlines",
@@ -856,55 +866,38 @@ function describeLiveRoomResolution(liveState) {
 }
 
 /**
- * Whether a cell is outside the map raster itself.
+ * Whether a world-coordinate pose lies inside the map, as python-roborock's
+ * `_WorldToPixel.in_bounds` decides it: minX..maxX by minY..maxY. A header
+ * without maxX/maxY is bounded by its raster size instead; one with neither
+ * cannot rule a pose out.
  *
- * The map's own `sizeX`/`sizeY` is the right yardstick and the outline
- * bounding box is not: outlines cover rooms, while the raster covers
- * everywhere the robot has ever been. A robot standing in a doorway, in a
- * hallway nobody named, or against a wall the outlines do not reach is
- * legitimately outside every outline and inside the map — that is a real miss
- * and must keep counting as one. Being outside the raster is not a position
- * at all; the robot cannot be somewhere it has never mapped.
- *
- * One raster width of slack on each side, because the transform can put a
- * genuine edge case a little past the boundary and this must not swallow a
- * real coordinate bug. The measured placeholder sat at cell 22280 on a map
- * 500 cells wide — 44 times out — so the margin costs nothing.
- *
- * Falls back to the outline bounds when a header carries no size, which is
- * the only case where there is nothing better to compare against.
- *
- * @param {{x: number, y: number}} cell
- * @param {{minX: number, minY: number, resolution: number,
- *          sizeX?: number, sizeY?: number}} head
- * @param {{minX: number, minY: number, maxX: number, maxY: number} | null} outlineBounds
+ * @param {{x: number, y: number}} pose
+ * @param {{minX: number, minY: number, resolution: number, maxX?: number,
+ *          maxY?: number, sizeX?: number, sizeY?: number}} head
  * @returns {boolean}
  */
-function isOffTheMap(cell, head, outlineBounds) {
-  const sizeX = Number(head?.sizeX) || 0;
-  const sizeY = Number(head?.sizeY) || 0;
-
-  if (sizeX > 0 && sizeY > 0) {
-    return (
-      cell.x < -sizeX ||
-      cell.x > sizeX * 2 ||
-      cell.y < -sizeY ||
-      cell.y > sizeY * 2
-    );
+function isPoseInMapBounds(pose, head) {
+  const resolution = head.resolution > 0 ? head.resolution : 0.05;
+  const maxX =
+    Number(head.maxX) > head.minX
+      ? Number(head.maxX)
+      : Number(head.sizeX) > 0
+        ? head.minX + Number(head.sizeX) * resolution
+        : null;
+  const maxY =
+    Number(head.maxY) > head.minY
+      ? Number(head.maxY)
+      : Number(head.sizeY) > 0
+        ? head.minY + Number(head.sizeY) * resolution
+        : null;
+  if (maxX === null || maxY === null) {
+    return true;
   }
-
-  if (!outlineBounds) {
-    return false;
-  }
-
-  const spanX = Math.max(outlineBounds.maxX - outlineBounds.minX, 1);
-  const spanY = Math.max(outlineBounds.maxY - outlineBounds.minY, 1);
-
   return (
-    cell.x < outlineBounds.minX - spanX * 4 ||
-    cell.x > outlineBounds.maxX + spanX * 4 ||
-    cell.y < outlineBounds.minY - spanY * 4 ||
-    cell.y > outlineBounds.maxY + spanY * 4
+    head.minX <= pose.x &&
+    pose.x <= maxX &&
+    head.minY <= pose.y &&
+    pose.y <= maxY
   );
 }
 
@@ -981,6 +974,11 @@ function findCurrentMapId(data) {
 }
 
 const B01_MAP_UPLOAD_METHOD = "service.upload_by_mapid";
+
+// RobotMap.mapType of the live map a Q7 pushes while it cleans. "Type 0 is the
+// live map of the current cleaning run, other types are historic or saved
+// maps" (python-roborock b01_map_parser.parse_map_type).
+const B01_LIVE_MAP_TYPE = 0;
 
 /** @param {unknown} version */
 function isB01Protocol(version) {
@@ -1228,6 +1226,7 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
 }
 
 module.exports = {
+  B01_LIVE_MAP_TYPE,
   MATTER_RVC_ERROR,
   describeQ7Fault,
   translateQ7WorkStatusToV1State,
