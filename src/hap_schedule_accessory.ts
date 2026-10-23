@@ -718,6 +718,20 @@ export default class RoborockHapScheduleAccessory {
     return this.scheduleAccessories.size;
   }
 
+  /** The robot as a log line names it: its name, never a bare duid. */
+  get robotName(): string {
+    const api = this.platform.roborockAPI as {
+      describeDevice?: (duid: string) => string;
+    };
+    return (
+      this.vacuumName ||
+      (typeof api?.describeDevice === "function"
+        ? api.describeDevice(this.duid)
+        : "") ||
+      "this robot"
+    );
+  }
+
   /**
    * The PlatformAccessory the schedule switches live in.
    *
@@ -1100,7 +1114,7 @@ export default class RoborockHapScheduleAccessory {
           .filter(Boolean)
           .join("; ");
         this.platform.log.warn(
-          `Unable to refresh Roborock schedules for ${this.vacuumName || this.duid}: ${reasons}. Preserving existing schedules.`
+          `Unable to refresh Roborock schedules for ${this.robotName}: ${reasons}. Preserving existing schedules.`
         );
         return preserved();
       }
@@ -1126,7 +1140,7 @@ export default class RoborockHapScheduleAccessory {
         this.lastServerTimerSchedules = timerSchedules.schedules;
       } else if (timerSchedules.reason) {
         this.platform.log.warn(
-          `Unable to refresh the device-side schedules for ${this.vacuumName || this.duid}: ${timerSchedules.reason}. Keeping the previous ones and trying again shortly.`
+          `Unable to refresh the device-side schedules for ${this.robotName}: ${timerSchedules.reason}. Keeping the previous ones and trying again shortly.`
         );
       }
 
@@ -1137,7 +1151,7 @@ export default class RoborockHapScheduleAccessory {
         }
       } else if (sceneSchedules.reason) {
         this.platform.log.warn(
-          `Unable to refresh the Routines for ${this.vacuumName || this.duid}: ${sceneSchedules.reason}. Keeping the previous ones and trying again shortly.`
+          `Unable to refresh the Routines for ${this.robotName}: ${sceneSchedules.reason}. Keeping the previous ones and trying again shortly.`
         );
       }
 
@@ -1152,8 +1166,10 @@ export default class RoborockHapScheduleAccessory {
         this.clearRefreshFailure();
       }
 
-      this.platform.log.info(
-        `Schedule parser: parsed ${this.duid}; result count=${merged.length}` +
+      // Debug: it is written on every reading, up to twelve an hour per
+      // robot while a Home app is open.
+      this.platform.log.debug(
+        `Schedule parser: parsed ${this.robotName}; result count=${merged.length}` +
           (readings.scenes.state === "read"
             ? ` (device timers=${timerSchedules.ok ? timerSchedules.schedules.length : "kept"}, ` +
               `cloud routines with a timer=${sceneSchedules.ok ? sceneSchedules.schedules.length : "kept"}` +
@@ -1188,7 +1204,7 @@ export default class RoborockHapScheduleAccessory {
       this.scheduleRetryRead();
       const message = error instanceof Error ? error.message : String(error);
       this.platform.log.warn(
-        `Unable to refresh Roborock schedules for ${this.duid}: ${message}. Preserving existing schedules.`
+        `Unable to refresh Roborock schedules for ${this.robotName}: ${message}. Preserving existing schedules.`
       );
       return preserved();
     }
@@ -1210,7 +1226,7 @@ export default class RoborockHapScheduleAccessory {
       if (isServerTimerRefusal(error)) {
         this.serverTimersRefused = true;
         this.platform.log.info(
-          `${this.vacuumName || this.duid} does not offer a device-side schedule list (${
+          `${this.robotName} does not offer a device-side schedule list (${
             error instanceof Error ? error.message : String(error)
           }). Its schedules are read from the account's Routines instead, and the device-side list is not asked again this session.`
         );
@@ -1253,7 +1269,7 @@ export default class RoborockHapScheduleAccessory {
       if (status >= 400 && status < 500 && status !== 429) {
         this.cloudScenesUnavailable = true;
         this.platform.log.info(
-          `The Roborock account does not show Routines for ${this.vacuumName || this.duid} (HTTP ${status}); they are not asked for again this session.`
+          `The Roborock account does not show Routines for ${this.robotName} (HTTP ${status}); they are not asked for again this session.`
         );
         return { state: "skipped" };
       }
@@ -1381,7 +1397,7 @@ export default class RoborockHapScheduleAccessory {
 
       try {
         this.platform.log.info(
-          `Schedule command: ${request.enabled ? "enabling" : "disabling"} ${this.duid}/${request.scheduleId}.`
+          `Schedule command: ${request.enabled ? "enabling" : "disabling"} schedule ${request.scheduleId} of ${this.robotName}.`
         );
         this.accountCoordinator.recordRequest("primaryWrite");
         if (isCloudSceneScheduleId(request.scheduleId)) {
@@ -1433,8 +1449,8 @@ export default class RoborockHapScheduleAccessory {
       (request) => !isCloudSceneScheduleId(request.scheduleId)
     );
     const primaryConfirmed = primarySent.length - unconfirmed.length;
-    this.platform.log.info(
-      `Schedule batch verification for ${this.duid}: ` +
+    this.platform.log.debug(
+      `Schedule batch verification for ${this.robotName}: ` +
         `requested=${requests.length}; primarySent=${primarySent.length}; ` +
         `primaryConfirmed=${primaryConfirmed}; fallbackNeeded=${fallback.length}.`
     );
@@ -1465,7 +1481,7 @@ export default class RoborockHapScheduleAccessory {
 
       try {
         this.platform.log.warn(
-          `Schedule command: upd_server_timer was not confirmed for ${this.duid}/${request.scheduleId}; trying upd_timer fallback.`
+          `Schedule command: upd_server_timer was not confirmed for schedule ${request.scheduleId} of ${this.robotName}; trying upd_timer fallback.`
         );
         this.accountCoordinator.recordRequest("fallbackWrite");
         await updateTimer(api, this.duid, request.scheduleId, request.enabled, {
@@ -1505,8 +1521,8 @@ export default class RoborockHapScheduleAccessory {
     const fallbackConfirmed = fallbackSent.filter((request) =>
       this.cachedScheduleMatches(request)
     ).length;
-    this.platform.log.info(
-      `Schedule fallback verification for ${this.duid}: ` +
+    this.platform.log.debug(
+      `Schedule fallback verification for ${this.robotName}: ` +
         `requested=${requests.length}; primarySent=${primarySent.length}; ` +
         `primaryConfirmed=${primaryConfirmed}; fallbackNeeded=${fallback.length}; ` +
         `fallbackSent=${fallbackSent.length}; fallbackConfirmed=${fallbackConfirmed}; ` +
@@ -2125,8 +2141,9 @@ class RoborockHapScheduleSwitchAccessory {
       throw this.writeFailed();
     }
 
-    this.platform.log.info(
-      `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.duid}/${this.scheduleId}.`
+    // Debug: the batch logs the command itself when it sends it.
+    this.platform.log.debug(
+      `Schedule command: queueing ${enabled ? "enable" : "disable"} for schedule ${this.scheduleId} of ${this.coordinator.robotName}.`
     );
 
     let markSent = (): void => undefined;
