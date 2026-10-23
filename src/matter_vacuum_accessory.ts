@@ -646,9 +646,9 @@ const RVC_OPERATIONAL_ERROR_NAMES: Readonly<Record<number, string>> = {
  * `roborock` is the plugin's own text and is logged, not published — the
  * `ErrorStateLabel`/`ErrorStateDetails` fields that could carry it are
  * unmeasured on Apple Home and this attribute has a history of being brittle.
- * `spec` names the Matter 1.4.2 code (cluster revision 3) that would be more accurate than the id
- * actually sent, and is logged for the same reason: so the next person can see
- * what the mapping gave up and why.
+ * `spec` names the Matter 1.4.2 code (cluster revision 3) that would be more
+ * accurate than the id actually sent, and is logged for the same reason: so
+ * the next person can see what the mapping gave up and why.
  */
 const ROBOROCK_ERROR_TO_MATTER: ReadonlyMap<
   number,
