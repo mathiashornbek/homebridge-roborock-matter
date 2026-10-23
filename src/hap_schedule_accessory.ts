@@ -1850,6 +1850,45 @@ export default class RoborockHapScheduleAccessory {
       this.scheduleAccessories.delete(id);
       this.platform.api.updatePlatformAccessories([this.managerAccessory]);
     }
+
+    // A switch Homebridge restored from its cache has no child until
+    // something builds one, so the loop above never saw it: a schedule
+    // deleted in the app while Homebridge was stopped kept its switch, with
+    // no handler, for good. The accessory says which switches exist.
+    let removedRestored = false;
+    for (const service of [...this.managerAccessory.services]) {
+      const id = this.scheduleIdOf(service);
+      if (id === null || ids.has(id)) continue;
+
+      this.platform.log.debug(
+        `Schedule sync: removing the cached switch of ${id}, which the account no longer has.`
+      );
+      this.managerAccessory.removeService(service);
+      removedRestored = true;
+    }
+    if (removedRestored) {
+      this.platform.api.updatePlatformAccessories([this.managerAccessory]);
+    }
+  }
+
+  /** The schedule id a Switch service carries in its subtype, or null. */
+  private scheduleIdOf(service: {
+    UUID: string;
+    subtype?: string;
+  }): string | null {
+    const subtype = service.subtype;
+    if (
+      service.UUID !== this.platform.Service.Switch.UUID ||
+      typeof subtype !== "string" ||
+      !subtype.startsWith(SERVICE_PREFIX)
+    ) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(subtype.slice(SERVICE_PREFIX.length)) || null;
+    } catch {
+      return null;
+    }
   }
 }
 

@@ -22,6 +22,9 @@
 
 jest.mock("../src/hap_schedule_accessory", () => {
   const instances = [];
+  // What a coordinator's first reading says, for the tests that need the
+  // cached accessory to have switches on it.
+  const firstReading = { value: { success: true, hasSchedules: false } };
 
   class FakeScheduleAccessory {
     constructor(platform, accessory, duid) {
@@ -30,10 +33,7 @@ jest.mock("../src/hap_schedule_accessory", () => {
       this.duid = duid;
       this.routineCount = 0;
       this.scheduleCount = 0;
-      this.initialize = jest.fn().mockResolvedValue({
-        success: true,
-        hasSchedules: false,
-      });
+      this.initialize = jest.fn().mockResolvedValue(firstReading.value);
       this.restoreScheduleHandlersFromAccessory = jest
         .fn()
         .mockReturnValue(false);
@@ -60,11 +60,15 @@ jest.mock("../src/hap_schedule_accessory", () => {
     isHapRoutineAccessory: (accessory) =>
       accessory?.context?.extension === "routines",
     __instances: instances,
+    __firstReading: firstReading,
   };
 });
 
 const RoborockPlatform = require("../src/platform").default;
-const { __instances } = require("../src/hap_schedule_accessory");
+const {
+  __instances,
+  __firstReading,
+} = require("../src/hap_schedule_accessory");
 
 /** What Homebridge hands back from its cache on the next restart. */
 function cachedAccessory(extension, duid = "device-1") {
@@ -123,6 +127,7 @@ const unregistered = (platform) =>
 
 beforeEach(() => {
   __instances.length = 0;
+  __firstReading.value = { success: true, hasSchedules: false };
 });
 
 describe("unchecking the setting takes the tiles with it", () => {
@@ -254,6 +259,10 @@ describe("checking it again puts them back", () => {
   test("it does not register the same accessory twice", async () => {
     const cached = cachedAccessory("schedules");
     const platform = makePlatform({ routines: false, cached: [cached] });
+    // The cached accessory has switches, and the account still has them. (A
+    // first reading with no schedule in it takes the accessory out of Apple
+    // Home: a-schedule-deleted-while-homebridge-was-down-loses-its-switch.)
+    __firstReading.value = { success: true, hasSchedules: true };
 
     platform.syncHapSchedules([{ duid: "device-1" }]);
     await Promise.resolve();

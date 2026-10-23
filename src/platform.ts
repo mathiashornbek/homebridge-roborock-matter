@@ -1079,9 +1079,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
           }
 
           if (!result.hasSchedules) {
-            if (!this.coordinatorKeepsRoutines(schedule!)) {
-              this.hapScheduleAccessories.delete(duid);
-            }
+            // An authoritative reading with no schedule in it: the accessory
+            // (restored from the cache with switches for schedules deleted
+            // since) leaves Apple Home, exactly as on the reuse path.
+            this.removeHapScheduleAccessory(duid, accessory);
             return;
           }
 
