@@ -133,7 +133,8 @@ describe("a session Roborock rejects at startup", () => {
     await jest.advanceTimersByTimeAsync(HOUR);
 
     expect(lines(api.log.error)).toEqual([
-      expect.stringMatching(/log in again in the plugin settings/),
+      // The page offers Logout while a token is saved, not a login.
+      expect.stringMatching(/log out and log in again in the plugin settings/),
     ]);
     expect(lines(api.log.warn).join("\n")).not.toMatch(/temporary/);
     expect(api.startServiceRetryTimer ?? null).toBeNull();
@@ -160,7 +161,8 @@ describe("a session Roborock rejects while running", () => {
     await waitFor(() => api.log.error.mock.calls.length > 0, "the error");
 
     expect(lines(api.log.error)).toEqual([
-      expect.stringMatching(/log in again in the plugin settings/),
+      // The page offers Logout while a token is saved, not a login.
+      expect.stringMatching(/log out and log in again in the plugin settings/),
     ]);
     // No reconnects with credentials derived from a dead session.
     expect(client.end).toHaveBeenCalled();

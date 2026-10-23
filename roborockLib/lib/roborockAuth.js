@@ -203,8 +203,9 @@ async function getHomeId(loginApi) {
   }
   const homeId = envelope?.data?.rrHomeId;
   if (envelope?.code !== 200 || homeId === undefined || homeId === null) {
+    const refusal = describeLoginRefusal(envelope);
     throw new Error(
-      `Roborock answered the home details with ${JSON.stringify(envelope)}`
+      `Roborock answered the home details with ${JSON.stringify(envelope)}${refusal ? `. ${refusal.hint}` : ""}`
     );
   }
   return homeId;
@@ -385,6 +386,11 @@ const LOGIN_REFUSALS = {
   9004: {
     hint: "Roborock has blocked sign-in for this account for a while after too many attempts.",
     later: true,
+  },
+  // local_roborock_server (HTTP 412 cloud_user_data_required): its one-time
+  // import of the Roborock account has not been done.
+  41201: {
+    hint: "The custom server has no data from your Roborock account yet. Run its one-time cloud import first (in the server's admin page, sign in to your Roborock account and fetch the cloud data), then log in again.",
   },
 };
 

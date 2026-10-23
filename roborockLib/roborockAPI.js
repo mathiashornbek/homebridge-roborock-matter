@@ -4125,7 +4125,7 @@ class Roborock {
 
     if (!this.config.password) {
       this.log.error(
-        `${reason}, so the plugin has stopped using the Roborock cloud. To continue, log in again in the plugin settings and restart the Roborock bridge.`
+        `${reason}, so the plugin has stopped using the Roborock cloud. To continue, log out and log in again in the plugin settings, then restart the Roborock bridge.`
       );
       return;
     }
@@ -4135,7 +4135,7 @@ class Roborock {
     if (sinceLastLogin < AUTH_FAILURE_BACKOFF_MS) {
       const waitMs = AUTH_FAILURE_BACKOFF_MS - sinceLastLogin;
       this.log.error(
-        `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log in again in the plugin settings.`
+        `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log out and log in again in the plugin settings.`
       );
       this.bInited = false;
       this.armStartServiceRetry(waitMs);
