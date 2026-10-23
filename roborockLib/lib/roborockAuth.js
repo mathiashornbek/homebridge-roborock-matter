@@ -223,6 +223,39 @@ function loginNonce() {
 }
 
 /**
+ * python-roborock's client-side limits for logins (`_LOGIN_RATES` in
+ * web_api.py): at most 1 a second, 3 a minute, 10 an hour and 20 a day.
+ * Every attempt counts against Roborock's own sign-in limits, and 9004
+ * blocks sign-in for 7 days.
+ *
+ * @type {Array<[number, number]>} [attempts, window in ms]
+ */
+const LOGIN_RATES = [
+  [1, 1000],
+  [3, 60 * 1000],
+  [10, 60 * 60 * 1000],
+  [20, 24 * 60 * 60 * 1000],
+];
+
+/**
+ * How long until one more login fits LOGIN_RATES.
+ *
+ * @param {number[]} attempts when the earlier logins were sent, oldest first
+ * @param {number} now
+ * @returns {number} ms to wait; 0 when one may go now
+ */
+function loginWaitMs(attempts, now) {
+  let waitMs = 0;
+  for (const [limit, windowMs] of LOGIN_RATES) {
+    const recent = attempts.filter((at) => now - at < windowMs);
+    if (recent.length >= limit) {
+      waitMs = Math.max(waitMs, recent[recent.length - limit] + windowMs - now);
+    }
+  }
+  return waitMs;
+}
+
+/**
  * One login, the same for the plugin and the settings page: a fresh
  * `api/v3/key/sign` signature (python-roborock signs every login; reusing
  * one across attempts was finding 12), the account's country from the login
@@ -520,6 +553,7 @@ module.exports = {
   getLoginRegion,
   getRegionConfig,
   loginRefusedError,
+  loginWaitMs,
   parseServerURL,
   signedLogin,
   signRequest,

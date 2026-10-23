@@ -504,6 +504,8 @@ class Roborock {
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
+    /** @type {number[]} when this process sent its password logins */
+    this.passwordLogins = [];
     this.persistBasePath = null;
     this.errorLogThrottleMs =
       typeof options.errorLogThrottleMs === "number"
@@ -1875,6 +1877,11 @@ class Roborock {
         return;
       }
       const message = error?.message || String(error);
+      if (error?.retryInMs) {
+        this.log.warn(message);
+        this.armStartServiceRetry(error.retryInMs);
+        return;
+      }
 
       // A refusal that asking again cannot change stops here with what to
       // do about it; a sign-in block is waited out, because every attempt
@@ -2358,6 +2365,27 @@ class Roborock {
         return null;
       }
 
+      // The start retry has no attempt cap, so its logins are capped here,
+      // at python-roborock's rates: an outage on the login endpoint used to
+      // cost one password login every 10 minutes for as long as it lasted.
+      const now = this.now();
+      const waitMs = roborockAuth.loginWaitMs(this.passwordLogins, now);
+      if (waitMs > 0) {
+        const wait =
+          waitMs >= 2 * 3600000
+            ? `${Math.ceil(waitMs / 3600000)} hour(s)`
+            : `${Math.ceil(waitMs / 60000)} minute(s)`;
+        throw Object.assign(
+          new Error(
+            `The plugin has logged in to Roborock with your password as often as is safe for now (too many attempts get sign-in blocked for 7 days), so it tries again in ${wait}.`
+          ),
+          { retryInMs: waitMs }
+        );
+      }
+      this.passwordLogins = this.passwordLogins
+        .filter((at) => now - at < 24 * 60 * 60 * 1000)
+        .concat(now);
+
       const loginResult = await roborockAuth.signedLogin(loginApi, {
         email: this.config.username,
         password: this.config.password,
@@ -2375,6 +2403,10 @@ class Roborock {
 
       throw roborockAuth.loginRefusedError(loginResult);
     } catch (error) {
+      if (error?.retryInMs) {
+        // Nothing was sent, so there is nothing to judge.
+        throw error;
+      }
       this.log.error(`Error in getUserData: ${error.message}`);
       // DO NOT THROW AWAY THE CACHED SESSION BECAUSE DNS WAS NOT UP YET.
       //
