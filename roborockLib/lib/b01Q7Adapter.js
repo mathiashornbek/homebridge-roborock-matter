@@ -74,9 +74,9 @@ const B01_STATUS_PROPS = [
 const MATTER_TO_Q7_CLEAN_TYPE = { 0: 0, 1: 2, 2: 1 };
 // Inverse direction: the Q7 reports its ACTIVE clean type in the same `mode`
 // property on every status poll, so cleans started from the Roborock app (or
-// the robot's buttons) can be reflected truthfully in Matter controllers.
-/** @type {Record<number, number>} */
-const Q7_CLEAN_TYPE_TO_MATTER = { 0: 0, 1: 2, 2: 1 };
+// the robot's buttons) can be reflected truthfully in Matter controllers. The
+// mapping swaps 1 and 2 and keeps 0, so it is its own inverse: one table.
+const Q7_CLEAN_TYPE_TO_MATTER = MATTER_TO_Q7_CLEAN_TYPE;
 
 // service.set_room_clean control values (SCDeviceCleanParam).
 const CTRL = { STOP: 0, START: 1, PAUSE: 2 };
@@ -380,9 +380,6 @@ function informationalFaults(family) {
     : INFORMATIONAL_Q7_FAULTS;
 }
 
-// Kept for callers that predate the family split; Q7 is the default family.
-const INFORMATIONAL_B01_FAULTS = INFORMATIONAL_Q7_FAULTS;
-
 /** @type {Record<number, number>} */
 const B01_STATUS_TO_V1_STATE = {
   0: 3,
@@ -402,7 +399,6 @@ const B01_STATUS_TO_V1_STATE = {
   11: 10,
 };
 
-/** @param {unknown} version */
 /**
  * Derive the B01/Q7 map decrypt key from serial + model
  * (reference: python-roborock create_map_key).
@@ -1145,23 +1141,11 @@ function neutralResponse(method) {
  * @returns {boolean}
  */
 function canAnswerV1Method(method) {
-  if (NEUTRAL_RESPONSES.has(method)) {
-    return true;
-  }
-
-  try {
-    return Boolean(translateOutgoing(method, []));
-  } catch {
-    return false;
-  }
+  return (
+    NEUTRAL_RESPONSES.has(method) || Boolean(translateOutgoing(method, []))
+  );
 }
 
-/**
- * Map a Q7 `prop.get` status payload to v1-shaped status fields.
- * Fixture reference: {"status":4,"quantity":87,"fault":0,...}
- * @param {any} data
- * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number}}
- */
 /**
  * Translate a raw Q7 work-status code to the v1 state code, for HomeData
  * deviceStatus fallbacks where the cloud stores Q7-native values.
@@ -1174,6 +1158,8 @@ function translateQ7WorkStatusToV1State(rawStatus) {
 }
 
 /**
+ * Map a Q7 `prop.get` status payload to v1-shaped status fields.
+ * Fixture reference: {"status":4,"quantity":87,"fault":0,...}
  * @param {any} data
  * @param {string} [family] one of B01_FAMILY; Q7 when not given
  * @returns {{state?: number, error_code: number, charge_status?: number, dry_status?: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
