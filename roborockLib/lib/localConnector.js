@@ -238,7 +238,8 @@ class localConnector {
     this.inFlight = new Map();
     // Consecutive reconnects per duid since the robot last answered, used to
     // back the retry delay off. Reset the moment the robot answers on a
-    // socket (python-roborock resets once connect + hello succeed).
+    // socket (python-roborock resets once connect + hello succeed), except
+    // during a "stopped answering" episode (see noteHeard).
     this.reconnectAttempts = new Map();
     /** @type {Map<string, number>} when each robot's last connect started */
     this.lastConnectAttemptAt = new Map();
@@ -249,9 +250,10 @@ class localConnector {
     /** Robots that have answered anything on the LAN in this process. */
     this.everHeard = new Set();
     /**
-     * Robots whose last socket was closed for not answering. Until a socket
-     * answers again, a new one is not used for requests, and one whose hello
-     * goes unanswered is closed — python-roborock's rule for every socket.
+     * Robots whose last socket was closed for not answering, until the robot
+     * answers a request again. A new socket is used for requests once the
+     * robot has answered on it (its hello), and one whose hello goes
+     * unanswered is closed — python-roborock's rule for every socket.
      * @type {Set<string>}
      */
     this.requireHello = new Set();
@@ -754,7 +756,6 @@ class localConnector {
    * @param {Buffer} message
    */
   handleLocalData(duid, client, message) {
-    this.noteHeard(duid, client);
     try {
       if (client.chunkBuffer.length == 0) {
         this.adapter.log.debug(`new chunk started`);
@@ -872,10 +873,12 @@ class localConnector {
       try {
         const shortMessage = shortMessageParser.parse(currentBuffer);
         if (shortMessage.protocol === HELLO_RESPONSE) {
+          this.noteHeard(duid, client);
           this.settleHello(duid, shortMessage.version, shortMessage.random);
           return;
         }
         if (shortMessage.protocol === PING_RESPONSE) {
+          this.noteHeard(duid, client);
           this.settlePing(duid, client, shortMessage.seq);
           return;
         }
@@ -929,10 +932,16 @@ class localConnector {
           ? `Local message with protocol ${data.protocol} and id ${id} received. No result; reply was ${JSON.stringify(parsed_102)}`
           : `Local message with protocol ${data.protocol} and id ${id} received. Result: ${JSON.stringify(result)}`
       );
-      const { resolve, reject, timeout, method } =
+      const { resolve, reject, timeout, method, transport } =
         this.adapter.pendingRequests.get(id);
       this.adapter.clearTimeout(timeout);
       this.adapter.pendingRequests.delete(id);
+      // Answered in time on this socket, unless the request has meanwhile
+      // been retried over the cloud under the same id: then this reply is
+      // late for the LAN, like the one below.
+      if (transport !== "cloud") {
+        this.noteHeard(duid, client, true);
+      }
       if (refusal && typeof reject === "function") {
         reject(
           createRefusalError(
@@ -1099,20 +1108,33 @@ class localConnector {
   }
 
   /**
-   * Something arrived on this socket, so it is not dead: its run of
-   * unanswered probes is over, and the reconnect back-off starts over.
+   * The robot answered on this socket: its hello, a ping, or a request in
+   * time. Any of these says the socket is alive: its run of unanswered probes
+   * is over, requests may use it, and the reconnect back-off starts over (as
+   * python-roborock's does after connect + hello). Except after a socket was
+   * closed for leaving requests unanswered: then only an answered request
+   * ends that episode and the back-off. A robot that answers the hello but no
+   * request (frames under a stale local key, say) otherwise started a new
+   * episode on every reconnect, with a warning and an "answers on the LAN
+   * again" line about every 45 s.
    *
    * @param {string} duid
    * @param {any} client
+   * @param {boolean} [answeredRequest]
    * @returns {void}
    */
-  noteHeard(duid, client) {
-    client.unanswered = 0;
-    if (client.heard) {
+  noteHeard(duid, client, answeredRequest = false) {
+    if (!client) {
       return;
     }
-    client.heard = true;
-    this.everHeard.add(duid);
+    client.unanswered = 0;
+    if (!client.heard) {
+      client.heard = true;
+      this.everHeard.add(duid);
+    }
+    if (this.requireHello.has(duid) && !answeredRequest) {
+      return;
+    }
     this.reconnectAttempts.delete(duid);
     if (this.requireHello.delete(duid) && this.localClients[duid] === client) {
       this.adapter.log.info(

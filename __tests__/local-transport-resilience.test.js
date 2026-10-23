@@ -444,8 +444,10 @@ describe("a failed local reconnect re-arms itself", () => {
     await socket.__connectCallback();
     await flush();
 
-    // A TCP connect alone proves nothing; the robot answering does.
+    // A TCP connect alone proves nothing; the robot answering does. (A
+    // reply nothing waits for is a late one, which proves nothing either.)
     expect(connector.reconnectAttempts.get(DUID)).toBe(2);
+    adapter.pendingRequests.set(4242, { resolve: jest.fn(), timeout: 0 });
     socket.emit("data", replyFrame(4242));
     expect(connector.reconnectAttempts.has(DUID)).toBe(false);
 
