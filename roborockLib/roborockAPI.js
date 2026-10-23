@@ -2147,18 +2147,19 @@ class Roborock {
       });
       this.log.debug(`localDevices: ${JSON.stringify(this.localDevices)}`);
 
+      // Only the robots on the account with a local key. Discovery hears
+      // every robot on the LAN, and `localDevices` keeps every address ever
+      // heard, so iterating it opened a socket to a robot just removed from
+      // the account, or skipped in the settings, and pinged it for good.
       for (const device of this.normalizeArray(localKeyDevices)) {
-        if (
-          !Object.prototype.hasOwnProperty.call(this.localDevices, device.duid)
-        ) {
-          await this.updateTransportDiagnostics(device.duid, {
+        const duid = device.duid;
+        if (!Object.prototype.hasOwnProperty.call(this.localDevices, duid)) {
+          await this.updateTransportDiagnostics(duid, {
             localDiscoveryState: "not-discovered",
             lastTransportReason: "missing-local-ip",
           });
+          continue;
         }
-      }
-
-      for (const duid in this.localDevices) {
         const ip = this.localDevices[duid];
 
         await this.updateTransportDiagnostics(duid, {

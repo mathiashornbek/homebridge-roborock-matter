@@ -125,3 +125,37 @@ test("a robot that drops off the network after a reconnect is still noticed by i
 
   expect(api.localConnector.isConnected(STUE.duid)).toBe(false);
 });
+
+test("a robot removed from the account gets no new LAN socket", async () => {
+  cloud.config.homeData = homeData({ devices: [STUE, GARAGE] });
+  await startWithStueOnTheLan();
+  const first = lanRobot.socket;
+  expect(first).toBeDefined();
+
+  cloud.config.homeData = homeData({ devices: [GARAGE] });
+  // Two refreshes, each followed by whatever it starts.
+  for (let i = 0; i < 2; i += 1) {
+    await jest.advanceTimersByTimeAsync(REFRESH_MS);
+    await cloud.quiet();
+    await advanceUntil(cloud, () => api.isInited(), "the start after it");
+  }
+  await jest.advanceTimersByTimeAsync(60_000);
+
+  expect(api.getVacuumList().map((device) => device.duid)).toEqual([
+    GARAGE.duid,
+  ]);
+  expect(first.destroyed).toBe(true);
+  const open = lanRobot.sockets.filter((socket) => !socket.destroyed);
+  expect({
+    openSockets: open.length,
+    pingsOnNewSockets: pings().filter((ping) => ping.socket !== first).length,
+  }).toEqual({ openSockets: 0, pingsOnNewSockets: 0 });
+});
+
+test("a robot the settings skip gets no LAN socket, though it is heard on the LAN", async () => {
+  cloud.config.homeData = homeData({ devices: [STUE, GARAGE] });
+  await startWithStueOnTheLan({ skipDevices: STUE.duid });
+  await jest.advanceTimersByTimeAsync(30_000);
+
+  expect(lanRobot.sockets).toHaveLength(0);
+});
