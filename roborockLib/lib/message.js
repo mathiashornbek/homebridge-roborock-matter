@@ -86,14 +86,15 @@ class message {
       method: method,
       params: params,
     };
-    if (secure) {
-      if (!photo) {
-        inner.security = {
-          endpoint: endpoint,
-          // Lowercase, as python-roborock's SecurityData.to_dict sends it.
-          nonce: this.adapter.nonce.toString("hex"),
-        };
-      }
+    // Every V1 request over MQTT carries it, as python-roborock's MQTT
+    // strategy encodes every request with its security data; its local
+    // strategy encodes none.
+    if ((secure || protocol === 101) && !photo) {
+      inner.security = {
+        endpoint: endpoint,
+        // Lowercase, as python-roborock's SecurityData.to_dict sends it.
+        nonce: this.adapter.nonce.toString("hex"),
+      };
     }
 
     let payload;
