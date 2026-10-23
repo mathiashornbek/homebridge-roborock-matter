@@ -100,10 +100,12 @@ describe("a Q7 fault reaches the tile", () => {
     ).toEqual({ errorStateId: STUCK });
   });
 
-  test("a Q7 with no dust bag in the dock publishes DustBinMissing", async () => {
+  test("a Q7 at rest reporting no dust bag publishes DustBinMissing", async () => {
+    // At rest off the dock: in its dock a B01 robot is docked whatever its
+    // fault field says (a-docked-b01-robot-shows-no-stale-fault.test.js).
     harness = await q7WithTile();
     await harness.robotReports({
-      status: 4,
+      status: 1,
       quantity: 60,
       fault: 594,
       mode: 0,
@@ -133,7 +135,7 @@ describe("a Q7 fault reaches the tile", () => {
     // Q10, and the sc05 has been seen using 501 with the Q10's meaning.
     harness = await q7WithTile();
     await harness.robotReports({
-      status: 4,
+      status: 1,
       quantity: 60,
       fault: 503,
       mode: 0,

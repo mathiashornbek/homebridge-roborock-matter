@@ -1107,6 +1107,8 @@ export default class RoborockMatterVacuumAccessory {
   private lastVacuumFanPower: number | null = null;
   private lastWaterBoxMode: number | null = null;
   private readonly reportedUnmappedErrorCodes = new Set<number>();
+  // Clusters already named as missing from the registered endpoint.
+  private readonly reportedClustersMissingFromEndpoint = new Set<string>();
   private returnToDockRetryPending = false;
   private matterStateHeartbeatTimer: ReturnType<typeof nodeSetTimeout> | null =
     null;
@@ -1463,6 +1465,27 @@ export default class RoborockMatterVacuumAccessory {
       return tankKnown
         ? { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" }
         : null;
+    }
+    if (errorCode !== null && errorCode !== 0 && !speaksV1) {
+      // A B01 robot's `fault` field lingers after the event that set it, and
+      // Home Assistant reads a B01 robot's state from its work status alone:
+      // charging, drying and the dock chores are Docked (vacuum.py
+      // Q7_STATE_CODE_TO_STATE / Q10_STATE_CODE_TO_STATE). A robot in its
+      // dock is therefore not faulted, and saying so clears a code left
+      // standing from before it got there — a Q7 lifted mid-run and carried
+      // home read Stuck at the dock until something overwrote the field.
+      const robotState = this.getRoborockOperationalState(
+        this.getNumberStatus("state"),
+        this.getNumberStatus("charge_status")
+      );
+      if (
+        robotState === RVC_OPERATIONAL_STATE.CHARGING ||
+        robotState === RVC_OPERATIONAL_STATE.DOCKED ||
+        robotState === RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN ||
+        robotState === RVC_OPERATIONAL_STATE.CLEANING_MOP
+      ) {
+        return { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" };
+      }
     }
     if (
       errorCode !== null &&
@@ -2652,11 +2675,14 @@ export default class RoborockMatterVacuumAccessory {
     );
   }
 
-  /** The cluster as the Matter store holds it, or undefined if it cannot say. */
+  /**
+   * The cluster as the Matter store holds it; null when the store answered
+   * that it holds no such cluster; undefined if it cannot say.
+   */
   private async readMatterStore(
     matter: MatterStoreApi,
     cluster: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | null | undefined> {
     if (typeof matter.getAccessoryState !== "function") {
       return undefined;
     }
@@ -2665,10 +2691,52 @@ export default class RoborockMatterVacuumAccessory {
         this.accessory.UUID,
         cluster
       );
-      return stored && typeof stored === "object" ? stored : undefined;
+      return stored && typeof stored === "object" ? stored : null;
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Whether the registered endpoint lacks `cluster`, which the store just
+   * read back as absent.
+   *
+   * Homebridge builds the endpoint once, from accessory.clusters at
+   * registration, and refuses a write to any other cluster with two ERROR
+   * lines — on every publish, since nothing it does can add the cluster to a
+   * running accessory (2.4.0 has no way to: updatePlatformAccessories keeps
+   * the endpoint, and re-registering an external accessory deletes its
+   * pairing). The RVC's own two clusters are on every endpoint, so absent
+   * means the store cannot see this robot at all — written as before — and
+   * an optional cluster counts as missing only while they read back.
+   */
+  private async isClusterMissingFromEndpoint(
+    matter: MatterStoreApi,
+    cluster: string
+  ): Promise<boolean> {
+    if (cluster === OPERATIONAL_STATE_CLUSTER || cluster === "rvcRunMode") {
+      return false;
+    }
+    const mandatory = await this.readMatterStore(
+      matter,
+      OPERATIONAL_STATE_CLUSTER
+    );
+    if (!mandatory) {
+      return false;
+    }
+    if (!this.reportedClustersMissingFromEndpoint.has(cluster)) {
+      this.reportedClustersMissingFromEndpoint.add(cluster);
+      const what =
+        cluster === "serviceArea"
+          ? "its rooms"
+          : cluster === "rvcCleanMode"
+            ? "its cleaning modes"
+            : `its ${cluster}`;
+      this.platform.log.info(
+        `${this.getVacuumName()} has ${what} to show in Apple Home now, but its Matter accessory was created before they were known, and Homebridge cannot add them to an accessory that is already running. Restart Homebridge (or this plugin's child bridge) once to show them.`
+      );
+    }
+    return true;
   }
 
   private async updateMatterState(
@@ -2718,7 +2786,14 @@ export default class RoborockMatterVacuumAccessory {
       const failures: unknown[] = [];
       for (const [cluster, attributes] of clusterEntries) {
         try {
-          const stored = await this.readMatterStore(matter, cluster);
+          const read = await this.readMatterStore(matter, cluster);
+          if (
+            read === null &&
+            (await this.isClusterMissingFromEndpoint(matter, cluster))
+          ) {
+            continue;
+          }
+          const stored = read ?? undefined;
           if (cluster === OPERATIONAL_STATE_CLUSTER) {
             await this.writeOperationalStateCluster(matter, attributes, stored);
             continue;
@@ -4111,13 +4186,18 @@ export default class RoborockMatterVacuumAccessory {
     const unfinished = this.serviceAreaStopRequested
       ? SERVICE_AREA_PROGRESS.SKIPPED
       : SERVICE_AREA_PROGRESS.COMPLETED;
+    // A room already settled keeps its answer: Skipped was not cleaned. So
+    // settling a settled list again — the next poll after a stop, or the
+    // first status after a restart — changes nothing.
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
       status:
         entry.status === SERVICE_AREA_PROGRESS.COMPLETED ||
-        this.liveConfirmedServiceAreaIds.has(entry.areaId)
-          ? SERVICE_AREA_PROGRESS.COMPLETED
-          : unfinished,
+        entry.status === SERVICE_AREA_PROGRESS.SKIPPED
+          ? entry.status
+          : this.liveConfirmedServiceAreaIds.has(entry.areaId)
+            ? SERVICE_AREA_PROGRESS.COMPLETED
+            : unfinished,
     }));
     this.resetLiveRoomVisits();
     this.serviceAreaCurrentArea = null;
@@ -5404,15 +5484,16 @@ export default class RoborockMatterVacuumAccessory {
     if (dps) {
       const status: Record<string, unknown> = {};
 
-      // 120 is error_code. A B01/Q7 robot that hits a fault mid-run pushes a
-      // frame carrying only this field, and until 3.13.0 it was dropped here —
-      // the one transport on which a fault is most likely to arrive alone.
+      // 120 is error_code. A robot that hits a fault mid-run can push a frame
+      // carrying only this field, and until 3.13.0 it was dropped here — the
+      // one transport on which a fault is most likely to arrive alone.
       if (Object.prototype.hasOwnProperty.call(dps, "120")) {
         status.error_code = dps["120"];
       }
       if (Object.prototype.hasOwnProperty.call(dps, "121")) {
-        // B01 pushes arrive here already in v1 numbering: the library
-        // translates them in the robot's own dialect before they are emitted.
+        // Raw datapoints come from v1 robots only. A B01 robot's pushes never
+        // reach this path: the library reads them in its own dialect and hands
+        // them on as a v1-shaped status (onB01DatapointPush).
         status.state = dps["121"];
       }
       if (Object.prototype.hasOwnProperty.call(dps, "122")) {

@@ -53,6 +53,9 @@
  * With `{ deferWrites: true }` the write is also applied in a setImmediate,
  * as Homebridge applies it, instead of before the call returns.
  *
+ * A write to a cluster the endpoint was not registered with is refused, as
+ * Homebridge 2.4.0's Endpoint.set refuses it, and recorded in `rejected`.
+ *
  * `getAccessoryState(uuid, cluster)` answers as Homebridge 2.4.0's does
  * (MatterAPIImpl.js:363-392 -> StateManager.getAccessoryState): a copy of
  * the cluster as the store holds it now, or undefined for a cluster the
@@ -315,6 +318,19 @@ function createMatterStore(initial = {}, { deferWrites = false } = {}) {
   }
 
   function apply(cluster, attributes) {
+    if (clusters[cluster] === undefined) {
+      // The endpoint's clusters are fixed when Homebridge builds it from
+      // accessory.clusters; Endpoint.set refuses any other one
+      // (EndpointBehaviorNotPresentError, measured on Homebridge 2.4.0:
+      // "[endpoint-behavior-not-present] Behavior "serviceArea" is not
+      // present"), and Homebridge only logs it.
+      rejected.push({
+        cluster,
+        attributes,
+        error: `Behavior "${cluster}" is not present`,
+      });
+      return;
+    }
     const snapshot = clone(clusters[cluster]);
     try {
       const before = applyTransaction(cluster, attributes);

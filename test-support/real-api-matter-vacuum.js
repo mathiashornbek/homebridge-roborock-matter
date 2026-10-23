@@ -61,7 +61,9 @@ const CODE_TO_SCHEMA_ID = Object.fromEntries(
  *   homeData?: Record<string, number>,
  *   platformConfig?: Record<string, unknown>,
  *   rooms?: Array<{segmentId: number, name: string}>,
- * }} [options]
+ *   savedContext?: Record<string, unknown>,
+ * }} [options] `savedContext`: the accessory context Homebridge kept from
+ *   the previous run (a restart)
  */
 async function createRealApiVacuum({
   model = "roborock.vacuum.a70",
@@ -75,6 +77,7 @@ async function createRealApiVacuum({
   },
   platformConfig = {},
   rooms = [],
+  savedContext = {},
 } = {}) {
   const log = {
     debug: jest.fn(),
@@ -142,7 +145,10 @@ async function createRealApiVacuum({
     shouldAcceptUnscopedLiveMessage: () => true,
     roborockAPI: api,
   };
-  const accessory = { UUID: "uuid-real-api", context: { duid: DUID } };
+  const accessory = {
+    UUID: "uuid-real-api",
+    context: { ...savedContext, duid: DUID },
+  };
   const vacuum = new RoborockMatterVacuumAccessory(
     platform,
     accessory,

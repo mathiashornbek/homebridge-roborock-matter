@@ -313,6 +313,17 @@ function serverUrlProblem(value) {
 }
 
 /**
+ * Why no login request may be sent yet, or null. With "Custom server" chosen
+ * nothing goes out until its URL is valid: without one, the email (and then
+ * the server's PIN, as a code) went to the saved Roborock region.
+ */
+function loginServerProblem() {
+  return isCustomServer()
+    ? serverUrlProblem(elements.serverUrl.value.trim())
+    : null;
+}
+
+/**
  * A custom server logs in with its PIN as the verification code and has no
  * password login, so its URL field and the code section replace the
  * password row while nobody is logged in.
@@ -992,6 +1003,10 @@ async function login() {
     showToast("error", "Email and password are required.");
     return;
   }
+  if (loginServerProblem()) {
+    showToast("error", loginServerProblem());
+    return;
+  }
 
   const result = await request("/auth/login", {
     email,
@@ -1046,6 +1061,10 @@ async function sendTwoFactorEmail() {
     showToast("error", "Email is required.");
     return;
   }
+  if (loginServerProblem()) {
+    showToast("error", loginServerProblem());
+    return;
+  }
 
   const result = await request("/auth/send-2fa-email", {
     email,
@@ -1072,8 +1091,8 @@ async function verifyTwoFactorCode() {
     return;
   }
 
-  if (serverURL !== undefined && serverUrlProblem(serverURL)) {
-    showToast("error", serverUrlProblem(serverURL));
+  if (loginServerProblem()) {
+    showToast("error", loginServerProblem());
     return;
   }
 

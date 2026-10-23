@@ -1732,6 +1732,11 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     const existingAccessory = this.matterAccessories.find(
       (accessory) => accessory.UUID === uuid
     );
+    if (!existingAccessory && !this.matterVacuums.has(String(device.duid))) {
+      // Its clusters are fixed once it registers: a robot whose rooms are
+      // about to arrive registers with them (waitForFirstB01Rooms).
+      await this.roborockAPI.waitForFirstB01Rooms?.(String(device.duid));
+    }
     const accessory =
       existingAccessory ||
       this.createMatterAccessory(

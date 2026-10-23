@@ -118,12 +118,13 @@ class RoborockUiServer {
   }
 
   /**
-   * The server a login goes to: the custom server when one is set (#43),
-   * otherwise the region. Throws the validation message for a custom server
-   * URL that is not https://host[:port].
+   * The server a login goes to: the custom server when the page names one
+   * (#43), otherwise the region. Throws the validation message for a custom
+   * server URL that is not https://host[:port] — an empty one included, which
+   * must never fall back to the region.
    */
   private loginServer(config: { baseURL?: string; serverURL?: string }) {
-    return config.serverURL
+    return typeof config.serverURL === "string"
       ? roborockAuth.parseServerURL(config.serverURL)
       : config.baseURL || "usiot.roborock.com";
   }
@@ -256,6 +257,7 @@ class RoborockUiServer {
       loginResult = await roborockAuth.signedLogin(loginApi, {
         email,
         server: this.loginServer({ baseURL, serverURL }),
+        customServer: typeof serverURL === "string",
         ...credentials,
       });
     } catch (error: any) {

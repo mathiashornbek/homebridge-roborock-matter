@@ -2006,6 +2006,10 @@ class RoborockHapScheduleSwitchAccessory {
   private static readonly FAILED_COMMAND_COOLDOWN_MS = 30000;
 
   private schedule: RoborockSchedule;
+  // What Roborock last reported or confirmed. `schedule.enabled` also carries
+  // an answer given ahead of verification, so a write that fails goes back to
+  // this instead.
+  private reportedEnabled = false;
   private disposed = false;
 
   constructor(
@@ -2074,6 +2078,7 @@ class RoborockHapScheduleSwitchAccessory {
 
   updateIdentity(displayName: string, schedule: RoborockSchedule): void {
     this.schedule = { ...schedule, timer: [...schedule.timer] };
+    this.reportedEnabled = schedule.enabled;
 
     const switchService = this.accessory.getServiceById(
       this.platform.Service.Switch,
@@ -2191,7 +2196,7 @@ class RoborockHapScheduleSwitchAccessory {
         if (this.disposed) {
           return;
         }
-        this.writeFailedFor(previous, enabled, first.error);
+        this.writeFailedFor(enabled, first.error);
         throw this.writeFailed();
       }
       if (first.executed) {
@@ -2211,7 +2216,7 @@ class RoborockHapScheduleSwitchAccessory {
           this.writeConfirmed(enabled);
         }
       },
-      (error: unknown) => this.writeFailedFor(previous, enabled, error)
+      (error: unknown) => this.writeFailedFor(enabled, error)
     );
   }
 
@@ -2220,6 +2225,7 @@ class RoborockHapScheduleSwitchAccessory {
       return;
     }
     this.schedule.enabled = enabled;
+    this.reportedEnabled = enabled;
     this.schedule.timer[1] = enabled ? "on" : "off";
     this.failedCommands.delete(this.scheduleId);
     this.suppression.set(this.scheduleId, {
@@ -2229,14 +2235,17 @@ class RoborockHapScheduleSwitchAccessory {
     this.updateService(enabled);
   }
 
-  private writeFailedFor(
-    previous: boolean,
-    enabled: boolean,
-    error: unknown
-  ): void {
+  /**
+   * Put the switch back to what Roborock last reported. Not to the value it
+   * showed when this write started: with two quick toggles that is the first
+   * one's unverified answer, and a late failure of the second left the switch
+   * showing a state Roborock did not hold.
+   */
+  private writeFailedFor(enabled: boolean, error: unknown): void {
     if (this.disposed) {
       return;
     }
+    const previous = this.reportedEnabled;
     this.schedule.enabled = previous;
     this.updateService(previous);
 

@@ -259,9 +259,10 @@ describe("a robot that stopped says what stopped it", () => {
     // `matter_clean_type` is only reported by B01/Q7 robots, and their fault
     // numbers are a different space that happens to share a field name. 254
     // means "bin full" in Roborock's v1 table and means nothing established
-    // on a Q7, so it must not be translated.
+    // on a Q7, so it must not be translated. At rest off the dock: in its
+    // dock a B01 robot is docked whatever the field says.
     const { cluster } = await publishWith({
-      state: ROBOROCK_STATE_CHARGING,
+      state: 3,
       battery: 100,
       matter_clean_type: 1,
       error_code: 254,

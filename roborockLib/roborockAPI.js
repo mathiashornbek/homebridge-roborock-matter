@@ -127,6 +127,12 @@ function liveRoomFetchGapMs(consecutiveFailures) {
 // Rooms rarely change, so a successful room-list refresh is good for 6 hours.
 const B01_ROOM_REFRESH_GAP_MS = 6 * 60 * 60 * 1000;
 
+// How long a B01 robot with no room list yet holds back the creation of its
+// Matter accessory, which can never gain a Service Area afterwards. A Q7's
+// first room read answered about 1 s after start in the field
+// (pi-roborock.log, 17 Oct 2026).
+const B01_FIRST_ROOMS_WAIT_MS = 8000;
+
 // The same reasoning as the live-room backoff above, one loop further out. The
 // 6-hour stamp is written only on success, so a robot whose map channel is down
 // falls through to the periodic poller's own cadence — 180 s by default — and
@@ -4185,7 +4191,7 @@ class Roborock {
 
     if (!this.config.password) {
       this.log.error(
-        `${reason}, so the plugin has stopped using the Roborock cloud. To continue, log in again in the plugin settings and restart the Roborock bridge.`
+        `${reason}, so the plugin has stopped using the Roborock cloud. To continue, log out and log in again in the plugin settings, then restart the Roborock bridge.`
       );
       return;
     }
@@ -4195,7 +4201,7 @@ class Roborock {
     if (sinceLastLogin < AUTH_FAILURE_BACKOFF_MS) {
       const waitMs = AUTH_FAILURE_BACKOFF_MS - sinceLastLogin;
       this.log.error(
-        `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log in again in the plugin settings.`
+        `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log out and log in again in the plugin settings.`
       );
       this.bInited = false;
       this.armStartServiceRetry(waitMs);
@@ -6159,6 +6165,55 @@ class Roborock {
       val: JSON.stringify(all),
       ack: true,
     });
+    this.endFirstB01RoomWaits(duid);
+  }
+
+  /**
+   * Wait, at most B01_FIRST_ROOMS_WAIT_MS, for the first room list of an
+   * online B01 robot that has none yet, before its Matter accessory is
+   * created. Homebridge fixes an accessory's clusters when it registers it,
+   * so a robot registered without rooms shows none until Homebridge restarts;
+   * a Q7's room read at start (refreshMatterServiceAreaRoomMappings) and a
+   * Q10's map push usually answer within a second or two.
+   *
+   * @param {string} duid
+   * @returns {Promise<void>}
+   */
+  waitForFirstB01Rooms(duid) {
+    if (
+      !this.config.enableMatterServiceArea ||
+      !this.isB01Device(duid) ||
+      !this.getVacuumDeviceInfo(duid, "online") ||
+      this.getB01RoomCache(duid).length > 0
+    ) {
+      return Promise.resolve();
+    }
+    if (!this._b01FirstRoomWaits) {
+      this._b01FirstRoomWaits = new Map();
+    }
+    const waits = this._b01FirstRoomWaits.get(duid) || new Set();
+    this._b01FirstRoomWaits.set(duid, waits);
+    return new Promise((resolve) => {
+      const end = () => {
+        clearTimeout(timer);
+        waits.delete(end);
+        resolve();
+      };
+      const timer = setTimeout(end, B01_FIRST_ROOMS_WAIT_MS);
+      timer.unref?.();
+      waits.add(end);
+    });
+  }
+
+  /**
+   * End the waits for a robot's first rooms: a list arrived, or the room
+   * read has concluded without one.
+   * @param {string} duid
+   */
+  endFirstB01RoomWaits(duid) {
+    for (const end of [...(this._b01FirstRoomWaits?.get(duid) || [])]) {
+      end();
+    }
   }
 
   /**
@@ -6223,6 +6278,7 @@ class Roborock {
         // precisely while the answer is about to become available.
         this._b01RoomRefreshFailures.delete(duid);
         this.log.debug(`No B01 map available yet for ${duid}; rooms deferred.`);
+        this.endFirstB01RoomWaits(duid);
         return this.getB01RoomCache(duid);
       }
 
@@ -6240,6 +6296,7 @@ class Roborock {
         lastAttemptAt: Date.now(),
         consecutiveFailures: (failureState?.consecutiveFailures || 0) + 1,
       });
+      this.endFirstB01RoomWaits(duid);
       throw error;
     }
   }
@@ -6324,11 +6381,19 @@ class Roborock {
       return true;
     }
 
-    if (parsed.rooms.length > 0) {
-      void this.noteB01MapRooms(duid, parsed.rooms);
+    // Rooms come from the saved map. A live frame is for the position: what
+    // it lists is not known to be every room, by name, so it names rooms
+    // only for a robot whose saved rooms are not known yet, and it never
+    // postpones the saved-map read that replaces them.
+    const live = parsed.mapType === b01Q7Adapter.B01_LIVE_MAP_TYPE;
+    if (
+      parsed.rooms.length > 0 &&
+      (!live || this.getB01RoomCache(duid).length === 0)
+    ) {
+      void this.noteB01MapRooms(duid, parsed.rooms, { live });
     }
 
-    if (parsed.mapType === b01Q7Adapter.B01_LIVE_MAP_TYPE) {
+    if (live) {
       if (pending) {
         pending.liveFrames += 1;
       }
@@ -6368,18 +6433,21 @@ class Roborock {
 
   /**
    * Keep the room-name cache in step with the rooms a map frame carries, and
-   * postpone the scheduled room refresh. Written only on change: the cache is
-   * persisted, and live frames arrive every few seconds while cleaning.
+   * for a saved map postpone the scheduled room refresh. Written only on
+   * change: the cache is persisted.
    * @param {string} duid
    * @param {Array<{roomId: number, roomName: string}>} rooms
-   * @param {{announce?: boolean}} [options] log a changed list, as a room
-   *   refresh does (the only source of a Q10's rooms)
+   * @param {{announce?: boolean, live?: boolean}} [options] `announce`: log
+   *   a changed list, as a room refresh does (the only source of a Q10's
+   *   rooms); `live`: from a Q7 live frame, which settles no room refresh
    */
   async noteB01MapRooms(duid, rooms, options = {}) {
-    if (!this._b01RoomRefreshAt) {
-      this._b01RoomRefreshAt = new Map();
+    if (!options.live) {
+      if (!this._b01RoomRefreshAt) {
+        this._b01RoomRefreshAt = new Map();
+      }
+      this._b01RoomRefreshAt.set(duid, Date.now());
     }
-    this._b01RoomRefreshAt.set(duid, Date.now());
     if (JSON.stringify(this.getB01RoomCache(duid)) === JSON.stringify(rooms)) {
       return;
     }
