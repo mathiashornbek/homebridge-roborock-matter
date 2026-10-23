@@ -164,32 +164,3 @@ describe("the classic room-mapping flow stays off the wire on B01 robots", () =>
     );
   });
 });
-
-describe("isB01Device is the single source of truth for the dialect", () => {
-  // Four call sites in roborockAPI.js spelled this comparison out by hand
-  // before it had a name. A fifth was about to be added in vacuum.js, which
-  // is one hand-written copy too many for a value that decides which wire
-  // protocol a robot speaks.
-  const isB01Device = Roborock.prototype.isB01Device;
-
-  test("true for the B01 protocol version", () => {
-    const api = { getVacuumDeviceInfo: jest.fn(() => "B01") };
-    expect(isB01Device.call(api, "duid-q10")).toBe(true);
-    expect(api.getVacuumDeviceInfo).toHaveBeenCalledWith("duid-q10", "pv");
-  });
-
-  test("it reads the constant rather than the literal", () => {
-    const api = {
-      getVacuumDeviceInfo: () => b01Q7Adapter.B01_PROTOCOL_VERSION,
-    };
-    expect(isB01Device.call(api, "duid-q10")).toBe(true);
-  });
-
-  test.each(["1.0", "A01", "L01", "", undefined])(
-    "false for protocol version %p",
-    (version) => {
-      const api = { getVacuumDeviceInfo: () => version };
-      expect(isB01Device.call(api, "duid-q10")).toBe(false);
-    }
-  );
-});

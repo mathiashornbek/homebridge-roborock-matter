@@ -175,9 +175,28 @@ describe("B01/Q7 status mapping", () => {
   });
 
   test("covers every documented Q7 work status", () => {
-    for (const [q7, v1] of Object.entries(b01.B01_STATUS_TO_V1_STATE)) {
-      expect(b01.mapStatusToV1({ status: Number(q7), fault: 0 }).state).toBe(
-        v1
+    // One row per python-roborock WorkStatusMapping member with the v1 state
+    // it is meant to read as. This iterated the adapter's own table before,
+    // so a wrong row (docking read as returning) could not fail it.
+    const WORK_STATUS_TO_V1 = [
+      ["SLEEPING", 0, 3],
+      ["WAITING_FOR_ORDERS", 1, 3],
+      ["PAUSED", 2, 10],
+      ["DOCKING", 3, 15],
+      ["CHARGING", 4, 8],
+      ["SWEEP_MOPING", 5, 5],
+      ["SWEEP_MOPING_2", 6, 5],
+      ["MOPING", 7, 5],
+      ["UPDATING", 8, 3],
+      ["MOP_CLEANING", 9, 23],
+      ["MOP_AIRDRYING", 10, 8],
+      ["WORKING_SLEEP", 11, 10],
+      // UNKNOWN: no state at all, never a guessed one.
+      ["UNKNOWN", -1, undefined],
+    ];
+    for (const [name, q7, v1] of WORK_STATUS_TO_V1) {
+      expect([name, b01.mapStatusToV1({ status: q7, fault: 0 }).state]).toEqual(
+        [name, v1]
       );
     }
   });
