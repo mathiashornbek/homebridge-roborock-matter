@@ -19,6 +19,10 @@
  */
 
 const fs = require("fs");
+const {
+  setImmediate: realSetImmediate,
+  setTimeout: realSetTimeout,
+} = require("node:timers");
 const os = require("os");
 const path = require("path");
 
@@ -165,10 +169,15 @@ async function createRealApiVacuum({
         payload: [JSON.parse(JSON.stringify(status))],
       });
     },
-    /** Let deferred publishes and dispatched commands run. */
+    /**
+     * Let deferred publishes (a 0 ms timer) and dispatched commands run. The
+     * real timers on purpose: a 0 ms timer can outlast a few setImmediate
+     * turns, and a test on fake timers advances them itself.
+     */
     async settle() {
       for (let i = 0; i < 5; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => realSetImmediate(resolve));
+        await new Promise((resolve) => realSetTimeout(resolve, 2));
       }
     },
   };

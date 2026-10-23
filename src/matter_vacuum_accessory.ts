@@ -4373,13 +4373,13 @@ export default class RoborockMatterVacuumAccessory {
     const supportedMaps = this.getMatterServiceAreaMaps(areas);
     const includeMapNamesInAreaLabels = supportedMaps.length > 1;
     const supportedAreaIds = new Set(areas.map((area) => area.areaId));
+    // Filtered for matter.js, which refuses a selection naming a room that is
+    // not in supportedAreas — but not stored back: the list is momentarily
+    // partial while a map refreshes, and trimming the selection here dropped
+    // those rooms from it for good.
     const selectedAreas = this.selectedServiceAreaIds.filter((areaId) =>
       supportedAreaIds.has(areaId)
     );
-
-    if (selectedAreas.length !== this.selectedServiceAreaIds.length) {
-      this.selectedServiceAreaIds = selectedAreas;
-    }
 
     this.logMatterServiceAreaSummary(areas, supportedMaps);
 
