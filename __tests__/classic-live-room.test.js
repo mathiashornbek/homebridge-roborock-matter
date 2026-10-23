@@ -87,9 +87,11 @@ function buildPixels() {
   return pixels;
 }
 
-// World mm for the center of pixel (px, py) in map coordinates.
+// World mm 10 mm into pixel (px, py) in map coordinates: inside the pixel
+// under any rounding (the half-way tie is pinned in
+// a-classic-live-room-reads-the-map-as-python-does.test.js).
 function pixelToMm(px, py) {
-  return [(LEFT + px) * 50 + 25, (TOP + py) * 50 + 25];
+  return [(LEFT + px) * 50 + 10, (TOP + py) * 50 + 10];
 }
 
 function buildMapWithRobotAt(px, py) {
@@ -106,63 +108,51 @@ function buildMapWithRobotAt(px, py) {
   ]);
 }
 
-const parserAdapter = { log: createLog() };
-
 describe("classic RRMap live segment resolution", () => {
-  test("parses a synthetic RRMap and resolves the robot's segment", async () => {
-    const parser = new RRMapParser(parserAdapter);
-
-    const inLeftRoom = await parser.parsedata(buildMapWithRobotAt(2, 5));
-    expect(inLeftRoom.ROBOT_POSITION.position).toEqual(pixelToMm(2, 5));
-    expect(RRMapParser.resolveLiveSegmentId(inLeftRoom)).toBe(16);
-
-    const inRightRoom = await parser.parsedata(buildMapWithRobotAt(7, 3));
-    expect(RRMapParser.resolveLiveSegmentId(inRightRoom)).toBe(17);
+  // These went through the forked full parser (parsedata), which nothing in
+  // the plugin calls; the same maps now go through the function live-room
+  // tracking does call.
+  test("resolves the robot's segment", () => {
+    expect(
+      RRMapParser.resolveLiveSegmentFromMapBuffer(buildMapWithRobotAt(2, 5))
+    ).toBe(16);
+    expect(
+      RRMapParser.resolveLiveSegmentFromMapBuffer(buildMapWithRobotAt(7, 3))
+    ).toBe(17);
   });
 
-  test("returns null on segment-free pixels, outside the image, and missing data", async () => {
-    const parser = new RRMapParser(parserAdapter);
-
-    const onCorridor = await parser.parsedata(buildMapWithRobotAt(4, 4));
-    expect(RRMapParser.resolveLiveSegmentId(onCorridor)).toBeNull();
-
-    const outside = await parser.parsedata(
-      buildRRMap([
-        buildImageBlock({
-          top: TOP,
-          left: LEFT,
-          width: WIDTH,
-          height: HEIGHT,
-          pixelBytes: buildPixels(),
-        }),
-        buildRobotPositionBlock(0, 0), // far outside the image
-      ])
-    );
-    expect(RRMapParser.resolveLiveSegmentId(outside)).toBeNull();
-
-    expect(RRMapParser.resolveLiveSegmentId({})).toBeNull();
-    expect(RRMapParser.resolveLiveSegmentId(null)).toBeNull();
+  test("returns null on a segment-free pixel and outside the image", () => {
+    expect(
+      RRMapParser.resolveLiveSegmentFromMapBuffer(buildMapWithRobotAt(4, 4))
+    ).toBeNull();
+    const outside = buildRRMap([
+      buildImageBlock({
+        top: TOP,
+        left: LEFT,
+        width: WIDTH,
+        height: HEIGHT,
+        pixelBytes: buildPixels(),
+      }),
+      buildRobotPositionBlock(0, 0), // far outside the image
+    ]);
+    expect(RRMapParser.resolveLiveSegmentFromMapBuffer(outside)).toBeNull();
   });
 });
 
 describe("fast buffer path (resolveLiveSegmentFromMapBuffer)", () => {
-  test("matches the parsedata-based resolution for every probe position", async () => {
-    const parser = new RRMapParser(parserAdapter);
+  test("resolves every probe position", () => {
     const probes = [
-      [2, 5],
-      [7, 3],
-      [4, 4], // segment-free corridor
-      [0, 0],
-      [9, 9],
-      [3, 8],
+      [2, 5, 16],
+      [7, 3, 17],
+      [4, 4, null], // segment-free corridor
+      [0, 0, 16],
+      [9, 9, 17],
+      [3, 8, 16],
     ];
-    for (const [px, py] of probes) {
-      const map = buildMapWithRobotAt(px, py);
-      const slow = RRMapParser.resolveLiveSegmentId(
-        await parser.parsedata(map)
-      );
-      const fast = RRMapParser.resolveLiveSegmentFromMapBuffer(map);
-      expect(fast).toBe(slow);
+    for (const [px, py, segment] of probes) {
+      expect(
+        RRMapParser.resolveLiveSegmentFromMapBuffer(buildMapWithRobotAt(px, py))
+      ).toBe(segment);
     }
   });
 

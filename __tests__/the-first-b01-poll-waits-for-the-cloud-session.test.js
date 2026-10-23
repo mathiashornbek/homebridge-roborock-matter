@@ -173,6 +173,7 @@ describe("no failed attempt is recorded for a startup that simply had to wait", 
     const api = createApiWithB01({ cloudSessionUp: false });
     delete api.getStatus;
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.vacuums = { q7: {}, classic: {} };
     api.describeDevice = () => "1. Sal";
     // The refresh dispatches every successful status on the live-message path,

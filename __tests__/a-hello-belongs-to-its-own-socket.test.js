@@ -186,48 +186,72 @@ test("a socket that drops during the hello ends the negotiation, and a request w
 });
 
 test("a reconnect made while the old socket's hello is still pending gets a hello of its own", async () => {
-  // L01 firmware listed as L01. Connection 1 drops on its first hello;
-  // connection 2 is healthy and answers the L01 hello.
-  robot = await startRobot((conn, frame) => {
-    if (conn.index === 0) {
-      conn.socket.destroy();
-      return;
-    }
-    if (frame.protocol === 0 && frame.version === "L01") {
-      conn.socket.write(helloAnswer("L01", frame.seq, 777777));
-    }
+  // The old socket's hello is outlived on a fake clock rather than by sleeping
+  // through its 5-second timeout; the sockets themselves stay real.
+  jest.useFakeTimers({
+    doNotFake: ["nextTick", "setImmediate", "queueMicrotask"],
   });
-  adapter = makeAdapter("L01");
-  const connector = adapter.localConnector;
+  const turns = async (until) => {
+    for (let turn = 0; turn < 500 && !until(); turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  try {
+    // L01 firmware listed as L01. Connection 1 drops on its first hello;
+    // connection 2 is healthy and answers the L01 hello.
+    robot = await startRobot((conn, frame) => {
+      if (conn.index === 0) {
+        conn.socket.destroy();
+        return;
+      }
+      if (frame.protocol === 0 && frame.version === "L01") {
+        conn.socket.write(helloAnswer("L01", frame.seq, 777777));
+      }
+    });
+    adapter = makeAdapter("L01");
+    const connector = adapter.localConnector;
 
-  await connector.createClient(DUID, HOST);
-  await sleep(300); // connection 1 has dropped
-  expect(connector.isConnected(DUID)).toBe(false);
-
-  // What ensureConnected does for a preferLocal (Matter) request.
-  await connector.ensureConnected(DUID, HOST);
-  expect(connector.isConnected(DUID)).toBe(true);
-
-  await sleep(6000); // long enough for any pending hello to settle
-  const second = robot.connections[1];
-  const result = await adapter.messageQueueHandler
-    .sendRequest(DUID, "get_prop", ["get_status"], false, false, {
-      requestTimeoutMs: 1000,
-    })
-    .then(
-      () => "built and sent",
-      (error) => error.message
+    await connector.createClient(DUID, HOST);
+    await turns(
+      () =>
+        robot.connections[0]?.socket.destroyed && !connector.isConnected(DUID)
     );
-  expect({
-    hellosOnSecondSocket: second.frames.filter((f) => f.protocol === 0).length,
-    negotiated: connector.getNegotiatedVersion(DUID),
-    noncesKnown: adapter.localL01Nonces.has(DUID),
-    nextLocalRequest: result,
-  }).toEqual({
-    hellosOnSecondSocket: 1,
-    negotiated: "L01",
-    noncesKnown: true,
-    // The fake robot does not answer RPCs; a timeout means the frame WAS built.
-    nextLocalRequest: expect.not.stringMatching(/Missing L01 nonces/),
-  });
+    expect(connector.isConnected(DUID)).toBe(false);
+
+    // What ensureConnected does for a preferLocal (Matter) request.
+    await connector.ensureConnected(DUID, HOST);
+    expect(connector.isConnected(DUID)).toBe(true);
+
+    // The new socket's own hello is answered over the real socket first;
+    // then the clock outlives any hello still pending from the old one.
+    await turns(() => connector.getNegotiatedVersion(DUID) === "L01");
+    await jest.advanceTimersByTimeAsync(6000);
+    const second = robot.connections[1];
+    const outcome = adapter.messageQueueHandler
+      .sendRequest(DUID, "get_prop", ["get_status"], false, false, {
+        requestTimeoutMs: 1000,
+      })
+      .then(
+        () => "built and sent",
+        (error) => error.message
+      );
+    await turns(() => second.frames.some((f) => f.protocol !== 0));
+    await jest.advanceTimersByTimeAsync(1000);
+    const result = await outcome;
+    expect({
+      hellosOnSecondSocket: second.frames.filter((f) => f.protocol === 0)
+        .length,
+      negotiated: connector.getNegotiatedVersion(DUID),
+      noncesKnown: adapter.localL01Nonces.has(DUID),
+      nextLocalRequest: result,
+    }).toEqual({
+      hellosOnSecondSocket: 1,
+      negotiated: "L01",
+      noncesKnown: true,
+      // The fake robot does not answer RPCs; a timeout means the frame WAS built.
+      nextLocalRequest: expect.not.stringMatching(/Missing L01 nonces/),
+    });
+  } finally {
+    jest.useRealTimers();
+  }
 });

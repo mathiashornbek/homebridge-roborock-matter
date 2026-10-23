@@ -159,6 +159,11 @@ interface RoborockApi {
   ): Promise<void>;
   supportsSegmentResume?(duid: string): boolean;
   normalizePushedState?(duid: string, rawState: unknown): unknown;
+  isB01Device?(duid: string): boolean;
+  describeB01Fault?(
+    duid: string,
+    errorCode: number
+  ): { id: number; roborock: string; spec?: string } | null;
   getRoomMappingsForDevice?(duid: string): unknown;
   getMapListForDevice?(duid: string): unknown;
   getCurrentMapIdForDevice?(duid: string): unknown;
@@ -1323,7 +1328,14 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     const errorCode = this.getNumberStatus("error_code");
-    const speaksV1 = this.getNumberStatus("matter_clean_type") === null;
+    // Which numbering `error_code` is in is asked, not inferred: a Q7 answer
+    // that omitted `mode` used to read as v1. The inference stays only for an
+    // API that cannot answer.
+    const isB01 = this.api.isB01Device?.(this.getDuid());
+    const speaksV1 =
+      isB01 === undefined
+        ? this.getNumberStatus("matter_clean_type") === null
+        : !isB01;
     if (
       errorCode !== null &&
       speaksV1 &&
@@ -1339,13 +1351,12 @@ export default class RoborockMatterVacuumAccessory {
         : null;
     }
     if (errorCode !== null && errorCode !== 0) {
-      // The table is Roborock's v1 numbering. A B01/Q7 robot's `fault` field
-      // is a different space entirely — 407, 2105 — passed through under the
-      // same name by the adapter, so reading 254 from one of those robots as
-      // "bin full" would be a coincidence, not a translation.
+      // The table is Roborock's v1 numbering. A B01 robot's `fault` field is
+      // a different space entirely — 407, 2105 — so its codes are classified
+      // by the protocol library in the robot's own family numbering.
       const mapped = speaksV1
         ? ROBOROCK_ERROR_TO_MATTER.get(errorCode)
-        : undefined;
+        : this.api.describeB01Fault?.(this.getDuid(), errorCode) ?? undefined;
       if (mapped) {
         return {
           id: mapped.id,

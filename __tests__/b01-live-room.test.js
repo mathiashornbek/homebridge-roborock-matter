@@ -254,30 +254,44 @@ describe("refreshB01LiveRoom", () => {
         method === "get_map_list" ? { map_list: [{ id: 1, cur: true }] } : {}
       ),
     };
-    const mapKey = b01.createMapKey(SERIAL, MODEL);
+    // The request resolves with the decoded saved map (see onB01MapFrame).
     api.sendB01MapRequest = jest.fn(async () =>
-      encodeMapPayload(api.__scMap, mapKey)
+      b01.parseScMapLiveState(api.__scMap)
     );
     api.__scMap = encodeRobotMap({ pose: cellToWorld(20, 20) });
     return api;
   }
 
-  test("derives the live room end to end and refreshes the room-name cache", async () => {
+  // The live room comes from live frames the robot pushes; see also
+  // a-q7-live-position-comes-from-what-it-pushes.test.js for the wire path.
+  function pushLiveFrame(api, pose) {
+    const mapKey = b01.createMapKey(SERIAL, MODEL);
+    api.onB01MapFrame(
+      "duid-q7",
+      encodeMapPayload(encodeRobotMap({ pose }), mapKey)
+    );
+  }
+
+  test("derives the live room from a pushed frame and refreshes the room-name cache", async () => {
     const api = createApi();
     const notify = jest.fn();
     api.setDeviceNotify(notify);
     api._b01StatusState = new Map([
-      ["duid-q7", { lastV1Status: { state: 5, battery: 77 } }],
+      [
+        "duid-q7",
+        { lastKnownV1State: 5, lastV1Status: { state: 5, battery: 77 } },
+      ],
     ]);
 
-    const result = await api.refreshB01LiveRoom("duid-q7");
-    expect(result).toMatchObject({ segmentId: 42, roomName: "Køkken" });
+    pushLiveFrame(api, cellToWorld(20, 20));
+    await new Promise((resolve) => setImmediate(resolve));
+
     expect(api.getB01LiveRoomForDevice("duid-q7")).toMatchObject({
       segmentId: 42,
       roomName: "Køkken",
     });
 
-    // The paid-for map payload also refreshed the room-name cache.
+    // The frame also refreshed the room-name cache.
     expect(api.getB01RoomCache("duid-q7")).toEqual([
       { roomId: 42, roomName: "Køkken" },
       { roomId: 7, roomName: "Stue" },
@@ -290,41 +304,53 @@ describe("refreshB01LiveRoom", () => {
     });
   });
 
-  test("throttles attempts and keeps the last room while the robot is between outlines", async () => {
+  test("keeps the last room while the robot is between outlines", async () => {
     const api = createApi();
     const notify = jest.fn();
     api.setDeviceNotify(notify);
     api._b01StatusState = new Map([
-      ["duid-q7", { lastV1Status: { state: 5 } }],
+      ["duid-q7", { lastKnownV1State: 5, lastV1Status: { state: 5 } }],
     ]);
 
-    await api.refreshB01LiveRoom("duid-q7");
-    expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(1);
+    pushLiveFrame(api, cellToWorld(20, 20));
     expect(notify).toHaveBeenCalledTimes(1);
 
-    // Within the 20s gap: no new fetch, cached room returned.
-    const cached = await api.refreshB01LiveRoom("duid-q7");
-    expect(cached).toMatchObject({ segmentId: 42 });
-    expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(1);
-
-    // Past the gap, robot now in the corridor: fetch happens, previous room
-    // is retained, and no change notification fires.
-    api.__scMap = encodeRobotMap({ pose: cellToWorld(45, 45) });
-    api._b01LiveRoomState.get("duid-q7").lastAttemptAt = Date.now() - 21000;
-    const retained = await api.refreshB01LiveRoom("duid-q7");
-    expect(retained).toMatchObject({ segmentId: 42 });
-    expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(2);
+    // In the corridor: the previous room is retained, no change notification.
+    pushLiveFrame(api, cellToWorld(45, 45));
+    expect(api.getB01LiveRoomForDevice("duid-q7")).toMatchObject({
+      segmentId: 42,
+    });
     expect(notify).toHaveBeenCalledTimes(1);
 
-    // Robot moves to the living room: change detected and re-broadcast.
-    api.__scMap = encodeRobotMap({ pose: cellToWorld(70, 40) });
-    api._b01LiveRoomState.get("duid-q7").lastAttemptAt = Date.now() - 21000;
-    const moved = await api.refreshB01LiveRoom("duid-q7");
-    expect(moved).toMatchObject({ segmentId: 7, roomName: "Stue" });
+    // Into the living room: change detected and re-broadcast.
+    pushLiveFrame(api, cellToWorld(70, 40));
+    expect(api.getB01LiveRoomForDevice("duid-q7")).toMatchObject({
+      segmentId: 7,
+      roomName: "Stue",
+    });
     expect(notify).toHaveBeenCalledTimes(2);
 
     api.clearB01LiveRoom("duid-q7");
     expect(api.getB01LiveRoomForDevice("duid-q7")).toBeNull();
+  });
+
+  test("the fallback request is throttled and asks nothing while frames arrive", async () => {
+    const api = createApi();
+    api._b01StatusState = new Map([
+      ["duid-q7", { lastKnownV1State: 5, lastV1Status: { state: 5 } }],
+    ]);
+
+    await api.refreshB01LiveRoom("duid-q7");
+    expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(1);
+    // Within the gap: no new request.
+    await api.refreshB01LiveRoom("duid-q7");
+    expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(1);
+
+    // Past the gap, but a live frame has just arrived: still nothing asked.
+    pushLiveFrame(api, cellToWorld(20, 20));
+    api._b01LiveRoomState.get("duid-q7").lastAttemptAt = Date.now() - 21000;
+    await api.refreshB01LiveRoom("duid-q7");
+    expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(1);
   });
 
   test("does nothing when live room tracking is disabled", async () => {
@@ -341,6 +367,7 @@ describe("refreshB01LiveRoom", () => {
     });
     api.vacuums["duid-q7"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     let robotState = 5; // B01 cleaning -> v1 state 5
     api.messageQueueHandler = {
       sendRequest: jest.fn(async () => ({

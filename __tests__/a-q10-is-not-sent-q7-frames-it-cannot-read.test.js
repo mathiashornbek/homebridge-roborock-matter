@@ -191,16 +191,16 @@ describe("a Q10 is not sent Q7 frames it cannot read", () => {
     }
   );
 
-  test("an unrecognised B01 model is still treated as Q7", async () => {
-    // Q7 is the safe default: it is what every B01 device was treated as
-    // before the split, so an unknown model cannot be made worse by it.
+  test("an unrecognised B01 model is sent neither dialect", async () => {
+    // It used to default to Q7, which is how a Q10 whose model lookup missed
+    // got Q7 frames forever (#19). python-roborock refuses such a model.
     const adapter = createB01Adapter("roborock.vacuum.zz99");
     const handler = new messageQueueHandler(adapter);
 
     await expect(
       handler.sendRequest("duid-unknown", "get_status", [])
-    ).rejects.toThrow(/timed out/);
+    ).rejects.toMatchObject({ code: "B01_METHOD_UNSUPPORTED" });
 
-    expect(adapter.rr_mqtt_connector.sendMessage).toHaveBeenCalledTimes(1);
+    expect(adapter.rr_mqtt_connector.sendMessage).not.toHaveBeenCalled();
   });
 });

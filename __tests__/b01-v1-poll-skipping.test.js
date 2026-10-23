@@ -56,37 +56,39 @@ async function polledMethods({ protocolVersion, model }) {
 }
 
 describe("canAnswerV1Method mirrors the B01 send choke point", () => {
-  // If these two ever disagree, the poller starts asking for things that
-  // throw again — the exact regression this file exists to prevent.
-  test.each([
-    "get_status",
-    "get_prop",
-    "get_consumable",
-    "get_room_mapping",
-    "get_server_timer",
-    "get_multi_maps_list",
-    "get_carpet_mode",
-    "get_custom_mode",
-    "get_clean_summary",
-    "get_network_info",
-    "get_map_list",
-    "get_timer",
-    "get_carpet_clean_mode",
-    "get_water_box_custom_mode",
-    "get_dust_collection_switch_status",
-    "get_wash_towel_mode",
-    "app_get_dryer_setting",
-    "get_fw_features",
-  ])(
-    "%s: the predicate agrees with translation + neutral response",
-    (method) => {
-      const answerable =
-        Boolean(b01Q7Adapter.neutralResponse(method)) ||
-        Boolean(b01Q7Adapter.translateOutgoing(method, []));
-
-      expect(b01Q7Adapter.canAnswerV1Method(method)).toBe(answerable);
+  // An explicit answer per method. This used to recompute the predicate's own
+  // body (neutral response || translation) and compare it with the predicate,
+  // which could not fail unless that two-line body changed.
+  test("each polled method's answer is the one the choke point gives", () => {
+    const expected = {
+      get_status: true,
+      get_consumable: true,
+      get_room_mapping: true,
+      get_server_timer: true,
+      get_multi_maps_list: true,
+      get_carpet_mode: true,
+      get_custom_mode: true,
+      get_clean_summary: true,
+      get_network_info: true,
+      get_map_list: true,
+      // Translated only with ["get_status"] as its params; the poller never
+      // sends it with those.
+      get_prop: false,
+      get_timer: false,
+      get_carpet_clean_mode: false,
+      get_water_box_custom_mode: false,
+      get_dust_collection_switch_status: false,
+      get_wash_towel_mode: false,
+      app_get_dryer_setting: false,
+      get_fw_features: false,
+    };
+    for (const [method, answerable] of Object.entries(expected)) {
+      expect([method, b01Q7Adapter.canAnswerV1Method(method)]).toEqual([
+        method,
+        answerable,
+      ]);
     }
-  );
+  });
 
   test("the v1-only methods that caused the noise are not answerable", () => {
     expect(b01Q7Adapter.canAnswerV1Method("get_water_box_custom_mode")).toBe(

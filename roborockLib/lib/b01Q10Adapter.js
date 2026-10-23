@@ -51,6 +51,7 @@ const B01_Q10_DP = {
   BATTERY: 122,
   FAN_LEVEL: 123,
   CLEAN_MODE: 137,
+  CLEAN_TASK_TYPE: 138,
   START_CLEAN: 201,
   START_BACK: 202,
   START_DOCK_TASK: 203,
@@ -98,6 +99,21 @@ const MATTER_TO_Q10_CLEAN_TYPE = { 0: 2, 1: 3, 2: 1 };
 const Q10_CLEAN_TYPE_TO_MATTER = { 1: 2, 2: 0, 3: 1 };
 
 /**
+ * dpCleanTaskType (138, `YXDeviceCleanTask`) -> v1 `in_cleaning`, the field
+ * the accessory reads to choose a resume verb: 0 idle -> 0 complete, 1 smart
+ * (whole home) -> 1, 2 electoral (rooms) -> 3 segment, 3 divideareas (zone)
+ * -> 2. Mapping (4) and spot (5) have no v1 counterpart.
+ * @type {Record<number, number>}
+ */
+const Q10_CLEAN_TASK_TO_IN_CLEANING = { 0: 0, 1: 1, 2: 3, 3: 2 };
+
+/**
+ * The plugin's name for dpRequestDps. There is no v1 method for it: a classic
+ * robot answers a status read, a Q10 can only be asked to push.
+ */
+const REQUEST_STATUS_PUSH = "request_dps";
+
+/**
  * Translate a v1-shaped outgoing command to a Q10 datapoint write.
  *
  * Returns `{dp, params}` for a command the dialect can express, or `null` for
@@ -117,6 +133,12 @@ function translateOutgoing(method, params) {
       return { dp: B01_Q10_DP.STOP, params: 0 };
     case "app_pause":
       return { dp: B01_Q10_DP.PAUSE, params: 0 };
+    case "resume_segment_clean":
+    case "resume_zoned_clean":
+      // dpResume continues whatever task is paused ("Verified live":
+      // python-roborock q10/vacuum.py resume_clean). app_start would write
+      // dpStartClean, a fresh whole-home run.
+      return { dp: B01_Q10_DP.RESUME, params: 0 };
     case "app_charge":
       return { dp: B01_Q10_DP.START_BACK, params: Q10_BACK_TO_DOCK_CHARGE };
     case "app_start_collect_dust":
@@ -159,6 +181,11 @@ function translateOutgoing(method, params) {
         ? null
         : { dp: B01_Q10_DP.CLEAN_MODE, params: q10Mode };
     }
+    case REQUEST_STATUS_PUSH:
+      // Not a read: a write that makes the robot push its full status (and
+      // its current map), which arrives through the push path like any
+      // other. python-roborock `Q10PropertiesApi.refresh`.
+      return { dp: B01_Q10_DP.REQUEST_DPS, params: {} };
     default:
       // Everything else, reads included, is refused by the caller.
       return null;
@@ -223,6 +250,80 @@ const Q10_STATUS_TO_V1_STATE = {
   108: 8,
 };
 
+const RVC = b01Q7Adapter.MATTER_RVC_ERROR;
+
+/**
+ * Q10 `dpFault` (90) codes that are a condition the user has to fix, and the
+ * Matter error each one is. Labels are python-roborock's `YXFault` names; the
+ * Matter ids follow the classic table, as the Q7 table does.
+ *
+ * Left out: the lifecycle codes (INFORMATIONAL_Q10_FAULTS), outcomes that a
+ * lingering field would turn into a standing Error (556 positioning failed,
+ * 570 cannot reach target), the battery codes the robot handles itself, and
+ * service-life reminders (301-304). 310 is inferred upstream from auto-empty
+ * context rather than hardware-confirmed; a full bag is a condition either way.
+ *
+ * @type {ReadonlyMap<number, {id: number, roborock: string, spec?: string}>}
+ */
+const Q10_FAULT_TO_MATTER = new Map([
+  [
+    1,
+    {
+      id: RVC.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "lidar_blocked",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [2, { id: RVC.STUCK, roborock: "bumper_stuck" }],
+  [
+    3,
+    {
+      id: RVC.STUCK,
+      roborock: "robot_suspended",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [
+    4,
+    {
+      id: RVC.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "cliff_sensor_error",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [
+    5,
+    {
+      id: RVC.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "main_brush_stuck",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    7,
+    {
+      id: RVC.STUCK,
+      roborock: "main_wheels_stuck",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [8, { id: RVC.STUCK, roborock: "robot_trapped" }],
+  [9, { id: RVC.DUST_BIN_MISSING, roborock: "check_dustbin_filter" }],
+  [46, { id: RVC.DUST_BIN_MISSING, roborock: "install_dust_bag" }],
+  [54, { id: RVC.MOP_CLEANING_PAD_MISSING, roborock: "mop_mount_fell_off" }],
+  [310, { id: RVC.DUST_BIN_FULL, roborock: "dust_bag_full" }],
+  [503, { id: RVC.FAILED_TO_FIND_CHARGING_DOCK, roborock: "docking_error" }],
+]);
+
+/**
+ * The Matter fault a Q10 `dpFault` code stands for, or null.
+ * @param {number} code
+ * @returns {{id: number, roborock: string, spec?: string} | null}
+ */
+function describeQ10Fault(code) {
+  return Q10_FAULT_TO_MATTER.get(Number(code)) ?? null;
+}
+
 /**
  * @param {unknown} rawStatus a Q10 datapoint-121 value
  * @returns {number | null} the v1 state, or null when the code is not known
@@ -235,7 +336,265 @@ function translateQ10StatusToV1State(rawStatus) {
   return mapped !== undefined ? mapped : null;
 }
 
+/**
+ * Datapoints a Q10 pushed, read as the v1-shaped status fields the rest of the
+ * plugin speaks.
+ *
+ * This is the one place a Q10 push is interpreted. The accessory reads v1
+ * datapoints, so a raw Q10 frame read there landed its suction (123) in the
+ * wrong units and its clean mode (137) and fault (90) nowhere. python-roborock
+ * flattens the nested dpCommon (101) into the top level before reading
+ * anything (b01_q10_protocol.decode_rpc_response), so a fault pushed under 101
+ * is the same fault as one pushed at the top level.
+ *
+ * Only what can be read faithfully is returned: an unknown state, suction or
+ * clean mode is left out, never guessed, and the water level (124) is not
+ * mapped because this plugin has no Q10 water control to mirror it into.
+ *
+ * @param {Record<string, unknown>} dps
+ * @returns {{state?: number, charge_status?: number, battery?: number,
+ *            fan_power?: number, matter_clean_type?: number,
+ *            error_code?: number, in_cleaning?: number}}
+ */
+function mapDpsToV1(dps) {
+  /** @type {Record<string, unknown>} */
+  const flat = { ...dps };
+  const common = flat[String(B01_Q10_DP.COMMON)];
+  delete flat[String(B01_Q10_DP.COMMON)];
+  if (common && typeof common === "object" && !Array.isArray(common)) {
+    Object.assign(flat, common);
+  }
+  /** @param {number} dp */
+  const has = (dp) => Object.prototype.hasOwnProperty.call(flat, String(dp));
+
+  /** @type {ReturnType<typeof mapDpsToV1>} */
+  const v1 = {};
+  if (has(B01_Q10_DP.STATUS)) {
+    const state = translateQ10StatusToV1State(flat[String(B01_Q10_DP.STATUS)]);
+    if (state !== null) {
+      v1.state = state;
+      // Emptying the bin happens on the dock; whether it charges meanwhile is
+      // not said, so the last known value stands.
+      if (state !== 22) {
+        v1.charge_status = state === 8 ? 1 : 0;
+      }
+    }
+  }
+  if (has(B01_Q10_DP.BATTERY)) {
+    const battery = Number(flat[String(B01_Q10_DP.BATTERY)]);
+    if (Number.isFinite(battery)) {
+      v1.battery = battery;
+    }
+  }
+  if (has(B01_Q10_DP.FAN_LEVEL)) {
+    const fanPower = b01Q7Adapter.windToV1FanPower(b01Q7Adapter.B01_FAMILY.Q10)[
+      Number(flat[String(B01_Q10_DP.FAN_LEVEL)])
+    ];
+    if (fanPower !== undefined) {
+      v1.fan_power = fanPower;
+    }
+  }
+  if (has(B01_Q10_DP.CLEAN_MODE)) {
+    const cleanType =
+      Q10_CLEAN_TYPE_TO_MATTER[Number(flat[String(B01_Q10_DP.CLEAN_MODE)])];
+    if (cleanType !== undefined) {
+      v1.matter_clean_type = cleanType;
+    }
+  }
+  if (has(B01_Q10_DP.CLEAN_TASK_TYPE)) {
+    const inCleaning =
+      Q10_CLEAN_TASK_TO_IN_CLEANING[
+        Number(flat[String(B01_Q10_DP.CLEAN_TASK_TYPE)])
+      ];
+    if (inCleaning !== undefined) {
+      v1.in_cleaning = inCleaning;
+    }
+  }
+  if (has(B01_Q10_DP.FAULT)) {
+    const fault = Number(flat[String(B01_Q10_DP.FAULT)]);
+    if (Number.isFinite(fault)) {
+      v1.error_code = b01Q7Adapter
+        .informationalFaults(b01Q7Adapter.B01_FAMILY.Q10)
+        .has(fault)
+        ? 0
+        : fault;
+    }
+  }
+  return v1;
+}
+
+// The Q10 current-map packet (protocol 301, marker `01 01`), as
+// python-roborock's b01_q10_map_parser reads it: map id u32be at 2, grid
+// width and height u16be at 7 and 9, the compressed layout length u16be at
+// 27 and an LZ4 block from 29. Inflated, the layout is width*height grid
+// cells followed by `01 <room count>` and 47-byte room records.
+const Q10_MAP_PACKET_CURRENT = 1;
+const Q10_MAP_ID_OFFSET = 2;
+const Q10_WIDTH_OFFSET = 7;
+const Q10_HEIGHT_OFFSET = 9;
+const Q10_LAYOUT_LENGTH_OFFSET = 27;
+const Q10_LAYOUT_OFFSET = 29;
+const Q10_ROOM_RECORD_LENGTH = 47;
+const Q10_ROOM_NAME_LENGTH_OFFSET = 26;
+const Q10_MAX_ROOMS = 32;
+const Q10_MAX_GRID_CELLS = 16000000;
+
+/**
+ * Decompress a raw LZ4 block (no frame header), refusing to grow past
+ * `maxOutputSize`. A port of python-roborock's lz4_block_decompress.
+ * @param {Buffer} data
+ * @param {number} maxOutputSize
+ * @returns {Buffer}
+ */
+function lz4BlockDecompress(data, maxOutputSize) {
+  let index = 0;
+  /** @type {number[]} */
+  const output = [];
+  /** @param {number} value */
+  const readLength = (value) => {
+    if (value !== 0x0f) return value;
+    for (;;) {
+      if (index >= data.length) {
+        throw new Error("Truncated LZ4 block while reading a length");
+      }
+      const part = data[index++];
+      value += part;
+      if (part !== 0xff) return value;
+    }
+  };
+  for (;;) {
+    if (index >= data.length) {
+      throw new Error("Truncated LZ4 block while reading a token");
+    }
+    const token = data[index++];
+    const literalLength = readLength(token >> 4);
+    if (index + literalLength > data.length) {
+      throw new Error("Truncated LZ4 block while reading literals");
+    }
+    if (output.length + literalLength > maxOutputSize) {
+      throw new Error("LZ4 block exceeds its maximum output size");
+    }
+    for (let end = index + literalLength; index < end; index += 1) {
+      output.push(data[index]);
+    }
+    if (index === data.length) {
+      return Buffer.from(output);
+    }
+    if (index + 2 > data.length) {
+      throw new Error("Truncated LZ4 block while reading a match offset");
+    }
+    const offset = data[index] | (data[index + 1] << 8);
+    index += 2;
+    if (offset === 0 || offset > output.length) {
+      throw new Error("Invalid LZ4 back-reference offset");
+    }
+    const matchLength = readLength(token & 0x0f) + 4;
+    if (output.length + matchLength > maxOutputSize) {
+      throw new Error("LZ4 block exceeds its maximum output size");
+    }
+    for (let copied = 0; copied < matchLength; copied += 1) {
+      output.push(output[output.length - offset]);
+    }
+  }
+}
+
+/**
+ * A firmware default room name made readable, as python-roborock's
+ * `Q10Room.name` does: "rr_living_room" -> "Living Room".
+ * @param {string} rawName
+ */
+function q10RoomName(rawName) {
+  return rawName
+    .replace(/^rr_/, "")
+    .replace(/_/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(
+      /(^|[^\p{L}])(\p{L})/gu,
+      (_, before, letter) => before + letter.toUpperCase()
+    );
+}
+
+/**
+ * The rooms of a Q10 current-map packet, or null for any other 301 packet
+ * (trace, clean record, saved-map detail). Throws on a malformed packet.
+ *
+ * Room ids are the ids dpStartClean's room clean takes
+ * (`{"cmd":2,"clean_paramters":[id]}`, verified live upstream).
+ *
+ * @param {Buffer} payload
+ * @returns {{mapId: number, rooms: Array<{roomId: number, roomName: string}>} | null}
+ */
+function parseQ10MapRooms(payload) {
+  if (
+    payload.length < Q10_LAYOUT_OFFSET ||
+    payload[0] !== Q10_MAP_PACKET_CURRENT ||
+    payload[1] !== 1
+  ) {
+    return null;
+  }
+  const mapId = payload.readUInt32BE(Q10_MAP_ID_OFFSET);
+  const width = payload.readUInt16BE(Q10_WIDTH_OFFSET);
+  const height = payload.readUInt16BE(Q10_HEIGHT_OFFSET);
+  if (width <= 0 || width * height > Q10_MAX_GRID_CELLS) {
+    throw new Error(`Q10 map packet has invalid dimensions ${width}x${height}`);
+  }
+  const layoutLength = payload.readUInt16BE(Q10_LAYOUT_LENGTH_OFFSET);
+  const layoutEnd = Q10_LAYOUT_OFFSET + layoutLength;
+  if (layoutLength <= 0 || layoutEnd > payload.length) {
+    throw new Error("Q10 map packet has an invalid layout length");
+  }
+  const decoded = lz4BlockDecompress(
+    payload.subarray(Q10_LAYOUT_OFFSET, layoutEnd),
+    Q10_MAX_GRID_CELLS + 2 + Q10_MAX_ROOMS * Q10_ROOM_RECORD_LENGTH
+  );
+
+  /** @param {Buffer} roomData */
+  const wellFormed = (roomData) =>
+    roomData.length >= 2 &&
+    roomData[0] === 1 &&
+    roomData.length === 2 + roomData[1] * Q10_ROOM_RECORD_LENGTH;
+  // The header height first; python-roborock infers the split from the room
+  // count when it does not line up (captures without a height).
+  let roomData = height > 0 ? decoded.subarray(width * height) : null;
+  if (!roomData || !wellFormed(roomData)) {
+    roomData = null;
+    for (let count = 0; count <= Q10_MAX_ROOMS; count += 1) {
+      const area = decoded.length - (2 + count * Q10_ROOM_RECORD_LENGTH);
+      if (area > 0 && area % width === 0) {
+        const candidate = decoded.subarray(area);
+        if (candidate[0] === 1 && candidate[1] === count) {
+          roomData = candidate;
+          break;
+        }
+      }
+    }
+  }
+  if (!roomData) {
+    throw new Error("Q10 map packet has no room records where expected");
+  }
+
+  const rooms = [];
+  for (let index = 0; index < roomData[1]; index += 1) {
+    const record = roomData.subarray(
+      2 + index * Q10_ROOM_RECORD_LENGTH,
+      2 + (index + 1) * Q10_ROOM_RECORD_LENGTH
+    );
+    const nameLength = record[Q10_ROOM_NAME_LENGTH_OFFSET];
+    rooms.push({
+      roomId: record.readUInt16BE(0),
+      roomName: q10RoomName(record.subarray(27, 27 + nameLength).toString()),
+    });
+  }
+  return { mapId, rooms };
+}
+
 module.exports = {
+  parseQ10MapRooms,
+  lz4BlockDecompress,
+  REQUEST_STATUS_PUSH,
+  mapDpsToV1,
+  describeQ10Fault,
   Q10_STATUS_TO_V1_STATE,
   translateQ10StatusToV1State,
   B01_Q10_DP,

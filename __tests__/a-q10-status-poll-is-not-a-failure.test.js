@@ -57,12 +57,15 @@ const Q10_MODEL = "roborock.vacuum.ss07";
 const Q7_MODEL = "roborock.vacuum.sc05";
 
 describe("a Q10 status poll is not attempted, and not counted as a failure", () => {
-  test("no request is sent for a Q10", async () => {
+  test("no status read is sent for a Q10, only the push request", async () => {
     const { api, sendRequest } = createApi(Q10_MODEL);
 
     const result = await api.refreshB01Status("duid-q10", { force: true });
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    // dpRequestDps, a write; see a-q10-is-asked-to-push-its-status.test.js.
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
+      "request_dps",
+    ]);
     expect(result).toBeNull();
   });
 
@@ -76,7 +79,9 @@ describe("a Q10 status poll is not attempted, and not counted as a failure", () 
       await api.refreshB01Status("duid-q10", { force: true });
     }
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    expect(
+      sendRequest.mock.calls.filter((call) => call[1] !== "request_dps")
+    ).toEqual([]);
     expect(api._b01StatusState?.get("duid-q10")?.consecutiveFailures ?? 0).toBe(
       0
     );
@@ -99,10 +104,9 @@ describe("a Q10 status poll is not attempted, and not counted as a failure", () 
       .filter((line) => line.includes("Q10"));
     expect(notices).toHaveLength(1);
     // It has to answer the reader's actual question: why is nothing being
-    // polled, and where does the state on the tile come from instead.
-    expect(notices[0]).toContain("no reply");
-    expect(notices[0]).toContain("home data");
-    expect(notices[0]).toContain("#19");
+    // read, and where does the state on the tile come from instead.
+    expect(notices[0]).toContain("no status read");
+    expect(notices[0]).toContain("pushes");
   });
 
   test("each Q10 robot is announced separately", async () => {
@@ -145,15 +149,14 @@ describe("a Q7 is still polled exactly as before", () => {
     );
   });
 
-  test("an unrecognised B01 model is still treated as a Q7", async () => {
-    // The classifier defaults unknown models to Q7, and this loop must not
-    // invent a stricter rule of its own: a model nobody has classified yet
-    // keeps the behaviour it had before the split.
+  test("an unrecognised B01 model is not polled in either dialect", async () => {
+    // The classifier no longer defaults unknown models to Q7 (#19), and this
+    // loop follows it rather than inventing a rule of its own.
     const { api, sendRequest } = createApi("roborock.vacuum.zz99");
 
     await api.refreshB01Status("duid-unknown", { force: true });
 
-    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(sendRequest).not.toHaveBeenCalled();
   });
 
   test("a Q7 that really does fail still reports it", async () => {

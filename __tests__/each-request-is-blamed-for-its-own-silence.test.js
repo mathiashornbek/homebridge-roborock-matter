@@ -108,48 +108,74 @@ describe("each request is blamed for its own silence", () => {
   });
 });
 
-describe("the source keeps the two legs apart", () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "roborockLib", "roborockAPI.js"),
-    "utf8"
-  );
-
-  /** Just the B01 live-room fetch, so a second get_map_list caller elsewhere
-   * in the file cannot satisfy or break these. */
-  const liveRoomFetch = (() => {
-    const start = source.indexOf("liveState.inflight = (async () => {");
-    return source.slice(start, start + 4000);
-  })();
-
-  test("get_map_list is acknowledged before the upload leg is attempted", () => {
-    const listCall = liveRoomFetch.indexOf('"get_map_list"');
-    const ack = liveRoomFetch.indexOf(
-      'this.noteMethodAnswered(duid, "get_map_list");'
+describe("the live-room fetch keeps the two legs apart", () => {
+  const uploadTimeout = () =>
+    Object.assign(
+      new Error("B01 map request timed out after 20s for Robot duid-q7."),
+      { unansweredRequest: true, transportWasUp: true }
     );
-    const upload = liveRoomFetch.indexOf(
-      "await this.sendB01MapRequest(duid, mapId)"
-    );
-    expect(listCall).toBeGreaterThan(-1);
-    expect(ack).toBeGreaterThan(listCall);
-    expect(upload).toBeGreaterThan(ack);
+
+  /** A cleaning Q7 whose list leg answers and whose upload leg is silent. */
+  function q7WithSilentUpload() {
+    const { api } = createApi();
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
+    api._b01StatusState = new Map([["duid-q7", { lastKnownV1State: 5 }]]);
+    const order = [];
+    const answered = api.noteMethodAnswered.bind(api);
+    api.noteMethodAnswered = jest.fn((duid, method) => {
+      order.push(`answered ${method}`);
+      return answered(duid, method);
+    });
+    api.messageQueueHandler = {
+      sendRequest: jest.fn(async (duid, method) => {
+        order.push(`sent ${method}`);
+        return { map_list: [{ id: 1, cur: true }] };
+      }),
+    };
+    api.sendB01MapRequest = jest.fn(async () => {
+      order.push("sent upload");
+      throw uploadTimeout();
+    });
+    async function attempt() {
+      const live = api._b01LiveRoomState?.get("duid-q7");
+      if (live) {
+        live.lastAttemptAt = 0;
+        live.consecutiveFailures = 0;
+      }
+      await api.refreshB01LiveRoom("duid-q7");
+    }
+    return { api, order, attempt };
+  }
+
+  test("get_map_list is acknowledged before the upload leg is attempted", async () => {
+    const { order, attempt } = q7WithSilentUpload();
+    await attempt();
+    expect(order.slice(0, 3)).toEqual([
+      "sent get_map_list",
+      "answered get_map_list",
+      "sent upload",
+    ]);
   });
 
-  test("the upload leg has its own catch, naming its own method", () => {
-    const uploadAt = liveRoomFetch.indexOf(
-      "rawPayload = await this.sendB01MapRequest"
+  test("the upload leg's silence is recorded against the upload", async () => {
+    const { api, attempt } = q7WithSilentUpload();
+    for (let index = 0; index < 6; index += 1) {
+      await attempt();
+    }
+    expect(api.unansweredMethods.shouldSkip("duid-q7", UPLOAD)).toBe(true);
+    expect(api.unansweredMethods.shouldSkip("duid-q7", "get_map_list")).toBe(
+      false
     );
-    const region = liveRoomFetch.slice(
-      uploadAt,
-      liveRoomFetch.indexOf("const serial = this.getVacuumDeviceInfo(duid,")
-    );
-    expect(uploadAt).toBeGreaterThan(-1);
-    expect(region).toMatch(/B01_MAP_UPLOAD_METHOD/);
-    expect(region).not.toMatch(/"get_map_list"/);
   });
 
-  test("a closed upload leg also skips the fetch, so leg 1 is not spent for nothing", () => {
-    expect(source).toMatch(
-      /shouldSkip\(duid, "get_map_list"\)\s*\|\|[\s\S]{0,120}B01_MAP_UPLOAD_METHOD/
-    );
+  test("a closed upload leg also skips the fetch, so leg 1 is not spent for nothing", async () => {
+    const { api, attempt } = q7WithSilentUpload();
+    for (let index = 0; index < 6; index += 1) {
+      await attempt();
+    }
+    api._b01MapIds?.clear();
+    api.messageQueueHandler.sendRequest.mockClear();
+    await attempt();
+    expect(api.messageQueueHandler.sendRequest).not.toHaveBeenCalled();
   });
 });

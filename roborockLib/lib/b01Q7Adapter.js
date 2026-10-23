@@ -56,7 +56,16 @@ const B01_CLOUD_ONLY_REMOTE_REASON = "b01-protocol-cloud-only";
 // Note: no "water" property. Q7-series robots use a manually filled water
 // tank on the robot with no electronic water level/control, so water state
 // is neither queried nor exposed (see also getMatterCleanModeCapabilities).
-const B01_STATUS_PROPS = ["status", "quantity", "fault", "wind", "mode"];
+// `current_map_id` (B01Props) tells the plugin when the robot switched maps,
+// so the rooms, whose ids are per map, can follow at once.
+const B01_STATUS_PROPS = [
+  "status",
+  "quantity",
+  "fault",
+  "wind",
+  "mode",
+  "current_map_id",
+];
 
 // Matter RVC clean modes (Vacuum=0, Mop=1, Vacuum+Mop=2) -> Q7 `mode`
 // property values (CleanTypeMapping: VACUUM=0, VAC_AND_MOP=1, MOP=2).
@@ -65,9 +74,9 @@ const B01_STATUS_PROPS = ["status", "quantity", "fault", "wind", "mode"];
 const MATTER_TO_Q7_CLEAN_TYPE = { 0: 0, 1: 2, 2: 1 };
 // Inverse direction: the Q7 reports its ACTIVE clean type in the same `mode`
 // property on every status poll, so cleans started from the Roborock app (or
-// the robot's buttons) can be reflected truthfully in Matter controllers.
-/** @type {Record<number, number>} */
-const Q7_CLEAN_TYPE_TO_MATTER = { 0: 0, 1: 2, 2: 1 };
+// the robot's buttons) can be reflected truthfully in Matter controllers. The
+// mapping swaps 1 and 2 and keeps 0, so it is its own inverse: one table.
+const Q7_CLEAN_TYPE_TO_MATTER = MATTER_TO_Q7_CLEAN_TYPE;
 
 // service.set_room_clean control values (SCDeviceCleanParam).
 const CTRL = { STOP: 0, START: 1, PAUSE: 2 };
@@ -112,8 +121,13 @@ const B01_FAMILY = { Q7: "Q7", Q10: "Q10" };
  * (`if "ss" in model_part`) which would misroute any future model that merely
  * contains those letters; this does not copy that.
  *
+ * Anything else, a missing model included, is neither family: null. It used
+ * to default to Q7, so a Q10 whose product lookup missed was sent Q7 frames it
+ * discards, every status tick (#19). python-roborock refuses such a device
+ * (`device_manager.device_creator`: UnsupportedDeviceError).
+ *
  * @param {string | null | undefined} model
- * @returns {string}
+ * @returns {string | null}
  */
 function b01FamilyForModel(model) {
   const suffix = String(model ?? "")
@@ -123,10 +137,10 @@ function b01FamilyForModel(model) {
   if (suffix && suffix.startsWith("ss")) {
     return B01_FAMILY.Q10;
   }
-  // Q7 remains the default for `sc*` and for anything unrecognised: it is
-  // what every B01 device was treated as before, so an unknown model cannot
-  // be made worse by this function than it already was.
-  return B01_FAMILY.Q7;
+  if (suffix && suffix.startsWith("sc")) {
+    return B01_FAMILY.Q7;
+  }
+  return null;
 }
 
 // Q7 `wind` (suction) codes <-> v1 fan_power codes.
@@ -164,14 +178,14 @@ const Q10_V1_FAN_POWER_TO_WIND = {
   106: 2, // custom -> balanced
 };
 
-/** @param {string} family */
+/** @param {string | null} family */
 function windToV1FanPower(family) {
   return family === B01_FAMILY.Q10
     ? Q10_WIND_TO_V1_FAN_POWER
     : Q7_WIND_TO_V1_FAN_POWER;
 }
 
-/** @param {string} family */
+/** @param {string | null} family */
 function v1FanPowerToWind(family) {
   return family === B01_FAMILY.Q10
     ? Q10_V1_FAN_POWER_TO_WIND
@@ -226,11 +240,138 @@ function v1FanPowerToWind(family) {
 // level below 20%. Scheduled task canceled") and 2007/2012 ("Unable to reach
 // the target. Cleaning ended") are outcomes a user may want to know about — a
 // scheduled clean that did not run is not noise. And the codes upstream has no
-// description for at all (2103, 2105, 2108, 2110 are bare `fault_NNNN` there)
-// stay put: silencing a number nobody has explained would be a guess, not a
-// translation.
-const INFORMATIONAL_Q7_FAULTS = new Set([0, 407, 2100, 2102]);
+// description for at all (2105, 2108, 2110 are bare `fault_NNNN` there) stay
+// put: silencing a number nobody has explained would be a guess, not a
+// translation. 2103 is not one of them: upstream's `B01Fault.F_2103` is "task
+// finished and robot docked ... persists while docked-idle. Not an error
+// (hw-confirmed on a Q7 M5+)", and the maintainer's sc05 logs it after every
+// run.
+const INFORMATIONAL_Q7_FAULTS = new Set([0, 407, 2100, 2102, 2103]);
 const INFORMATIONAL_Q10_FAULTS = new Set([0, 400, 407, 501, 502]);
+
+// Matter RvcOperationalState error ids (ErrorStateEnum), for the B01 fault
+// tables below. The Matter accessory publishes these through the same path a
+// classic robot's faults take.
+const MATTER_RVC_ERROR = Object.freeze({
+  UNABLE_TO_COMPLETE_OPERATION: 2,
+  FAILED_TO_FIND_CHARGING_DOCK: 64,
+  STUCK: 65,
+  DUST_BIN_MISSING: 66,
+  DUST_BIN_FULL: 67,
+  MOP_CLEANING_PAD_MISSING: 71,
+});
+
+// Q7 faults that are a condition the user has to fix, and the Matter error
+// each one is. Labels are python-roborock's `B01Fault` names; the Matter ids
+// follow the classic table in matter_vacuum_accessory.ts, so a jammed brush or
+// a trapped robot reads the same on a Q7 as on an S8 (wheels and bumper:
+// Stuck; brushes and sensors: UnableToCompleteOperation, with the Matter 1.4
+// code the classic table also names but does not send).
+//
+// LEFT OUT ON PURPOSE:
+//   * 500, 501, 503, 569 and 570. Upstream documents that these numbers mean
+//     different things on the two B01 families, and the maintainer's sc05 sent
+//     501 ("robot_suspended" in the Q7 table) at the end of a normal run, just
+//     before docking (pi-roborock.log, 21 Oct 2026) — which is the Q10's
+//     meaning, "cleaning completed, returning". A label that is wrong for this
+//     range on real hardware cannot be trusted to publish a fault.
+//   * Outcomes rather than conditions: 2003, 2007/2012 (cannot reach the
+//     target, cleaning ended), 611/612 (positioning failed, try again). The Q7
+//     fault field lingers after events (2103 persists while docked), and a
+//     Matter fault forces the Error state, which refuses a Start — so a
+//     finished run's outcome must not stand as a blocking error.
+//   * Low-battery codes (502, 518, 533, 534): the robot handles those itself.
+// Anything not listed is logged once by the accessory and never published.
+/** @type {ReadonlyMap<number, {id: number, roborock: string, spec?: string}>} */
+const Q7_FAULT_TO_MATTER = new Map([
+  [
+    509,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "cliff_sensor_error",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [510, { id: MATTER_RVC_ERROR.STUCK, roborock: "bumper_stuck" }],
+  [
+    511,
+    {
+      id: MATTER_RVC_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "docking_error",
+    },
+  ],
+  [
+    512,
+    {
+      id: MATTER_RVC_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "docking_error",
+    },
+  ],
+  [513, { id: MATTER_RVC_ERROR.STUCK, roborock: "robot_trapped" }],
+  [514, { id: MATTER_RVC_ERROR.STUCK, roborock: "robot_trapped" }],
+  [
+    522,
+    {
+      id: MATTER_RVC_ERROR.MOP_CLEANING_PAD_MISSING,
+      roborock: "mop_not_installed",
+    },
+  ],
+  [
+    560,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "side_brush_entangled",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    568,
+    {
+      id: MATTER_RVC_ERROR.STUCK,
+      roborock: "main_wheels_entangled",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [
+    572,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "main_brush_entangled",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    594,
+    {
+      id: MATTER_RVC_ERROR.DUST_BIN_MISSING,
+      roborock: "dust_bag_not_installed",
+    },
+  ],
+  [
+    629,
+    {
+      id: MATTER_RVC_ERROR.MOP_CLEANING_PAD_MISSING,
+      roborock: "mop_mount_fell_off",
+    },
+  ],
+  [
+    668,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "system_error",
+    },
+  ],
+]);
+
+/**
+ * The Matter fault a Q7 `fault` code stands for, or null when it is not a
+ * condition this table can name (see Q7_FAULT_TO_MATTER).
+ * @param {number} code
+ * @returns {{id: number, roborock: string, spec?: string} | null}
+ */
+function describeQ7Fault(code) {
+  return Q7_FAULT_TO_MATTER.get(Number(code)) ?? null;
+}
 
 /** @param {string} family */
 function informationalFaults(family) {
@@ -238,9 +379,6 @@ function informationalFaults(family) {
     ? INFORMATIONAL_Q10_FAULTS
     : INFORMATIONAL_Q7_FAULTS;
 }
-
-// Kept for callers that predate the family split; Q7 is the default family.
-const INFORMATIONAL_B01_FAULTS = INFORMATIONAL_Q7_FAULTS;
 
 /** @type {Record<number, number>} */
 const B01_STATUS_TO_V1_STATE = {
@@ -255,9 +393,12 @@ const B01_STATUS_TO_V1_STATE = {
   8: 3,
   9: 23,
   10: 8,
+  // working_sleep: "an untouched pause falls asleep after ~10 minutes; the
+  // job is kept" (Home Assistant maps it to PAUSED). Read as Idle, a paused
+  // run looked finished.
+  11: 10,
 };
 
-/** @param {unknown} version */
 /**
  * Derive the B01/Q7 map decrypt key from serial + model
  * (reference: python-roborock create_map_key).
@@ -308,9 +449,8 @@ function decodeMapPayload(rawPayload, mapKey) {
 }
 
 /**
- * Shared minimal protobuf wire readers for the SCMap RobotMap payload.
- * Reference schema: b01_scmap.proto (fields 5-11/13-22 documented in the
- * wider CRL-200S family schema used by ioBroker.roborock).
+ * Shared minimal protobuf wire reader for the SCMap RobotMap payload.
+ * Reference schema: python-roborock map/proto/b01_scmap.proto.
  */
 
 /** @param {Buffer} buf @param {number} pos */
@@ -329,321 +469,160 @@ function readVarint(buf, pos) {
   throw new Error("Malformed varint in SCMap payload");
 }
 
-// Bounds for the raw field survey below. They exist to keep a diagnostic
-// from becoming a liability: the survey is pointed at fields whose schema is
-// unknown, so it must not be able to produce an unbounded log line, walk the
-// occupancy grid as if it were protobuf, or recurse without end.
-const RAW_SURVEY_MAX_SCALARS = 48;
-const RAW_SURVEY_MAX_SUBMESSAGE_BYTES = 16384;
-const RAW_SURVEY_MAX_DEPTH = 2;
-
-/** @param {Buffer} buf @param {number} pos @param {number} wireType */
-function skipField(buf, pos, wireType) {
-  switch (wireType) {
-    case 0:
-      return readVarint(buf, pos).pos;
-    case 1:
-      return pos + 8;
-    case 2: {
-      const len = readVarint(buf, pos);
-      return len.pos + len.value;
-    }
-    case 5:
-      return pos + 4;
-    default:
+/**
+ * Walk one protobuf message and hand every field to `visit` with its number,
+ * wire type and value: a number for varint (0), double (1) and float (5), the
+ * bytes for a length-delimited field (2). Fields nobody reads cost nothing but
+ * the walk, so every message reader below is just a `visit`.
+ *
+ * @param {Buffer} buf
+ * @param {(field: number, wireType: number, value: any) => void} visit
+ */
+function forEachField(buf, visit) {
+  let pos = 0;
+  while (pos < buf.length) {
+    const tag = readVarint(buf, pos);
+    pos = tag.pos;
+    const field = Math.floor(tag.value / 8);
+    const wireType = tag.value % 8;
+    let value;
+    let end;
+    if (wireType === 0) {
+      const varint = readVarint(buf, pos);
+      value = varint.value;
+      end = varint.pos;
+    } else if (wireType === 2) {
+      const length = readVarint(buf, pos);
+      end = length.pos + length.value;
+      value = buf.subarray(length.pos, end);
+    } else if (wireType === 1 || wireType === 5) {
+      end = pos + (wireType === 1 ? 8 : 4);
+      if (end > buf.length) {
+        throw new Error("Truncated fixed-width field in SCMap payload");
+      }
+      value = wireType === 1 ? buf.readDoubleLE(pos) : buf.readFloatLE(pos);
+    } else {
       throw new Error(`Unsupported protobuf wire type ${wireType}`);
+    }
+    visit(field, wireType, value);
+    pos = end;
   }
 }
 
 /**
- * Minimal protobuf wire reader extracting rooms from SCMap RobotMap bytes.
- * Only RobotMap field 12 (repeated RoomDataInfo) is decoded, and inside it
- * only roomId (field 1, varint) and roomName (field 2, string); every other
- * field is skipped by wire type. Reference schema: b01_scmap.proto.
+ * RoomDataInfo: roomId (1, varint) and roomName (2, string).
+ * @param {Buffer} buf
+ */
+function parseRoom(buf) {
+  /** @type {{roomId: number, roomName: string}} */
+  const room = { roomId: -1, roomName: "" };
+  forEachField(buf, (field, wireType, value) => {
+    if (field === 1 && wireType === 0) room.roomId = value;
+    else if (field === 2 && wireType === 2)
+      room.roomName = value.toString("utf8");
+  });
+  return room;
+}
+
+/**
+ * The rooms (RobotMap field 12, RoomDataInfo) of an SCMap payload.
  * @param {Buffer} buffer
  * @returns {Array<{roomId: number, roomName: string}>}
  */
 function parseRoomsFromScMap(buffer) {
-  /** @type {Array<{roomId: number, roomName: string}>} */
-  const rooms = [];
-
-  /** @param {Buffer} buf */
-  function parseRoom(buf) {
-    /** @type {{roomId: number, roomName: string}} */
-    const room = { roomId: -1, roomName: "" };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-
-      if (fieldNumber === 1 && wireType === 0) {
-        const value = readVarint(buf, pos);
-        room.roomId = value.value;
-        pos = value.pos;
-      } else if (fieldNumber === 2 && wireType === 2) {
-        const len = readVarint(buf, pos);
-        room.roomName = buf
-          .subarray(len.pos, len.pos + len.value)
-          .toString("utf8");
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
-    return room;
-  }
-
-  let pos = 0;
-  while (pos < buffer.length) {
-    const tag = readVarint(buffer, pos);
-    pos = tag.pos;
-    const fieldNumber = Math.floor(tag.value / 8);
-    const wireType = tag.value % 8;
-
-    if (fieldNumber === 12 && wireType === 2) {
-      const len = readVarint(buffer, pos);
-      const room = parseRoom(buffer.subarray(len.pos, len.pos + len.value));
-      if (room.roomId >= 0) {
-        rooms.push(room);
-      }
-      pos = len.pos + len.value;
-    } else {
-      pos = skipField(buffer, pos, wireType);
-    }
-  }
-
-  return rooms;
+  return parseScMapLiveState(buffer).rooms;
 }
 
 /**
  * Parse the SCMap RobotMap fields needed to derive the robot's live room:
  * map head (field 3: grid geometry), current pose (field 8: world-coordinate
  * robot position in meters) and room outline chains (field 14: per-room
- * boundary contours in grid-cell coordinates). Room names come from field 12
- * via the same reader as parseRoomsFromScMap. Every other field is skipped.
+ * boundary contours in grid-cell coordinates), plus the room names (field
+ * 12). Every other field is skipped.
  *
- * Wire reference (proto2, CRL-200S family / ioBroker.roborock schema):
- * - MapHeadInfo:            sizeX=1 varint, sizeY=2 varint, minX=4 float,
- *                           minY=5 float, resolution=8 float
+ * Wire reference (python-roborock b01_scmap.proto):
+ * - RobotMap:               mapType=1 varint (0 = the live map of a run)
+ * - MapHeadInfo:            sizeX=2 varint, sizeY=3 varint, minX=4 float,
+ *                           minY=5 float, maxX=6 float, maxY=7 float,
+ *                           resolution=8 float
  * - DeviceCurrentPoseInfo:  poseId=1 varint, update=2 varint,
  *                           x=3 float, y=4 float, phi=5 float
- * - DeviceRoomChainDataInfo: roomId=1 varint,
- *                            points=2 repeated {x=1 varint, y=2 varint}
+ * - RoomOutlineInfo:        roomId=1 varint,
+ *                           points=2 repeated {x=1 varint, y=2 varint}
  * @param {Buffer} buffer
  * @returns {{
- *   head: {sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null,
- *   pose: {x: number, y: number} | null,
- *   rawSurvey: {
- *     fields: Array<{field: number, count: number, bytes: number}>,
- *     scalars: Record<string, number>,
- *     truncated: boolean,
- *   },
+ *   mapType: number,
+ *   head: {sizeX: number, sizeY: number, minX: number, minY: number, maxX: number, maxY: number, resolution: number} | null,
+ *   pose: {x: number, y: number, update?: number} | null,
  *   rooms: Array<{roomId: number, roomName: string}>,
  *   roomChains: Array<{roomId: number, points: Array<{x: number, y: number}>}>,
  * }}
  */
 function parseScMapLiveState(buffer) {
-  /** @type {{sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null} */
+  // RobotMap.mapType (field 1). proto2 reads an absent field as 0, and so
+  // does python-roborock's parse_map_type, so an untyped frame is live.
+  let mapType = 0;
+  /** @type {{sizeX: number, sizeY: number, minX: number, minY: number, maxX: number, maxY: number, resolution: number} | null} */
   let head = null;
-  /** @type {{x: number, y: number} | null} */
+  /** @type {{x: number, y: number, update?: number} | null} */
   let pose = null;
-  // Diagnostic. Both Q7s in the field reported a pose of exactly
-  // (1100.0, 1100.0) — the same value on two robots, two maps and twelve
-  // minutes of active cleaning. That is a constant, not a position, so the
-  // number being read as the robot's position is not the robot's position.
-  //
-  // The schema above is not obviously wrong, which is what makes guessing
-  // another field number a bad move: it would be the third guess in a row on
-  // this code path. Two candidates fit the evidence and the survey separates
-  // them without a second release. DeviceCurrentPoseInfo carries an `update`
-  // varint, so field 8 may simply be marked stale on this firmware — a
-  // float-only dump would not have shown it. And field 6 is a pose *trail*,
-  // whose last point is by construction where the robot is now — which needs
-  // one level of nesting to see. So the survey records varints as well as
-  // floats, and descends one level: repeated paths overwrite, which leaves
-  // the last point of a trail sitting in the log under a stable key.
-  /** @type {Array<{field: number, count: number, bytes: number}>} */
-  const surveyFields = [];
-  /** @type {Record<string, number>} */
-  const surveyScalars = {};
-  let surveyTruncated = false;
-  /** @type {Array<{roomId: number, roomChainPoints?: unknown}>} */
+  /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */
   const roomChains = [];
+  /** @type {Array<{roomId: number, roomName: string}>} */
+  const rooms = [];
 
   /** @param {Buffer} buf */
   function parseMapHead(buf) {
-    const parsed = { sizeX: 0, sizeY: 0, minX: 0, minY: 0, resolution: 0.05 };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
+    const parsed = {
+      sizeX: 0,
+      sizeY: 0,
+      minX: 0,
+      minY: 0,
+      maxX: 0,
+      maxY: 0,
+      resolution: 0.05,
+    };
+    forEachField(buf, (field, wireType, value) => {
       if (wireType === 0) {
-        const value = readVarint(buf, pos);
-        pos = value.pos;
-        if (fieldNumber === 2) parsed.sizeX = value.value;
-        else if (fieldNumber === 3) parsed.sizeY = value.value;
+        if (field === 2) parsed.sizeX = value;
+        else if (field === 3) parsed.sizeY = value;
       } else if (wireType === 5) {
-        const value = buf.readFloatLE(pos);
-        pos += 4;
-        if (fieldNumber === 4) parsed.minX = value;
-        else if (fieldNumber === 5) parsed.minY = value;
-        else if (fieldNumber === 8 && value > 0) parsed.resolution = value;
-      } else {
-        pos = skipField(buf, pos, wireType);
+        if (field === 4) parsed.minX = value;
+        else if (field === 5) parsed.minY = value;
+        else if (field === 6) parsed.maxX = value;
+        else if (field === 7) parsed.maxY = value;
+        else if (field === 8 && value > 0) parsed.resolution = value;
       }
-    }
+    });
     return parsed;
   }
 
   /** @param {Buffer} buf */
   function parseCurrentPose(buf) {
-    /** @type {{x: number | null, y: number | null}} */
+    /** @type {{x: number | null, y: number | null, update?: number}} */
     const parsed = { x: null, y: null };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (wireType === 5) {
-        const value = buf.readFloatLE(pos);
-        pos += 4;
-        if (fieldNumber === 3) parsed.x = value;
-        else if (fieldNumber === 4) parsed.y = value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
+    forEachField(buf, (field, wireType, value) => {
+      if (field === 2 && wireType === 0) parsed.update = value;
+      if (wireType !== 5) return;
+      if (field === 3) parsed.x = value;
+      else if (field === 4) parsed.y = value;
+    });
+    if (parsed.x === null || parsed.y === null) {
+      return null;
     }
-    return parsed.x !== null && parsed.y !== null
+    return parsed.update === undefined
       ? { x: parsed.x, y: parsed.y }
-      : null;
-  }
-
-  /**
-   * Record that a top-level field was seen, and how many bytes it carried.
-   *
-   * The sizes matter as much as the values: a submessage that grows between
-   * two consecutive log lines while the robot is driving is a trail of where
-   * it has been, and the field that does that is the one worth reading.
-   *
-   * @param {number} field
-   * @param {number} bytes
-   */
-  function noteField(field, bytes) {
-    const seen = surveyFields.find((entry) => entry.field === field);
-    if (seen) {
-      seen.count += 1;
-      seen.bytes += bytes;
-    } else if (surveyFields.length < RAW_SURVEY_MAX_SCALARS) {
-      surveyFields.push({ field, count: 1, bytes });
-    } else {
-      surveyTruncated = true;
-    }
-  }
-
-  /**
-   * @param {string} path
-   * @param {number} value
-   */
-  function noteScalar(path, value) {
-    if (
-      surveyScalars[path] === undefined &&
-      Object.keys(surveyScalars).length >= RAW_SURVEY_MAX_SCALARS
-    ) {
-      surveyTruncated = true;
-      return;
-    }
-    // Deliberately last-wins. A repeated submessage collapses to its final
-    // occurrence, which for a pose trail is the current position.
-    surveyScalars[path] = value;
-  }
-
-  /**
-   * Walk a submessage recording every scalar it contains, keyed by dotted
-   * field path, to a bounded depth.
-   *
-   * Diagnostic only, and defensive by necessity: it is pointed at fields
-   * whose schema is unknown, so bytes that are not protobuf at all will
-   * reach it. A throw here would take live-room tracking down with it, so
-   * the caller swallows the error and keeps whatever was collected.
-   *
-   * @param {Buffer} buf
-   * @param {string} prefix
-   * @param {number} depth
-   */
-  function surveyMessage(buf, prefix, depth) {
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      const path = `${prefix}.${fieldNumber}`;
-      if (wireType === 0) {
-        const value = readVarint(buf, pos);
-        pos = value.pos;
-        noteScalar(path, value.value);
-      } else if (wireType === 5) {
-        noteScalar(path, buf.readFloatLE(pos));
-        pos += 4;
-      } else if (wireType === 1) {
-        noteScalar(path, buf.readDoubleLE(pos));
-        pos += 8;
-      } else if (wireType === 2) {
-        const len = readVarint(buf, pos);
-        if (depth > 1 && len.value > 0) {
-          surveyMessage(
-            buf.subarray(len.pos, len.pos + len.value),
-            path,
-            depth - 1
-          );
-        }
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
-  }
-
-  /**
-   * @param {Buffer} buf
-   * @param {number} field
-   */
-  function surveyTopLevelSubmessage(buf, field) {
-    if (buf.length > RAW_SURVEY_MAX_SUBMESSAGE_BYTES) {
-      // The occupancy grid is tens of kilobytes of raw cells, not protobuf.
-      // Its size is recorded; walking it would be nonsense and slow.
-      return;
-    }
-    try {
-      surveyMessage(buf, String(field), RAW_SURVEY_MAX_DEPTH);
-    } catch {
-      surveyTruncated = true;
-    }
+      : { x: parsed.x, y: parsed.y, update: parsed.update };
   }
 
   /** @param {Buffer} buf */
   function parseChainPoint(buf) {
     const point = { x: 0, y: 0 };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (wireType === 0) {
-        const value = readVarint(buf, pos);
-        pos = value.pos;
-        if (fieldNumber === 1) point.x = value.value;
-        else if (fieldNumber === 2) point.y = value.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
+    forEachField(buf, (field, wireType, value) => {
+      if (wireType !== 0) return;
+      if (field === 1) point.x = value;
+      else if (field === 2) point.y = value;
+    });
     return point;
   }
 
@@ -651,121 +630,44 @@ function parseScMapLiveState(buffer) {
   function parseRoomChain(buf) {
     /** @type {{roomId: number, points: Array<{x: number, y: number}>}} */
     const chain = { roomId: -1, points: [] };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (fieldNumber === 1 && wireType === 0) {
-        const value = readVarint(buf, pos);
-        chain.roomId = value.value;
-        pos = value.pos;
-      } else if (fieldNumber === 2 && wireType === 2) {
-        const len = readVarint(buf, pos);
-        chain.points.push(
-          parseChainPoint(buf.subarray(len.pos, len.pos + len.value))
-        );
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
+    forEachField(buf, (field, wireType, value) => {
+      if (field === 1 && wireType === 0) chain.roomId = value;
+      else if (field === 2 && wireType === 2)
+        chain.points.push(parseChainPoint(value));
+    });
     return chain;
   }
 
-  /** @param {Buffer} buf */
-  function parseRoomEntry(buf) {
-    const room = { roomId: -1, roomName: "" };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (fieldNumber === 1 && wireType === 0) {
-        const value = readVarint(buf, pos);
-        room.roomId = value.value;
-        pos = value.pos;
-      } else if (fieldNumber === 2 && wireType === 2) {
-        const len = readVarint(buf, pos);
-        room.roomName = buf
-          .subarray(len.pos, len.pos + len.value)
-          .toString("utf8");
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
+  forEachField(buffer, (field, wireType, value) => {
+    if (field === 1 && wireType === 0) {
+      mapType = value;
+    }
+    if (wireType !== 2) {
+      return;
+    }
+    if (field === 3) {
+      head = parseMapHead(value);
+    } else if (field === 8) {
+      pose = parseCurrentPose(value);
+    } else if (field === 12) {
+      const room = parseRoom(value);
+      if (room.roomId >= 0) {
+        rooms.push(room);
+      }
+    } else if (field === 14) {
+      const chain = parseRoomChain(value);
+      if (chain.roomId >= 0 && chain.points.length >= 3) {
+        roomChains.push(chain);
       }
     }
-    return room;
-  }
-
-  /** @type {Array<{roomId: number, roomName: string}>} */
-  const rooms = [];
-
-  // Single pass over the RobotMap wire format: head, pose, rooms and room
-  // chains are all collected in one walk instead of delegating rooms to a
-  // second parseRoomsFromScMap scan. Measured honestly: the win is
-  // negligible (~0.05 ms either way — skipField jumps the large grid field
-  // via its length prefix without touching bytes); this is kept for the
-  // simpler single-walk structure, not for speed.
-  let pos = 0;
-  while (pos < buffer.length) {
-    const tag = readVarint(buffer, pos);
-    pos = tag.pos;
-    const fieldNumber = Math.floor(tag.value / 8);
-    const wireType = tag.value % 8;
-
-    if (wireType === 2) {
-      const len = readVarint(buffer, pos);
-      const body = buffer.subarray(len.pos, len.pos + len.value);
-      noteField(fieldNumber, len.value);
-      surveyTopLevelSubmessage(body, fieldNumber);
-      if (fieldNumber === 3) {
-        head = parseMapHead(body);
-      } else if (fieldNumber === 8) {
-        pose = parseCurrentPose(body);
-      } else if (fieldNumber === 12) {
-        const room = parseRoomEntry(body);
-        if (room.roomId >= 0) {
-          rooms.push(room);
-        }
-      } else if (fieldNumber === 14) {
-        const chain = parseRoomChain(body);
-        if (chain.roomId >= 0 && chain.points.length >= 3) {
-          roomChains.push(chain);
-        }
-      }
-      pos = len.pos + len.value;
-    } else {
-      // A position could just as easily be a bare float or varint on the
-      // RobotMap itself; the loop above only ever looked at submessages, so
-      // such a field would never have been seen at all.
-      noteField(fieldNumber, 0);
-      if (wireType === 0) {
-        noteScalar(String(fieldNumber), readVarint(buffer, pos).value);
-      } else if (wireType === 5) {
-        noteScalar(String(fieldNumber), buffer.readFloatLE(pos));
-      } else if (wireType === 1) {
-        noteScalar(String(fieldNumber), buffer.readDoubleLE(pos));
-      }
-      pos = skipField(buffer, pos, wireType);
-    }
-  }
+  });
 
   return {
+    mapType,
     head,
     pose,
-    rawSurvey: {
-      fields: surveyFields,
-      scalars: surveyScalars,
-      truncated: surveyTruncated,
-    },
     rooms,
-    roomChains:
-      /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */ (
-        roomChains
-      ),
+    roomChains,
   };
 }
 
@@ -818,6 +720,20 @@ function describeLiveRoomResolution(liveState) {
   const cellY = (pose.y - head.minY) / resolution;
   const cell = { x: cellX, y: cellY };
 
+  // A pose outside the map is no position at all, whatever the outlines say:
+  // python-roborock's _WorldToPixel.in_bounds "rejects placeholder poses", and
+  // the saved map's (1100, 1100) is exactly such a pose.
+  if (!isPoseInMapBounds(pose, head)) {
+    return {
+      roomId: null,
+      reason: "pose-placeholder",
+      outlineCount,
+      cell,
+      outlineBounds: outlineBoundingBox(chains),
+      head: { minX: head.minX, minY: head.minY, resolution },
+    };
+  }
+
   if (!outlineCount) {
     return { roomId: null, reason: "no-room-outlines", outlineCount, cell };
   }
@@ -834,34 +750,6 @@ function describeLiveRoomResolution(liveState) {
 
   const outlineBounds = outlineBoundingBox(chains);
 
-  // A pose that is not merely outside the rooms but nowhere near the map is a
-  // different thing, and calling both "outside the outlines" sent every
-  // investigation down the same wrong path for three weeks.
-  //
-  // Measured on a Q7 over a 47-minute clean, 227 fetches: 226 of them placed
-  // the robot at cell 22280,22100 — the same cell every time — while the room
-  // outlines spanned 38-293 x 90-227. The underlying pose was exactly
-  // (1100, 1100) in every one, the same constant two other Q7s reported in
-  // August. The remaining fetches resolved a real room in the right order, so
-  // the robot DOES send a true pose sometimes; it just serves a placeholder in
-  // between, and those are the fetches that must not be counted as the robot
-  // being between rooms.
-  //
-  // The test is deliberately about distance rather than about the value 1100:
-  // a placeholder is a position further outside the map than the map is wide,
-  // which no real robot can be, and which stays true if Roborock picks a
-  // different constant tomorrow.
-  if (isOffTheMap(cell, head, outlineBounds)) {
-    return {
-      roomId: null,
-      reason: "pose-placeholder",
-      outlineCount,
-      cell,
-      outlineBounds,
-      head: { minX: head.minX, minY: head.minY, resolution },
-    };
-  }
-
   return {
     roomId: null,
     reason: "pose-outside-outlines",
@@ -873,55 +761,38 @@ function describeLiveRoomResolution(liveState) {
 }
 
 /**
- * Whether a cell is outside the map raster itself.
+ * Whether a world-coordinate pose lies inside the map, as python-roborock's
+ * `_WorldToPixel.in_bounds` decides it: minX..maxX by minY..maxY. A header
+ * without maxX/maxY is bounded by its raster size instead; one with neither
+ * cannot rule a pose out.
  *
- * The map's own `sizeX`/`sizeY` is the right yardstick and the outline
- * bounding box is not: outlines cover rooms, while the raster covers
- * everywhere the robot has ever been. A robot standing in a doorway, in a
- * hallway nobody named, or against a wall the outlines do not reach is
- * legitimately outside every outline and inside the map — that is a real miss
- * and must keep counting as one. Being outside the raster is not a position
- * at all; the robot cannot be somewhere it has never mapped.
- *
- * One raster width of slack on each side, because the transform can put a
- * genuine edge case a little past the boundary and this must not swallow a
- * real coordinate bug. The measured placeholder sat at cell 22280 on a map
- * 500 cells wide — 44 times out — so the margin costs nothing.
- *
- * Falls back to the outline bounds when a header carries no size, which is
- * the only case where there is nothing better to compare against.
- *
- * @param {{x: number, y: number}} cell
- * @param {{minX: number, minY: number, resolution: number,
- *          sizeX?: number, sizeY?: number}} head
- * @param {{minX: number, minY: number, maxX: number, maxY: number} | null} outlineBounds
+ * @param {{x: number, y: number}} pose
+ * @param {{minX: number, minY: number, resolution: number, maxX?: number,
+ *          maxY?: number, sizeX?: number, sizeY?: number}} head
  * @returns {boolean}
  */
-function isOffTheMap(cell, head, outlineBounds) {
-  const sizeX = Number(head?.sizeX) || 0;
-  const sizeY = Number(head?.sizeY) || 0;
-
-  if (sizeX > 0 && sizeY > 0) {
-    return (
-      cell.x < -sizeX ||
-      cell.x > sizeX * 2 ||
-      cell.y < -sizeY ||
-      cell.y > sizeY * 2
-    );
+function isPoseInMapBounds(pose, head) {
+  const resolution = head.resolution > 0 ? head.resolution : 0.05;
+  const maxX =
+    Number(head.maxX) > head.minX
+      ? Number(head.maxX)
+      : Number(head.sizeX) > 0
+        ? head.minX + Number(head.sizeX) * resolution
+        : null;
+  const maxY =
+    Number(head.maxY) > head.minY
+      ? Number(head.maxY)
+      : Number(head.sizeY) > 0
+        ? head.minY + Number(head.sizeY) * resolution
+        : null;
+  if (maxX === null || maxY === null) {
+    return true;
   }
-
-  if (!outlineBounds) {
-    return false;
-  }
-
-  const spanX = Math.max(outlineBounds.maxX - outlineBounds.minX, 1);
-  const spanY = Math.max(outlineBounds.maxY - outlineBounds.minY, 1);
-
   return (
-    cell.x < outlineBounds.minX - spanX * 4 ||
-    cell.x > outlineBounds.maxX + spanX * 4 ||
-    cell.y < outlineBounds.minY - spanY * 4 ||
-    cell.y > outlineBounds.maxY + spanY * 4
+    head.minX <= pose.x &&
+    pose.x <= maxX &&
+    head.minY <= pose.y &&
+    pose.y <= maxY
   );
 }
 
@@ -999,6 +870,11 @@ function findCurrentMapId(data) {
 
 const B01_MAP_UPLOAD_METHOD = "service.upload_by_mapid";
 
+// RobotMap.mapType of the live map a Q7 pushes while it cleans. "Type 0 is the
+// live map of the current cleaning run, other types are historic or saved
+// maps" (python-roborock b01_map_parser.parse_map_type).
+const B01_LIVE_MAP_TYPE = 0;
+
 /** @param {unknown} version */
 function isB01Protocol(version) {
   return version === B01_PROTOCOL_VERSION;
@@ -1029,6 +905,7 @@ function normalizeSegmentIds(params) {
  * equivalent (callers decide between a neutral response and an error).
  * @param {string} method
  * @param {any} params
+ * @param {string | null} [family] Q7 when not given
  * @returns {{method: string, params: any, kind?: string} | null}
  */
 function translateOutgoing(method, params, family = B01_FAMILY.Q7) {
@@ -1154,23 +1031,11 @@ function neutralResponse(method) {
  * @returns {boolean}
  */
 function canAnswerV1Method(method) {
-  if (NEUTRAL_RESPONSES.has(method)) {
-    return true;
-  }
-
-  try {
-    return Boolean(translateOutgoing(method, []));
-  } catch {
-    return false;
-  }
+  return (
+    NEUTRAL_RESPONSES.has(method) || Boolean(translateOutgoing(method, []))
+  );
 }
 
-/**
- * Map a Q7 `prop.get` status payload to v1-shaped status fields.
- * Fixture reference: {"status":4,"quantity":87,"fault":0,...}
- * @param {any} data
- * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number}}
- */
 /**
  * Translate a raw Q7 work-status code to the v1 state code, for HomeData
  * deviceStatus fallbacks where the cloud stores Q7-native values.
@@ -1183,9 +1048,11 @@ function translateQ7WorkStatusToV1State(rawStatus) {
 }
 
 /**
+ * Map a Q7 `prop.get` status payload to v1-shaped status fields.
+ * Fixture reference: {"status":4,"quantity":87,"fault":0,...}
  * @param {any} data
  * @param {string} [family] one of B01_FAMILY; Q7 when not given
- * @returns {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
+ * @returns {{state?: number, error_code: number, charge_status?: number, dry_status?: number, battery?: number, fan_power?: number, matter_clean_type?: number}}
  */
 function mapStatusToV1(data, family = B01_FAMILY.Q7) {
   const source = data && typeof data === "object" ? data : {};
@@ -1193,17 +1060,25 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
   const rawStatus = Number(source.status);
   const mappedState = B01_STATUS_TO_V1_STATE[rawStatus];
 
-  /** @type {{state: number, error_code: number, charge_status: number, dry_status: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
+  /** @type {{state?: number, error_code: number, charge_status?: number, dry_status?: number, battery?: number, fan_power?: number, matter_clean_type?: number}} */
   const v1 = {
     // The Q7 fault field is a separate diagnostic channel: informational
     // codes (e.g. 407 "cleaning in progress / scheduled cleanup ignored")
     // linger after harmless events, so fault NEVER overrides the work
     // status. The reference implementation treats fault the same way.
-    state: mappedState !== undefined ? mappedState : 3,
     error_code: informationalFaults(family).has(fault) ? 0 : fault,
+  };
+
+  // A work status this table does not know, or none at all, says nothing
+  // about the robot. Defaulting it to Idle-off-the-dock published a docked or
+  // paused robot as idle whenever an answer came back partial; leaving the
+  // fields out keeps whatever was last known (upstream maps unknown codes to
+  // UNKNOWN, never to a real state).
+  if (mappedState !== undefined) {
+    v1.state = mappedState;
     // Charging (4) and dock air-drying (10) count as on-charger so the
     // PowerSource cluster and the Charging/Docked tile logic see it.
-    charge_status: rawStatus === 4 || rawStatus === 10 ? 1 : 0,
+    v1.charge_status = rawStatus === 4 || rawStatus === 10 ? 1 : 0;
     // Status 10 is the dock air-drying the mop, and mapping it to v1 state 8
     // deliberately throws that away so the tile reads Docked rather than
     // inventing a state. The information is worth keeping though: drying is
@@ -1211,8 +1086,8 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
     // publishes it as a phase instead. `dry_status` is the field a v1 robot
     // with a drying dock uses for exactly this, so the B01 answer is written
     // under the same name rather than a private one.
-    dry_status: rawStatus === 10 ? 1 : 0,
-  };
+    v1.dry_status = rawStatus === 10 ? 1 : 0;
+  }
 
   const battery = Number(source.quantity);
   if (Number.isFinite(battery)) {
@@ -1236,6 +1111,9 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
 }
 
 module.exports = {
+  B01_LIVE_MAP_TYPE,
+  MATTER_RVC_ERROR,
+  describeQ7Fault,
   translateQ7WorkStatusToV1State,
   B01_MAP_UPLOAD_METHOD,
   createMapKey,
@@ -1258,8 +1136,10 @@ module.exports = {
   mapStatusToV1,
   B01_FAMILY,
   b01FamilyForModel,
-  // Exported for b01Q10Adapter, so the Q10 suction table has one home rather
-  // than a second copy that can drift from this one.
+  // Exported for b01Q10Adapter, so the Q10 suction and fault tables have one
+  // home rather than a second copy that can drift from this one.
   v1FanPowerToWind,
+  windToV1FanPower,
+  informationalFaults,
   normalizeSegmentIds,
 };

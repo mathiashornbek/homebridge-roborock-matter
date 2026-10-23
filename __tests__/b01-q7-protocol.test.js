@@ -175,9 +175,28 @@ describe("B01/Q7 status mapping", () => {
   });
 
   test("covers every documented Q7 work status", () => {
-    for (const [q7, v1] of Object.entries(b01.B01_STATUS_TO_V1_STATE)) {
-      expect(b01.mapStatusToV1({ status: Number(q7), fault: 0 }).state).toBe(
-        v1
+    // One row per python-roborock WorkStatusMapping member with the v1 state
+    // it is meant to read as. This iterated the adapter's own table before,
+    // so a wrong row (docking read as returning) could not fail it.
+    const WORK_STATUS_TO_V1 = [
+      ["SLEEPING", 0, 3],
+      ["WAITING_FOR_ORDERS", 1, 3],
+      ["PAUSED", 2, 10],
+      ["DOCKING", 3, 15],
+      ["CHARGING", 4, 8],
+      ["SWEEP_MOPING", 5, 5],
+      ["SWEEP_MOPING_2", 6, 5],
+      ["MOPING", 7, 5],
+      ["UPDATING", 8, 3],
+      ["MOP_CLEANING", 9, 23],
+      ["MOP_AIRDRYING", 10, 8],
+      ["WORKING_SLEEP", 11, 10],
+      // UNKNOWN: no state at all, never a guessed one.
+      ["UNKNOWN", -1, undefined],
+    ];
+    for (const [name, q7, v1] of WORK_STATUS_TO_V1) {
+      expect([name, b01.mapStatusToV1({ status: q7, fault: 0 }).state]).toEqual(
+        [name, v1]
       );
     }
   });
@@ -327,6 +346,7 @@ describe("B01 getStatus end-to-end mapping", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.messageQueueHandler = {
       sendRequest: jest
         .fn()
@@ -392,6 +412,7 @@ describe("Field-test regressions (2.0.0-matter.2)", () => {
       enableMatterServiceArea: true,
     });
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     const vacuum = { getParameter: jest.fn() };
 
     const result = await api.refreshMatterServiceAreaRoomMappings(
@@ -488,6 +509,7 @@ describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.messageQueueHandler = {
       sendRequest: jest
         .fn()
@@ -518,6 +540,7 @@ describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     let resolveRequest;
     api.messageQueueHandler = {
       sendRequest: jest.fn(
@@ -757,31 +780,6 @@ describe("Q7 room discovery via the B01 map channel", () => {
     expect(b01.findCurrentMapId({ map_list: [] })).toBeNull();
   });
 
-  test("protocol 301 payloads resolve the pending per-device map request", () => {
-    const {
-      resolveB01PendingResponse: _unused,
-    } = require("../roborockLib/lib/roborock_mqtt_connector");
-    const adapter = {
-      pendingB01MapRequests: new Map(),
-      clearTimeout: jest.fn((t) => clearTimeout(t)),
-    };
-    const resolve = jest.fn();
-    adapter.pendingB01MapRequests.set("duid-1", {
-      resolve,
-      reject: jest.fn(),
-      timeout: setTimeout(() => undefined, 5000),
-    });
-
-    // Mirror the connector branch: pending map request wins on protocol 301.
-    const pendingMap = adapter.pendingB01MapRequests.get("duid-1");
-    adapter.clearTimeout(pendingMap.timeout);
-    adapter.pendingB01MapRequests.delete("duid-1");
-    pendingMap.resolve(Buffer.from("payload"));
-
-    expect(resolve).toHaveBeenCalledWith(Buffer.from("payload"));
-    expect(adapter.pendingB01MapRequests.size).toBe(0);
-  });
-
   test("cached rooms feed getRoomMappingsForDevice in the Matter shape", async () => {
     const api = new Roborock({
       log: createLog(),
@@ -817,9 +815,18 @@ describe("Q7 room discovery via the B01 map channel", () => {
         .fn()
         .mockResolvedValue({ map_list: [{ id: 4, cur: true }] }),
     };
+    // The map request resolves with the saved map, decoded once where the
+    // 301 frame arrives (onB01MapFrame).
     api.sendB01MapRequest = jest
       .fn()
-      .mockResolvedValue(Buffer.from(MAP_FIXTURE.payloadBase64, "ascii"));
+      .mockResolvedValue(
+        b01.parseScMapLiveState(
+          b01.decodeMapPayload(
+            Buffer.from(MAP_FIXTURE.payloadBase64, "ascii"),
+            b01.createMapKey(MAP_FIXTURE.serial, MAP_FIXTURE.model)
+          )
+        )
+      );
 
     const rooms = await api.refreshB01Rooms("duid-1");
     expect(rooms).toEqual(MAP_FIXTURE.expectedRooms);
@@ -867,6 +874,7 @@ describe("Q7 charging tile (both status paths)", () => {
         products: [
           {
             id: "product-q7",
+            model: "roborock.vacuum.sc05",
             schema: [
               { id: 121, code: "state" },
               { id: 122, code: "battery" },
@@ -938,6 +946,7 @@ describe("B01 status self-healing (2.0.0-matter.6)", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.setDeviceNotify(jest.fn());
     return api;
   }
@@ -1569,6 +1578,7 @@ describe("Adaptive B01 poll cadence", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     let robotState = 1; // idle (B01 status 1 -> v1 state 3)
     api.messageQueueHandler = {
       sendRequest: jest.fn(async () => ({
@@ -1629,13 +1639,13 @@ describe("B01 is two families and their scales disagree", () => {
 
     // Upstream tests `if "ss" in model_part`, unanchored, which would call
     // this one a Q10. Anchoring is the whole point of not copying that.
-    expect(b01.b01FamilyForModel("roborock.vacuum.class1")).toBe(Q7);
+    expect(b01.b01FamilyForModel("roborock.vacuum.class1")).toBeNull();
 
-    // Anything unrecognised stays Q7, which is what every B01 device was
-    // treated as before, so this function cannot make an unknown model worse.
-    expect(b01.b01FamilyForModel("roborock.vacuum.a70")).toBe(Q7);
-    expect(b01.b01FamilyForModel(undefined)).toBe(Q7);
-    expect(b01.b01FamilyForModel(null)).toBe(Q7);
+    // Anything else names neither family (python-roborock refuses it too);
+    // see an-unknown-b01-model-is-not-spoken-to.test.js.
+    expect(b01.b01FamilyForModel("roborock.vacuum.a70")).toBeNull();
+    expect(b01.b01FamilyForModel(undefined)).toBeNull();
+    expect(b01.b01FamilyForModel(null)).toBeNull();
   });
 
   test("Max+ goes out as 5 on a Q7 and 8 on a Q10", () => {

@@ -148,6 +148,7 @@ describe("a live-room channel that keeps failing is not hammered", () => {
 
   function gapAfter(failures) {
     const api = createApi();
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     const state = { lastAttemptAt: 0, inflight: null, consecutiveFailures: 0 };
     api._b01LiveRoomState = new Map([["q7", state]]);
     // refreshB01LiveRoom's throttle is the only consumer of the gap, so drive

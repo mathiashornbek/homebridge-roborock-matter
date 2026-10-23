@@ -145,7 +145,7 @@ describe("a Q10 read refusal is calm by construction", () => {
   // ---------------------------------------------------------------------
 
   test("an offline robot is still a warning, not debug", async () => {
-    const adapter = createB01Adapter("roborock.vacuum.a70", { online: false });
+    const adapter = createB01Adapter("roborock.vacuum.sc05", { online: false });
     const error = await refusalFor(adapter, "get_status");
     const api = createApi();
 
@@ -155,14 +155,14 @@ describe("a Q10 read refusal is calm by construction", () => {
       error,
       "get_status",
       "duid-q10",
-      "roborock.vacuum.a70"
+      "roborock.vacuum.sc05"
     );
 
     expect(api.log.warn).toHaveBeenCalled();
   });
 
   test("an unavailable cloud link is still a warning, not debug", async () => {
-    const adapter = createB01Adapter("roborock.vacuum.a70", { mqtt: false });
+    const adapter = createB01Adapter("roborock.vacuum.sc05", { mqtt: false });
     const error = await refusalFor(adapter, "get_status");
     const api = createApi();
 
@@ -172,7 +172,7 @@ describe("a Q10 read refusal is calm by construction", () => {
       error,
       "get_status",
       "duid-q10",
-      "roborock.vacuum.a70"
+      "roborock.vacuum.sc05"
     );
 
     expect(api.log.warn).toHaveBeenCalled();
@@ -181,7 +181,7 @@ describe("a Q10 read refusal is calm by construction", () => {
   test("a Q7 that stops answering is unaffected by the reclassification", async () => {
     // A classic Q7 translates get_status, so it must pass the choke point and
     // reach the transport rather than being refused for the dialect.
-    const adapter = createB01Adapter("roborock.vacuum.a70");
+    const adapter = createB01Adapter("roborock.vacuum.sc05");
     const handler = new messageQueueHandler(adapter);
 
     handler.sendRequest("duid-q10", "get_status", []).catch(() => {});

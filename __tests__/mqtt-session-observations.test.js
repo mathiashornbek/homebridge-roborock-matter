@@ -362,7 +362,13 @@ test.each(["b01", "b01-map", "secure-ack", "refusal"])(
       });
       expect(resolve).toHaveBeenCalled();
     } else if (kind === "b01-map") {
-      adapter.pendingB01MapRequests.set("robot-a", { resolve });
+      // A B01 map frame goes to the B01 map handler, which says whether it
+      // settled a waiting request.
+      adapter.isB01Device = () => true;
+      adapter.onB01MapFrame = (duid, payload) => {
+        resolve(payload);
+        return true;
+      };
       receive({ protocol: 301, payload: Buffer.from("map") });
       expect(resolve).toHaveBeenCalled();
     } else {

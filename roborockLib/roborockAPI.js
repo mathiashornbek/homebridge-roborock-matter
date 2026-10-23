@@ -37,10 +37,11 @@ const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
 const { TransportTally } = require("./lib/transportTally");
 const { LateReplyTracker } = require("./lib/lateReplies");
 
-// v1 states in which the robot is actively doing something and state
-// transitions are imminent (cleaning, returning, spot/zone/segment runs,
-// docking, mop washing). Drives the adaptive B01 poll cadence.
-const B01_ACTIVE_V1_STATES = new Set([5, 6, 7, 11, 15, 16, 17, 18, 23, 26]);
+// The Q7 work statuses, in the v1 numbering mapStatusToV1 gives them, in
+// which the robot is actively doing something and state transitions are
+// imminent: cleaning (5), docking (15) and washing the mop (23). Drives the
+// adaptive Q7 poll cadence; no other value can reach it.
+const B01_ACTIVE_V1_STATES = new Set([5, 15, 23]);
 
 // v1 states in which the robot is physically moving through rooms, making
 // the SCMap currentPose worth fetching for live-room tracking (cleaning,
@@ -88,6 +89,10 @@ const UNEXPLAINED_REMOTE_REASON = "remote-device";
 // opposite of what a "live" room display is for. 10s keeps the map traffic
 // modest while making the room track the robot closely enough to be useful.
 const B01_LIVE_ROOM_MIN_FETCH_GAP_MS = 10000;
+
+// A Q7 places itself by pushing live map frames while it cleans. As long as
+// one has arrived within this window, nothing is fetched for the live room.
+const B01_LIVE_FRAME_FRESH_MS = 30000;
 
 // A live-room fetch that keeps failing is a channel that is down for this
 // robot, not a lost frame. The request is heavy, it always rides the cloud
@@ -168,7 +173,7 @@ function roomRefreshRetryGapMs(consecutiveFailures) {
  * row" could greet a new run's first failure with N already at 5. Resetting
  * has to happen even when no room was ever resolved — a run that failed every
  * attempt is precisely the run that left the counters high.
- * @param {{consecutiveFailures?: number, unresolvedPoseCount?: number, placeholderReported?: boolean} | null | undefined} liveState
+ * @param {{consecutiveFailures?: number, unresolvedPoseCount?: number, placeholderReported?: boolean, savedMapReported?: boolean} | null | undefined} liveState
  */
 function resetLiveRoomRunCounters(liveState) {
   if (!liveState) {
@@ -177,6 +182,7 @@ function resetLiveRoomRunCounters(liveState) {
   liveState.consecutiveFailures = 0;
   liveState.unresolvedPoseCount = 0;
   liveState.placeholderReported = false;
+  liveState.savedMapReported = false;
 }
 
 // Plain-language wording for each way a live-room lookup can come back empty.
@@ -192,11 +198,10 @@ const B01_LIVE_ROOM_MISS_REASONS = {
   "pose-outside-outlines":
     "the robot's position did not fall inside any known room outline (it may be between rooms, or the map may still be building)",
   // Not a miss the user can do anything about, and not the robot being
-  // between rooms: the map payload carried a placeholder where the position
-  // should be. Measured at 226 of 227 fetches on a Q7 during a 47-minute
-  // clean, always the same cell. See describeLiveRoomResolution.
+  // between rooms: the pose lies outside the map, which python-roborock's
+  // in_bounds rejects as a placeholder. See describeLiveRoomResolution.
   "pose-placeholder":
-    "the map payload carried a placeholder instead of the robot's position, so this fetch could not place it (the robot sends a real position only on some fetches)",
+    "the map frame carried a placeholder outside the map instead of the robot's position, so it could not place the robot",
 };
 
 /**
@@ -228,57 +233,14 @@ function describeOutlineBounds(resolution) {
 }
 
 /**
- * The raw SCMap fields behind a live-room miss.
- *
- * Two Q7s reported a position of exactly (1100, 1100) — the same value on two
- * robots, two maps and twelve minutes of active cleaning. A constant is not a
- * position, so the number being read as the robot's position is not the
- * robot's position.
- *
- * Rather than guess another field number, this prints what the payload
- * actually contains: the size of every top-level field and every scalar in
- * the small ones. Two consecutive lines are then a diff — the value that
- * changed while the robot was driving is the position, and the submessage
- * that grew is the trail it left. That turns the next fix into a reading
- * rather than a fourth guess.
- *
- * @param {{rawSurvey?: {fields?: Array<{field: number, count: number, bytes: number}>,
- *                      scalars?: Record<string, number>,
- *                      truncated?: boolean} | null}} parsed
- * @returns {string}
- */
-function describeRawMapFields(parsed) {
-  const survey = parsed?.rawSurvey;
-  const fields = survey?.fields;
-  if (!Array.isArray(fields) || fields.length === 0) {
-    return "";
-  }
-
-  const shape = fields
-    .map(
-      (entry) =>
-        `${entry.field}:${entry.bytes}B${entry.count > 1 ? `x${entry.count}` : ""}`
-    )
-    .join(" ");
-
-  const scalars = Object.entries(survey?.scalars || {})
-    .map(([path, value]) => `${path}=${formatSurveyScalar(value)}`)
-    .join(" ");
-
-  return `, map fields ${shape}${scalars ? `, scalars ${scalars}` : ""}${
-    survey?.truncated ? " (truncated)" : ""
-  }`;
-}
-
-/**
- * A survey value short enough to sit in a log line, precise enough to see a
+ * A map coordinate short enough to sit in a log line, precise enough to see a
  * robot move. Three decimals of a metre is a millimetre; three decimals of a
  * millimetre is far below anything a vacuum reports.
  *
  * @param {number} value
  * @returns {string}
  */
-function formatSurveyScalar(value) {
+function formatMapCoordinate(value) {
   if (!Number.isFinite(value)) {
     return String(value);
   }
@@ -295,6 +257,9 @@ const B01_STATUS_TICK_MS = 15000;
 const B01_STATUS_FORCED_GAP_MS = 1500;
 const B01_STATUS_ACTIVE_GAP_MS = 12000;
 const B01_STATUS_IDLE_GAP_MS = 25000;
+// How often a Q10 is asked to push its full status (dpRequestDps). It pushes
+// changes on its own; this is the resync, at Home Assistant's cadence.
+const B01_Q10_STATUS_REQUEST_GAP_MS = 60000;
 
 // The last path segment of the cloud schedule probe's negative control.
 //
@@ -4780,19 +4745,23 @@ class Roborock {
   /**
    * Whether this robot can be told to continue a paused room clean.
    *
-   * Classic v1 robots can. The B01/Q7 dialect has no measured verb for it:
-   * room cleaning there is `service.set_room_clean` with a `ctrl_value`, and
-   * the only three values read out of the protocol are STOP 0, START 1 and
-   * PAUSE 2 (`b01Q7Adapter.js`). There may well be a continue value — nobody
-   * has seen one, and a guessed control code sent to a paused robot is how
-   * the play button breaks for every B01 owner at once. So a B01 keeps
-   * today's behaviour and the limitation gets said out loud instead.
+   * Classic v1 robots can, and so can a Q10: dpResume (205) continues any
+   * paused task (python-roborock `resume_clean`, verified live). The Q7
+   * dialect has no measured verb for it: room cleaning there is
+   * `service.set_room_clean` with a `ctrl_value`, and the only three values
+   * read out of the protocol are STOP 0, START 1 and PAUSE 2
+   * (`b01Q7Adapter.js`). There may well be a continue value — nobody has seen
+   * one, and a guessed control code sent to a paused robot is how the play
+   * button breaks for every Q7 owner at once. So a Q7 keeps today's behaviour.
    *
    * @param {string} duid
    * @returns {boolean}
    */
   supportsSegmentResume(duid) {
-    return !this.isB01Device(duid);
+    return (
+      !this.isB01Device(duid) ||
+      this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
+    );
   }
 
   async load_multi_map(duid, mapId, options = {}) {
@@ -5524,52 +5493,171 @@ class Roborock {
   }
 
   /**
-   * Say once per Q10 robot that its status does not come from this loop.
+   * Ask a Q10 to push its full status (dpRequestDps), at most once a minute.
    *
-   * Once per robot rather than once per poll: at the idle cadence the loop
-   * reaches this 144 times an hour, and a line repeated that often stops
-   * being read. The reader's question is not "was a request skipped" but
-   * "why is my tile not updating and where does its state come from" — so the
-   * notice answers that and points at the issue tracking the remaining half.
+   * A Q10 has no status read: the dialect sends no reply. It does push its
+   * datapoints, on change and on this request, and the push path reads them
+   * (onB01DatapointPush). The request is fire-and-forget, so it resolves to
+   * nothing, publishes nothing and is never counted as a failed read; a
+   * request the cloud could not carry is only noted at debug level.
    *
    * @param {string} duid
-   * @returns {void}
+   * @param {{force?: boolean}} [options]
+   * @returns {Promise<null>}
    */
-  noteB01Q10StatusPollNotAttempted(duid) {
+  async requestB01Q10StatusPush(duid, options = {}) {
+    if (!this._b01Q10StatusRequestAt) {
+      this._b01Q10StatusRequestAt = new Map();
+    }
+    const gapMs = options.force
+      ? B01_STATUS_FORCED_GAP_MS
+      : B01_Q10_STATUS_REQUEST_GAP_MS;
+    if (Date.now() - (this._b01Q10StatusRequestAt.get(duid) || 0) < gapMs) {
+      return null;
+    }
+    this._b01Q10StatusRequestAt.set(duid, Date.now());
+
     if (!this._b01Q10StatusNoticed) {
       this._b01Q10StatusNoticed = new Set();
     }
-    if (this._b01Q10StatusNoticed.has(duid)) {
+    if (!this._b01Q10StatusNoticed.has(duid)) {
+      this._b01Q10StatusNoticed.add(duid);
+      this.log.info(
+        `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which has no status read, so its state comes from the datapoints it pushes. The plugin asks it to push a full status once a minute.`
+      );
+    }
+
+    try {
+      await this.messageQueueHandler.sendRequest(
+        duid,
+        b01Q10Adapter.REQUEST_STATUS_PUSH,
+        {}
+      );
+    } catch (error) {
+      this.log.debug(
+        `The Q10 status request for ${this.describeDevice(duid)} was not sent: ${error?.message || error}`
+      );
+    }
+    return null;
+  }
+
+  /**
+   * Say once per robot that its B01 model names neither dialect family, and
+   * what that means for the user. Every request to it is refused at the send
+   * choke point; this is the one line that explains why.
+   *
+   * @param {string} duid
+   */
+  noteB01FamilyUnknown(duid) {
+    if (!this._b01FamilyUnknownNoticed) {
+      this._b01FamilyUnknownNoticed = new Set();
+    }
+    const model = this.getProductAttribute(duid, "model");
+    const key = `${duid}:${model}`;
+    if (this._b01FamilyUnknownNoticed.has(key)) {
       return;
     }
-    this._b01Q10StatusNoticed.add(duid);
+    this._b01FamilyUnknownNoticed.add(key);
     this.log.info(
-      `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which sends no reply to a status read, so the dedicated B01 status loop does not poll it. Its state comes from the home data snapshot over HTTPS instead. This is a property of the dialect and not a fault; reading state from the datapoint updates the robot pushes is tracked in issue #19.`
+      `${this.describeDevice(duid)} speaks the B01 protocol, but its model (${model ? `'${model}'` : "missing from the Roborock home data"}) is neither a Q7 (sc*) nor a Q10 (ss*), so the plugin cannot tell which of the two B01 dialects it speaks and sends it nothing. Its tile follows the Roborock cloud snapshot, and commands from Apple Home fail until the model is known. python-roborock refuses such a model too; please report the model in issue #19.`
     );
   }
 
+  /**
+   * Name a Q7 work status the adapter has no translation for, once per robot
+   * and code. The answer is published without a state rather than as Idle, so
+   * this line is the only place the number shows up.
+   *
+   * @param {string} duid
+   * @param {unknown} status
+   */
+  noteUnknownB01WorkStatus(duid, status) {
+    if (!this._b01UnknownWorkStatuses) {
+      this._b01UnknownWorkStatuses = new Set();
+    }
+    const key = `${duid}:${status}`;
+    if (this._b01UnknownWorkStatuses.has(key)) {
+      return;
+    }
+    this._b01UnknownWorkStatuses.add(key);
+    this.log.info(
+      `${this.describeDevice(duid)} reports work status ${status}, which this plugin has no translation for, so its tile keeps the last known state. If it persists, please report the number and what the Roborock app shows.`
+    );
+  }
+
+  /**
+   * Follow a Q7's `current_map_id` from its status. A change means the robot
+   * switched maps, so the room list (room ids are per map) and the map id the
+   * live-room fallback asks for are both stale: the cached id is dropped and
+   * the rooms are refreshed at once rather than at the next 6-hour refresh.
+   *
+   * The status id is used only as this signal. The map asked for is still the
+   * one `service.get_map_list` marks current, because nothing documents that
+   * the two numberings are the same.
+   *
+   * @param {string} duid
+   * @param {{currentMapId?: unknown}} refreshState
+   * @param {unknown} currentMapId
+   */
+  noteB01CurrentMapId(duid, refreshState, currentMapId) {
+    if (currentMapId === undefined || currentMapId === null) {
+      return;
+    }
+    const previous = refreshState.currentMapId;
+    refreshState.currentMapId = currentMapId;
+    if (previous === undefined || previous === currentMapId) {
+      return;
+    }
+    this.log.info(
+      `${this.describeDevice(duid)} switched maps (${previous} -> ${currentMapId}); refreshing its rooms.`
+    );
+    this._b01MapIds?.delete(duid);
+    void this.refreshB01Rooms(duid, { force: true }).catch((error) => {
+      this.log.debug(
+        `Room refresh after a map switch failed for ${duid}: ${error?.message || error}`
+      );
+    });
+  }
+
+  /**
+   * The id of the map a Q7 marks current, from `service.get_map_list`, asked
+   * once and then reused until the robot reports a map switch.
+   *
+   * @param {string} duid
+   * @returns {Promise<number | null>}
+   */
+  async b01CurrentMapId(duid) {
+    if (!this._b01MapIds) {
+      this._b01MapIds = new Map();
+    }
+    if (this._b01MapIds.has(duid)) {
+      return this._b01MapIds.get(duid);
+    }
+    const mapListData = await this.messageQueueHandler.sendRequest(
+      duid,
+      "get_map_list",
+      {}
+    );
+    // Acknowledged here, not after the map upload: a robot that answers the
+    // list in 200 ms must not have its counter held open by a silent upload.
+    this.noteMethodAnswered(duid, "get_map_list");
+    const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+    if (mapId !== null) {
+      this._b01MapIds.set(duid, mapId);
+    }
+    return mapId;
+  }
+
   async refreshB01Status(duid, options = {}) {
-    // A Q10 (`ss*`) IS NOT POLLED AT ALL, and that gate belongs here rather
-    // than at the send choke point. The choke point already refuses
-    // `get_status` for a Q10 by name — correctly, since a fire-and-forget
-    // dialect cannot answer a read — but a request refused is still a request
-    // counted: the catch below incremented `consecutiveFailures` on every one
-    // and warned "B01 status has failed N times in a row" every tenth. At the
-    // 25-second idle cadence that is a warning every four minutes about a
-    // robot that is working exactly as designed, which is the same false alarm
-    // #14 spent three rounds chasing. Asking a question whose refusal is
-    // certain before it is asked is not a diagnostic.
-    //
-    // Returning null is what the throttle below already returns, so every
-    // caller handles it; no state entry is allocated either, and
-    // `getLastKnownLiveStatus` answers null for a Q10 as it does for a classic
-    // robot — "nothing known", never a value.
-    if (
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
-    ) {
-      this.noteB01Q10StatusPollNotAttempted(duid);
+    // A Q10 (`ss*`) is never sent a status READ: the dialect has no reply,
+    // so a read could only be refused, and a refused read counted as a
+    // failure warned about a healthy robot every few minutes (#14). It is
+    // asked to push instead, and what it pushes is read on the push path.
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
+      return this.requestB01Q10StatusPush(duid, options);
+    }
+    if (this.b01Family(duid) === null) {
+      this.noteB01FamilyUnknown(duid);
       return null;
     }
 
@@ -5630,12 +5718,20 @@ class Roborock {
           "get_status",
           []
         );
-        const v1Status = b01Q7Adapter.mapStatusToV1(
-          data,
-          b01Q7Adapter.b01FamilyForModel(
-            this.getProductAttribute(duid, "model")
-          )
-        );
+        // python-roborock refuses a prop.get answer that is not an object
+        // (b01_q7_channel.find_response). Read as an empty status it would
+        // publish nothing true and reset the failure streak, so it is a
+        // failed read like any other.
+        if (data === null || typeof data !== "object" || Array.isArray(data)) {
+          throw new Error(
+            `The robot answered the status read without a status (${JSON.stringify(data)}).`
+          );
+        }
+        const v1Status = b01Q7Adapter.mapStatusToV1(data, this.b01Family(duid));
+        if (v1Status.state === undefined && data.status !== undefined) {
+          this.noteUnknownB01WorkStatus(duid, data.status);
+        }
+        this.noteB01CurrentMapId(duid, refreshState, data.current_map_id);
         // A run that has just started is the moment the user is watching, and
         // it was also the slowest: the live-room fetch below rides its own
         // throttle, counted from the last attempt, so the first room of a run
@@ -5653,8 +5749,9 @@ class Roborock {
             liveState.lastAttemptAt = 0;
           }
         }
-        refreshState.lastKnownV1State = v1Status.state;
-        refreshState.lastV1Status = v1Status;
+        // An answer without a known work status leaves the last known one
+        // standing, here as on the tile.
+        this.rememberB01LiveStatus(duid, v1Status);
 
         if (refreshState.consecutiveFailures > 0) {
           // ANNOUNCE A RECOVERY ONLY FROM A FAILURE THE LOG ANNOUNCED.
@@ -5680,7 +5777,7 @@ class Roborock {
         if (!refreshState.firstSuccessLogged) {
           refreshState.firstSuccessLogged = true;
           this.log.info(
-            `B01 status online for ${this.describeDevice(duid)}: state=${v1Status.state}, battery=${v1Status.battery ?? "?"}%, charging=${v1Status.charge_status === 1 ? "yes" : "no"}.`
+            `B01 status online for ${this.describeDevice(duid)}: state=${v1Status.state ?? "unknown"}, battery=${v1Status.battery ?? "?"}%, charging=${v1Status.charge_status === undefined ? "unknown" : v1Status.charge_status === 1 ? "yes" : "no"}.`
           );
         }
 
@@ -5882,26 +5979,18 @@ class Roborock {
    * @returns {Promise<any[]>}
    */
   async refreshB01Rooms(duid, options = {}) {
-    // A Q10 (`ss*`) IS NOT FETCHED AT ALL — the third loop of this shape, after
-    // the status loop (3.19.0) and the live-room loop (3.19.1). `get_map_list`
-    // is not in NEUTRAL_RESPONSES and has no Q10 translation, so the send choke
-    // point refuses it by name and throws B01_METHOD_UNSUPPORTED. The caller
-    // catches that at debug level, so it is quiet — but the refusal is certain
-    // before the request is asked, and because it never succeeds the 6-hour
-    // throttle below is never stamped. A Q10 therefore repeats a designed
-    // refusal on every poll for as long as the plugin runs.
-    //
-    // Gated at the entry rather than at the two call sites for the same reason
-    // `refreshB01LiveRoom` is: both of them reach here through
-    // `refreshMatterServiceAreaRoomMappings`, which gates on `isB01Protocol` —
-    // and that is BOTH dialects, the premise of #19. Returning the cache is
-    // what the throttled path above already returns, so every caller handles
-    // it, and no failure state is allocated for a request never made.
-    if (
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
-    ) {
+    // A Q10 is never sent the Q7 map reads: its dialect cannot answer them,
+    // and a refusal that never succeeds would never stamp the throttle below
+    // either, repeating on every poll.
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
+      // A Q10's rooms arrive in the map it pushes (onB01MapFrame). One that
+      // has none yet is asked to push; the answer fills the cache.
+      if (this.getB01RoomCache(duid).length === 0) {
+        await this.requestB01Q10StatusPush(duid, { force: true });
+      }
+      return this.getB01RoomCache(duid);
+    }
+    if (this.b01Family(duid) !== b01Q7Adapter.B01_FAMILY.Q7) {
       return this.getB01RoomCache(duid);
     }
 
@@ -5927,12 +6016,9 @@ class Roborock {
     }
 
     try {
-      const mapListData = await this.messageQueueHandler.sendRequest(
-        duid,
-        "get_map_list",
-        {}
-      );
-      const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+      // A room refresh re-reads the map list: it is what notices a new map.
+      this._b01MapIds?.delete(duid);
+      const mapId = await this.b01CurrentMapId(duid);
       if (mapId === null) {
         // A reply arrived, so the channel is up; there is simply no map yet.
         // That is not a failure and must not accrue a backoff, or a robot
@@ -5943,12 +6029,7 @@ class Roborock {
         return this.getB01RoomCache(duid);
       }
 
-      const rawPayload = await this.sendB01MapRequest(duid, mapId);
-      const serial = this.getVacuumDeviceInfo(duid, "sn");
-      const model = this.getProductAttribute(duid, "model");
-      const mapKey = b01Q7Adapter.createMapKey(serial, model);
-      const scMap = b01Q7Adapter.decodeMapPayload(rawPayload, mapKey);
-      const rooms = b01Q7Adapter.parseRoomsFromScMap(scMap);
+      const { rooms } = await this.sendB01MapRequest(duid, mapId);
 
       this._b01RoomRefreshFailures.delete(duid);
       this._b01RoomRefreshAt.set(duid, Date.now());
@@ -5966,6 +6047,162 @@ class Roborock {
     }
   }
 
+  /**
+   * The key a Q7 encrypts its map frames with (python-roborock
+   * create_map_key: serial and model).
+   * @param {string} duid
+   * @returns {Buffer}
+   */
+  b01MapKey(duid) {
+    return b01Q7Adapter.createMapKey(
+      this.getVacuumDeviceInfo(duid, "sn"),
+      this.getProductAttribute(duid, "model")
+    );
+  }
+
+  /**
+   * Every protocol-301 frame from a B01 robot, decoded once and routed by
+   * what it is.
+   *
+   * A Q7 sends two kinds of map frame and they answer different questions.
+   * The live map (mapType 0) is pushed while it cleans and carries where the
+   * robot is now; it feeds the live room whether or not anything was asked.
+   * Any other type is a saved map, which `service.upload_by_mapid` returns:
+   * room names and outlines, and a pose that is a placeholder ("a saved map
+   * carries no live pose", python-roborock b01_map_parser). Only a saved map
+   * settles a pending map request, because that is what it asked for.
+   *
+   * Until this existed, whichever 301 frame arrived first settled the request
+   * and its pose was read as the robot's position. That is the field's "226 of
+   * 227 fetches carried a placeholder": the saved map, nearly every time, and
+   * now and then a live push that happened to arrive first. Every other live
+   * push went through the classic map parser and was counted as a frame for
+   * another controller.
+   *
+   * @param {string} duid
+   * @param {Buffer} rawPayload
+   * @returns {boolean} whether the frame settled a pending request
+   */
+  onB01MapFrame(duid, rawPayload) {
+    const family = this.b01Family(duid);
+    if (family === b01Q7Adapter.B01_FAMILY.Q10) {
+      // A Q10 pushes its current map after dpRequestDps; its rooms are read
+      // from it (b01Q10Adapter.parseQ10MapRooms). Trace and record packets
+      // carry no rooms and are not read.
+      try {
+        const packet = b01Q10Adapter.parseQ10MapRooms(rawPayload);
+        if (packet) {
+          void this.noteB01MapRooms(duid, packet.rooms, { announce: true });
+        }
+      } catch (error) {
+        this.log.debug(
+          `A Q10 map packet from ${this.describeDevice(duid)} could not be read: ${error?.message || error}`
+        );
+      }
+      return false;
+    }
+    if (family !== b01Q7Adapter.B01_FAMILY.Q7) {
+      return false;
+    }
+    const pending = this.pendingB01MapRequests?.get(duid);
+
+    let parsed;
+    try {
+      parsed = b01Q7Adapter.parseScMapLiveState(
+        b01Q7Adapter.decodeMapPayload(rawPayload, this.b01MapKey(duid))
+      );
+    } catch (error) {
+      // The robot did answer; what it sent could not be read. Said as such,
+      // never as a robot that did not answer.
+      const message = `A map frame from ${this.describeDevice(duid)} arrived but could not be decoded: ${error?.message || error}`;
+      if (!pending) {
+        this.log.debug(message);
+        return false;
+      }
+      this.settleB01MapRequest(
+        duid,
+        pending,
+        Object.assign(new Error(message), { unansweredRequest: false })
+      );
+      return true;
+    }
+
+    if (parsed.rooms.length > 0) {
+      void this.noteB01MapRooms(duid, parsed.rooms);
+    }
+
+    if (parsed.mapType === b01Q7Adapter.B01_LIVE_MAP_TYPE) {
+      if (pending) {
+        pending.liveFrames += 1;
+      }
+      this.applyB01LiveFrame(duid, parsed);
+      return false;
+    }
+
+    if (!pending) {
+      this.log.debug(
+        `A saved map (map type ${parsed.mapType}) from ${this.describeDevice(duid)} arrived with no map request waiting.`
+      );
+      return false;
+    }
+    this.settleB01MapRequest(duid, pending, null, parsed);
+    return true;
+  }
+
+  /**
+   * Settle a pending `service.upload_by_mapid` request, once.
+   * @param {string} duid
+   * @param {any} entry
+   * @param {Error | null} error
+   * @param {any} [parsed]
+   */
+  settleB01MapRequest(duid, entry, error, parsed) {
+    if (this.pendingB01MapRequests?.get(duid) !== entry) {
+      return;
+    }
+    this.clearTimeout(entry.timeout);
+    this.pendingB01MapRequests.delete(duid);
+    if (error) {
+      entry.reject(error);
+    } else {
+      entry.resolve(parsed);
+    }
+  }
+
+  /**
+   * Keep the room-name cache in step with the rooms a map frame carries, and
+   * postpone the scheduled room refresh. Written only on change: the cache is
+   * persisted, and live frames arrive every few seconds while cleaning.
+   * @param {string} duid
+   * @param {Array<{roomId: number, roomName: string}>} rooms
+   * @param {{announce?: boolean}} [options] log a changed list, as a room
+   *   refresh does (the only source of a Q10's rooms)
+   */
+  async noteB01MapRooms(duid, rooms, options = {}) {
+    if (!this._b01RoomRefreshAt) {
+      this._b01RoomRefreshAt = new Map();
+    }
+    this._b01RoomRefreshAt.set(duid, Date.now());
+    if (JSON.stringify(this.getB01RoomCache(duid)) === JSON.stringify(rooms)) {
+      return;
+    }
+    await this.setB01RoomCache(duid, rooms);
+    if (options.announce) {
+      this.log.info(
+        `B01 rooms for ${this.describeDevice(duid)}: ${rooms.length ? rooms.map((room) => `${room.roomName || "?"} (${room.roomId})`).join(", ") : "none reported"}.`
+      );
+    }
+  }
+
+  /**
+   * Ask a Q7 for its current saved map (`service.upload_by_mapid`). Resolves
+   * with the decoded map once a saved map arrives (see onB01MapFrame); a live
+   * frame that arrives meanwhile goes to the live room instead.
+   *
+   * @param {string} duid
+   * @param {number} mapId
+   * @returns {Promise<ReturnType<typeof b01Q7Adapter.parseScMapLiveState>>}
+   */
   async sendB01MapRequest(duid, mapId) {
     if (!this.pendingB01MapRequests) {
       this.pendingB01MapRequests = new Map();
@@ -6001,14 +6238,29 @@ class Roborock {
     let entry;
     const promise = new Promise((resolve, reject) => {
       const timeout = this.setTimeout(() => {
-        this.pendingB01MapRequests.delete(duid);
-        reject(
-          new Error(
-            `B01 map request timed out after 20s for ${this.describeDevice(duid)}.`
-          )
-        );
+        // Live frames during the wait mean the robot is talking; it sent no
+        // saved map. That is not a robot that did not answer, and saying so
+        // tells the field which kind of frame a request gets back.
+        const error =
+          entry.liveFrames > 0
+            ? Object.assign(
+                new Error(
+                  `${this.describeDevice(duid)} sent ${entry.liveFrames} live map frame(s) (map type 0) but no saved map within 20s of the B01 map request.`
+                ),
+                { unansweredRequest: false, liveFramesArrived: true }
+              )
+            : Object.assign(
+                new Error(
+                  `B01 map request timed out after 20s for ${this.describeDevice(duid)}.`
+                ),
+                {
+                  unansweredRequest: true,
+                  transportWasUp: this.rr_mqtt_connector.isConnected(),
+                }
+              );
+        this.settleB01MapRequest(duid, entry, error);
       }, 20000);
-      entry = { resolve, reject, timeout };
+      entry = { resolve, reject, timeout, liveFrames: 0 };
     });
     entry.promise = promise;
     this.pendingB01MapRequests.set(duid, entry);
@@ -6016,12 +6268,9 @@ class Roborock {
     // which the give-up register does not count, rather than after 20 s as a
     // robot that did not answer.
     this.rr_mqtt_connector.sendMessage(duid, roborockMessage, () => {
-      if (this.pendingB01MapRequests.get(duid) !== entry) {
-        return;
-      }
-      this.clearTimeout(entry.timeout);
-      this.pendingB01MapRequests.delete(duid);
-      entry.reject(
+      this.settleB01MapRequest(
+        duid,
+        entry,
         refusal(
           "cloud unavailable",
           `The Roborock cloud connection was lost before the B01 map request for ${this.describeDevice(duid)} could be sent, so it was not sent.`
@@ -6050,61 +6299,15 @@ class Roborock {
     }
     this._b01Q10LiveRoomNoticed.add(duid);
     this.log.info(
-      `${this.describeDevice(duid)} speaks the B01 Q10 dialect, which sends no reply to a map read, so its live-room position is not fetched and no room is reported during a clean. This is a property of the dialect and not a fault; reading state from the datapoint updates the robot pushes is tracked in issue #19.`
+      `${this.describeDevice(duid)} speaks the B01 Q10 dialect, whose live-room position travels in a map format this plugin does not read yet, so no room is reported during a clean. This is tracked in issue #19.`
     );
   }
 
   /**
-   * Fetch the current SCMap and derive which room the robot is physically
-   * inside (currentPose ray-cast against the per-room boundary chains).
-   * Called from the B01 status loop while the robot is actively cleaning;
-   * throttled on attempts (min 10s gap), single-flight per device, and
-   * disabled entirely with the enableLiveRoomTracking=false config option.
-   *
-   * On a room CHANGE the cached last v1 status is re-broadcast through
-   * deviceNotify so the Matter accessory rebuilds its Service Area cluster
-   * promptly (unchanged clusters are suppressed by confirmed-publish
-   * diffing, so the re-broadcast costs one Service Area write at most).
-   * The fetched map also opportunistically refreshes the room-name cache,
-   * postponing the next scheduled 6-hour room refresh.
+   * The live-room bookkeeping for one B01 robot, created on first use.
    * @param {string} duid
-   * @returns {Promise<{segmentId: number, roomName: string, at: number} | null>}
    */
-  async refreshB01LiveRoom(duid) {
-    if (this.config.enableLiveRoomTracking === false) {
-      return null;
-    }
-
-    // A Q10 (`ss*`) IS NOT FETCHED AT ALL, for the same reason the status loop
-    // does not poll one — and this is the second loop with that shape, missed
-    // when the first was fixed in 3.19.0.
-    //
-    // `get_map_list` is not in NEUTRAL_RESPONSES and has no Q10 translation,
-    // so the send choke point refuses it by name and throws. The catch below
-    // then counts that refusal as a failure and warns "Live-room map fetch has
-    // failed N times in a row" every fifth one. The refusal is correct; the
-    // failure count is not, because a request whose refusal is certain before
-    // it is asked is not a diagnostic.
-    //
-    // It matters more here than the cadence alone suggests: the live-room loop
-    // runs only while the robot is actively cleaning, so the warning lands in
-    // the log precisely during the operation #14's reporter confirmed working
-    // on the only Q10 in the field.
-    //
-    // Gated at the entry rather than at the call sites because there are two
-    // of them, and the one in `refreshLiveRoomForDevice` gates on `pv ===
-    // "B01"` — which is BOTH dialects, the premise of #19. Returning null is
-    // what the disabled-tracking branch above already returns, so every caller
-    // handles it, and no state entry is allocated.
-    if (
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
-    ) {
-      this.noteB01Q10LiveRoomNotAttempted(duid);
-      return null;
-    }
-
+  b01LiveRoomStateFor(duid) {
     if (!this._b01LiveRoomState) {
       this._b01LiveRoomState = new Map();
     }
@@ -6115,12 +6318,48 @@ class Roborock {
         inflight: null,
         consecutiveFailures: 0,
         current: null,
+        lastLiveFrameAt: 0,
       };
       this._b01LiveRoomState.set(duid, liveState);
     }
+    return liveState;
+  }
 
+  /**
+   * The fallback that asks for a map while a Q7 cleans, when it has pushed no
+   * live map recently.
+   *
+   * The live room comes from the live map frames the robot pushes
+   * (onB01MapFrame -> applyB01LiveFrame), with no request at all. This asks
+   * only when none has arrived for B01_LIVE_FRAME_FRESH_MS of a run: the
+   * answer refreshes the rooms and outlines, and any live frame the robot
+   * sends meanwhile places it. The saved map it answers with is never read as
+   * a position. Throttled on attempts (min 10 s gap, backing off on failure),
+   * single-flight per device, and disabled with enableLiveRoomTracking=false.
+   *
+   * @param {string} duid
+   * @returns {Promise<{segmentId: number, roomName: string, at: number} | null>}
+   */
+  async refreshB01LiveRoom(duid) {
+    if (this.config.enableLiveRoomTracking === false) {
+      return null;
+    }
+    // A Q10's live position comes in its own map format, which this plugin
+    // does not read yet, and an unknown family is not spoken to at all.
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
+      this.noteB01Q10LiveRoomNotAttempted(duid);
+      return null;
+    }
+    if (this.b01Family(duid) === null) {
+      return null;
+    }
+
+    const liveState = this.b01LiveRoomStateFor(duid);
     if (liveState.inflight) {
       return liveState.inflight;
+    }
+    if (Date.now() - liveState.lastLiveFrameAt < B01_LIVE_FRAME_FRESH_MS) {
+      return liveState.current;
     }
     if (
       Date.now() - liveState.lastAttemptAt <
@@ -6147,17 +6386,9 @@ class Roborock {
 
     liveState.inflight = (async () => {
       try {
-        const mapListData = await this.messageQueueHandler.sendRequest(
-          duid,
-          "get_map_list",
-          {}
-        );
-        // Acknowledge THIS request here, not at the bottom. Until 3.31.0 the
-        // acknowledgement sat after the map upload, the decode and a cache
-        // write, so a robot that answered get_map_list in 200 ms never had
-        // its counter reset while the heavy upload leg was silent.
-        this.noteMethodAnswered(duid, "get_map_list");
-        const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+        // The map id is asked once, not on every attempt (see
+        // b01CurrentMapId and noteB01CurrentMapId).
+        const mapId = await this.b01CurrentMapId(duid);
         if (mapId === null) {
           return liveState.current;
         }
@@ -6166,11 +6397,17 @@ class Roborock {
         // own 20-second timeout and its own method on the wire; recording it
         // as get_map_list would close a channel the robot answers, and point
         // the diagnostics at the wrong request.
-        let rawPayload;
+        let savedMap;
         try {
-          rawPayload = await this.sendB01MapRequest(duid, mapId);
+          savedMap = await this.sendB01MapRequest(duid, mapId);
         } catch (error) {
           if (this.stopped) {
+            return liveState.current;
+          }
+          if (error?.liveFramesArrived) {
+            // The robot answered with live frames, which placed it already.
+            this.noteMethodAnswered(duid, b01Q7Adapter.B01_MAP_UPLOAD_METHOD);
+            this.noteLiveRoomFetchRecovered(duid, liveState);
             return liveState.current;
           }
           this.noteLiveRoomFetchFailed(
@@ -6181,103 +6418,22 @@ class Roborock {
           );
           return liveState.current;
         }
-        const serial = this.getVacuumDeviceInfo(duid, "sn");
-        const model = this.getProductAttribute(duid, "model");
-        const mapKey = b01Q7Adapter.createMapKey(serial, model);
-        const scMap = b01Q7Adapter.decodeMapPayload(rawPayload, mapKey);
-        const parsed = b01Q7Adapter.parseScMapLiveState(scMap);
-
-        // The live fetch already paid for the full map payload; reuse it to
-        // keep the room-name cache fresh instead of scheduling another
-        // 6-hour refreshB01Rooms fetch of the same data. Written only on
-        // actual change — the cache is persisted to disk, and rewriting an
-        // identical room list every ~20 s during cleaning is pure I/O waste.
-        if (parsed.rooms.length > 0) {
-          if (!this._b01RoomRefreshAt) {
-            this._b01RoomRefreshAt = new Map();
-          }
-          this._b01RoomRefreshAt.set(duid, Date.now());
-          const cachedRooms = JSON.stringify(this.getB01RoomCache(duid));
-          if (cachedRooms !== JSON.stringify(parsed.rooms)) {
-            await this.setB01RoomCache(duid, parsed.rooms);
-          }
-        }
-
-        const resolution2 = b01Q7Adapter.describeLiveRoomResolution(parsed);
-        const roomId = resolution2.roomId;
         this.noteMethodAnswered(duid, b01Q7Adapter.B01_MAP_UPLOAD_METHOD);
         this.noteLiveRoomFetchRecovered(duid, liveState);
+        liveState.savedGeometry = savedMap;
 
-        if (roomId === null) {
-          // Debug-only used to make this invisible, and it is the single most
-          // likely reason a run goes minutes without naming a room: in the
-          // field a Q7 took 7 minutes to report its first room while every
-          // attempt in between resolved to nothing and said so only at debug
-          // level. Count the misses and say something at a level the user
-          // actually sees, so "no room yet" is distinguishable from "the
-          // feature is broken" — and say WHICH of the four causes it was,
-          // because they call for different fixes.
-          // A placeholder pose is not the robot failing to be in a room, so
-          // it does not join the count that says how long the robot has gone
-          // unplaced. Counting it produced "after 46 unresolved position(s)"
-          // for a robot that had been cleaning one room the whole time, which
-          // reads as a fault and is not one.
-          //
-          // It is said once per run at a level the user sees, with the numbers
-          // that make it diagnosable, and then held at debug. In the field
-          // that turns 226 info-and-debug lines per clean into one.
-          if (resolution2.reason === "pose-placeholder") {
-            const placeholderMessage = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}).`;
-            if (!liveState.placeholderReported) {
-              liveState.placeholderReported = true;
-              this.log.info(placeholderMessage);
-            } else {
-              this.log.debug(placeholderMessage);
-            }
-            return liveState.current;
-          }
-
-          liveState.unresolvedPoseCount =
-            (liveState.unresolvedPoseCount || 0) + 1;
-          const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}${describeRawMapFields(parsed)}).`;
-          if (liveState.unresolvedPoseCount % 5 === 0) {
-            this.log.info(message);
-          } else {
-            this.log.debug(message);
-          }
-          return liveState.current;
-        }
-        const missedBeforeThis = liveState.unresolvedPoseCount || 0;
-        liveState.unresolvedPoseCount = 0;
-
-        const roomName =
-          parsed.rooms.find((room) => room.roomId === roomId)?.roomName ||
-          `Room ${roomId}`;
-        const previous = liveState.current;
-        liveState.current = { segmentId: roomId, roomName, at: Date.now() };
-
-        if (previous && previous.segmentId === roomId && missedBeforeThis > 0) {
-          // Re-entering the room it was already in resets the miss counter
-          // without printing anything, which made the "attempt N" numbers look
-          // as if they reset at random. Say it happened.
+        // The remaining line, said once per run: the saved map placed nobody,
+        // and its map type is in the line so one clean shows which kind of
+        // frame this robot answers a map request with.
+        if (!liveState.current && !liveState.savedMapReported) {
+          liveState.savedMapReported = true;
+          const pose = savedMap.pose
+            ? `, its pose ${formatMapCoordinate(savedMap.pose.x)},${formatMapCoordinate(savedMap.pose.y)}${savedMap.pose.update !== undefined ? ` (update flag ${savedMap.pose.update})` : ""}`
+            : "";
           this.log.info(
-            `Live room for ${this.describeDevice(duid)}: back in ${roomName} (${roomId}) after ${missedBeforeThis} unresolved position(s).`
+            `Live room for ${this.describeDevice(duid)}: no live map (map type 0) has arrived from the robot in the last ${B01_LIVE_FRAME_FRESH_MS / 1000}s of this run, and the map it returns on request is a saved map (map type ${savedMap.mapType}${pose}) that carries no live position, so no room is reported until the robot pushes one.`
           );
         }
-
-        if (!previous || previous.segmentId !== roomId) {
-          this.log.info(
-            `Live room for ${this.describeDevice(duid)}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}${missedBeforeThis > 0 ? ` (after ${missedBeforeThis} unresolved position(s))` : ""}${resolution2.cell ? ` [position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}]` : ""}.`
-          );
-          const lastV1Status = this._b01StatusState?.get(duid)?.lastV1Status;
-          if (this.deviceNotify && lastV1Status) {
-            this.deviceNotify("CloudMessage", {
-              duid,
-              payload: [lastV1Status],
-            });
-          }
-        }
-
         return liveState.current;
       } catch (error) {
         this.noteLiveRoomFetchFailed(duid, liveState, error, "get_map_list");
@@ -6288,6 +6444,96 @@ class Roborock {
     })();
 
     return liveState.inflight;
+  }
+
+  /**
+   * Place a cleaning Q7 from a live map frame it pushed.
+   *
+   * A live frame normally carries its own outlines; one that does not is
+   * matched against the outlines of the last saved map, which share its cell
+   * space. On a room CHANGE the cached last v1 status is re-broadcast so the
+   * Matter accessory rebuilds its Service Area cluster promptly (unchanged
+   * clusters are suppressed by confirmed-publish diffing).
+   *
+   * @param {string} duid
+   * @param {ReturnType<typeof b01Q7Adapter.parseScMapLiveState>} parsed
+   */
+  applyB01LiveFrame(duid, parsed) {
+    if (this.config.enableLiveRoomTracking === false) {
+      return;
+    }
+    const liveState = this.b01LiveRoomStateFor(duid);
+    liveState.lastLiveFrameAt = Date.now();
+    // A frame that arrives after the run ended (docking, charging) does not
+    // move the robot back into a room the status loop has just cleared.
+    const v1State = this._b01StatusState?.get(duid)?.lastKnownV1State;
+    if (!B01_LIVE_ROOM_FETCH_V1_STATES.has(v1State)) {
+      return;
+    }
+
+    const geometry =
+      parsed.roomChains.length === 0 && liveState.savedGeometry
+        ? { ...liveState.savedGeometry, pose: parsed.pose }
+        : parsed;
+    const resolution2 = b01Q7Adapter.describeLiveRoomResolution(geometry);
+    const roomId = resolution2.roomId;
+
+    if (roomId === null) {
+      // A placeholder pose is not the robot failing to be in a room, so it
+      // does not join the count that says how long the robot has gone
+      // unplaced. It is said once per run at a level the user sees, then held
+      // at debug.
+      if (resolution2.reason === "pose-placeholder") {
+        const placeholderMessage = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (map type ${parsed.mapType}, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${parsed.pose?.update !== undefined ? `, pose update flag ${parsed.pose.update}` : ""}${describeOutlineBounds(resolution2)}).`;
+        if (!liveState.placeholderReported) {
+          liveState.placeholderReported = true;
+          this.log.info(placeholderMessage);
+        } else {
+          this.log.debug(placeholderMessage);
+        }
+        return;
+      }
+
+      liveState.unresolvedPoseCount = (liveState.unresolvedPoseCount || 0) + 1;
+      const message = `Live room for ${this.describeDevice(duid)}: ${B01_LIVE_ROOM_MISS_REASONS[resolution2.reason]} (attempt ${liveState.unresolvedPoseCount} this run, ${resolution2.outlineCount} room outline(s) in the map${resolution2.cell ? `, position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}` : ""}${describeOutlineBounds(resolution2)}).`;
+      if (liveState.unresolvedPoseCount % 5 === 0) {
+        this.log.info(message);
+      } else {
+        this.log.debug(message);
+      }
+      return;
+    }
+    const missedBeforeThis = liveState.unresolvedPoseCount || 0;
+    liveState.unresolvedPoseCount = 0;
+
+    const roomName =
+      (parsed.rooms.length ? parsed.rooms : this.getB01RoomCache(duid)).find(
+        (room) => room.roomId === roomId
+      )?.roomName || `Room ${roomId}`;
+    const previous = liveState.current;
+    liveState.current = { segmentId: roomId, roomName, at: Date.now() };
+
+    if (previous && previous.segmentId === roomId && missedBeforeThis > 0) {
+      // Re-entering the room it was already in resets the miss counter
+      // without printing anything, which made the "attempt N" numbers look
+      // as if they reset at random. Say it happened.
+      this.log.info(
+        `Live room for ${this.describeDevice(duid)}: back in ${roomName} (${roomId}) after ${missedBeforeThis} unresolved position(s).`
+      );
+    }
+
+    if (!previous || previous.segmentId !== roomId) {
+      this.log.info(
+        `Live room for ${this.describeDevice(duid)}: ${roomName} (${roomId})${previous ? ` — was ${previous.roomName} (${previous.segmentId})` : ""}${missedBeforeThis > 0 ? ` (after ${missedBeforeThis} unresolved position(s))` : ""}${resolution2.cell ? ` [position cell ${Math.round(resolution2.cell.x)},${Math.round(resolution2.cell.y)}]` : ""}.`
+      );
+      const lastV1Status = this._b01StatusState?.get(duid)?.lastV1Status;
+      if (this.deviceNotify && lastV1Status) {
+        this.deviceNotify("CloudMessage", {
+          duid,
+          payload: [lastV1Status],
+        });
+      }
+    }
   }
 
   /**
@@ -6595,28 +6841,115 @@ class Roborock {
   isB01Q10Device(duid) {
     return (
       this.isB01Device(duid) &&
-      b01Q7Adapter.b01FamilyForModel(
-        this.getProductAttribute(duid, "model")
-      ) === b01Q7Adapter.B01_FAMILY.Q10
+      this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
     );
   }
 
   /**
-   * The v1 state for a state value a robot PUSHED (datapoint 121). Classic and
-   * Q7 values pass through untouched; a Q10's run sub-states (101-105) and
-   * "waiting to charge" (108) would otherwise read as v1's "device offline"
-   * and "locked".
+   * The Matter fault a B01 robot's `error_code` stands for, classified in its
+   * own family's numbering, or null when the code is not one the tables name.
+   * The Matter side publishes the answer through its ordinary fault path; a
+   * classic robot's codes never come here (see isB01Device).
    *
    * @param {string} duid
-   * @param {unknown} rawState
-   * @returns {unknown}
+   * @param {number} errorCode
+   * @returns {{id: number, roborock: string, spec?: string} | null}
    */
-  normalizePushedState(duid, rawState) {
-    if (!this.isB01Q10Device(duid)) {
-      return rawState;
+  describeB01Fault(duid, errorCode) {
+    switch (this.b01Family(duid)) {
+      case b01Q7Adapter.B01_FAMILY.Q10:
+        return b01Q10Adapter.describeQ10Fault(errorCode);
+      case b01Q7Adapter.B01_FAMILY.Q7:
+        return b01Q7Adapter.describeQ7Fault(errorCode);
+      default:
+        return null;
     }
-    const translated = b01Q10Adapter.translateQ10StatusToV1State(rawState);
-    return translated === null ? rawState : translated;
+  }
+
+  /**
+   * Which B01 dialect family this robot's model belongs to (see
+   * b01Q7Adapter.b01FamilyForModel). One spelling for every caller, so the
+   * status, room and live-room loops cannot disagree about a robot.
+   *
+   * @param {string} duid
+   * @returns {string | null} null when the model names neither family
+   */
+  b01Family(duid) {
+    return b01Q7Adapter.b01FamilyForModel(
+      this.getProductAttribute(duid, "model")
+    );
+  }
+
+  /**
+   * A datapoint frame a B01 robot pushed on its own (no msgId), read in the
+   * robot's dialect before anything reaches the Matter side.
+   *
+   * A Q10 reports its state this way; its datapoints are translated to the
+   * v1-shaped fields the accessory reads, kept as the robot's last known live
+   * status, and delivered. A Q7's pushed datapoint numbering is not
+   * documented anywhere, so a Q7 push is never read directly: it is named once
+   * and answered with a status read, which the Q7 does answer in a known
+   * shape.
+   *
+   * @param {string} duid
+   * @param {Record<string, unknown>} dps
+   * @returns {void}
+   */
+  onB01DatapointPush(duid, dps) {
+    const family = this.b01Family(duid);
+    if (family === b01Q7Adapter.B01_FAMILY.Q10) {
+      const v1Status = b01Q10Adapter.mapDpsToV1(dps);
+      if (Object.keys(v1Status).length === 0) {
+        return;
+      }
+      this.rememberB01LiveStatus(duid, v1Status);
+      if (this.deviceNotify) {
+        this.deviceNotify("CloudMessage", { duid, payload: [v1Status] });
+      }
+      return;
+    }
+    if (family === b01Q7Adapter.B01_FAMILY.Q7) {
+      if (!this._b01Q7PushNoticed) {
+        this._b01Q7PushNoticed = new Set();
+      }
+      if (!this._b01Q7PushNoticed.has(duid)) {
+        this._b01Q7PushNoticed.add(duid);
+        this.log.info(
+          `${this.describeDevice(duid)} pushed datapoints ${JSON.stringify(dps)}. The Q7 numbering of pushed datapoints is not documented, so they are not read directly; a status read is taken instead. This is said once per robot.`
+        );
+      }
+      void this.getStatus(duid, { force: true }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Merge a B01 robot's freshly reported v1-shaped fields into its last known
+   * live status (getLastKnownLiveStatus), whichever way they arrived.
+   *
+   * @param {string} duid
+   * @param {Record<string, unknown>} v1Status
+   */
+  rememberB01LiveStatus(duid, v1Status) {
+    if (!this._b01StatusState) {
+      this._b01StatusState = new Map();
+    }
+    let refreshState = this._b01StatusState.get(duid);
+    if (!refreshState) {
+      refreshState = {
+        lastAttemptAt: 0,
+        inflight: null,
+        consecutiveFailures: 0,
+        failureWarned: false,
+      };
+      this._b01StatusState.set(duid, refreshState);
+    }
+    if (typeof v1Status.state === "number") {
+      refreshState.lastKnownV1State = v1Status.state;
+    }
+    refreshState.lastV1Status = {
+      ...refreshState.lastV1Status,
+      ...v1Status,
+    };
   }
 
   /**
@@ -6657,18 +6990,38 @@ class Roborock {
     // A Q10 is B01 too, but numbers its states the v1 way plus a few of its
     // own; the Q7 table turned a charging Q10 into Stopped (#33). Each family
     // reads its own table.
+    // A Q10 reports its state by pushing it, and the push path keeps what it
+    // pushed already translated (onB01DatapointPush). That is fresher than
+    // the home-data snapshot, and it is the only source of fields the
+    // snapshot does not carry, such as the clean task behind `in_cleaning`.
+    if (
+      device.pv === b01Q7Adapter.B01_PROTOCOL_VERSION &&
+      this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
+    ) {
+      const pushed = this.getLastKnownLiveStatus(duid)?.[property];
+      if (pushed !== undefined) {
+        return pushed;
+      }
+    }
+
     if (
       property === "state" &&
       device.pv === b01Q7Adapter.B01_PROTOCOL_VERSION &&
       device.deviceStatus
     ) {
-      const rawStatus = device.deviceStatus[propertyID];
-      const translated = this.isB01Q10Device(duid)
-        ? b01Q10Adapter.translateQ10StatusToV1State(rawStatus)
-        : b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
-      if (translated !== null) {
-        return translated;
-      }
+      const rawStatus =
+        device.deviceStatus[propertyID] ?? device.deviceStatus[property];
+      const family = this.b01Family(duid);
+      const translated =
+        family === b01Q7Adapter.B01_FAMILY.Q10
+          ? b01Q10Adapter.translateQ10StatusToV1State(rawStatus)
+          : family === b01Q7Adapter.B01_FAMILY.Q7
+            ? b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus)
+            : null;
+      // An untranslatable value is unknown. Falling through to the raw number
+      // handed the Matter side a B01 code to read as a v1 state ("state 26"
+      // on a Q7, pi-roborock.log 21 Oct 2026).
+      return translated !== null ? translated : "";
     }
 
     if (device.deviceStatus) {

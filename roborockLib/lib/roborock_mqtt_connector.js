@@ -677,15 +677,18 @@ class roborock_mqtt_connector {
             noteLateReply(this.adapter, duid, dps.id, "cloud");
           }
         } else if (data.protocol == 301) {
-          // B01/Q7 map upload responses arrive on protocol 301 as an opaque
-          // base64 blob. Resolve the per-device pending map request first;
-          // classic v1 map handling continues below otherwise.
-          const pendingMap = this.adapter.pendingB01MapRequests?.get(duid);
-          if (pendingMap) {
-            this.adapter.clearTimeout(pendingMap.timeout);
-            this.adapter.pendingB01MapRequests.delete(duid);
-            this.sessionDiagnostics.noteActivity("correlated");
-            pendingMap.resolve(data.payload);
+          // A B01 robot's map frames are its own format, pushed unasked as
+          // well as sent on request. Every one goes to the B01 map handler,
+          // which decodes it once and routes it by map type; none reaches
+          // the classic photo/map parser below, which counted each push as a
+          // frame for another controller.
+          if (
+            typeof this.adapter.onB01MapFrame === "function" &&
+            this.adapter.isB01Device?.(duid)
+          ) {
+            if (this.adapter.onB01MapFrame(duid, data.payload)) {
+              this.sessionDiagnostics.noteActivity("correlated");
+            }
             return;
           }
 
@@ -733,17 +736,44 @@ class roborock_mqtt_connector {
           // is still proof that our account key is the right one.
           noteAcceptedFrame(duid);
 
-          const iv = Buffer.alloc(16, 0);
-          const decipher = crypto.createDecipheriv(
-            "aes-128-cbc",
-            this.adapter.nonce,
-            iv
-          );
-          let decrypted = Buffer.concat([
-            decipher.update(data.payload.subarray(24)),
-            decipher.final(),
-          ]);
-          decrypted = zlib.gunzipSync(decrypted);
+          let decrypted;
+          try {
+            const decipher = crypto.createDecipheriv(
+              "aes-128-cbc",
+              this.adapter.nonce,
+              Buffer.alloc(16, 0)
+            );
+            decrypted = zlib.gunzipSync(
+              Buffer.concat([
+                decipher.update(data.payload.subarray(24)),
+                decipher.final(),
+              ])
+            );
+          } catch (error) {
+            // The robot answered; what arrived could not be read. Said
+            // as such and settled now, never left to time out as a robot
+            // that did not answer.
+            const pending = this.adapter.pendingRequests.get(data2.id);
+            if (!pending) {
+              noteDroppedFrame(duid, "undecodable");
+              this.adapter.log.debug(
+                `A protocol 301 frame for ${duid} with id ${data2.id} could not be decoded and no request is waiting for it: ${error?.message || error}`
+              );
+              return;
+            }
+            this.adapter.clearTimeout(pending.timeout);
+            this.adapter.pendingRequests.delete(data2.id);
+            this.sessionDiagnostics.noteActivity("correlated");
+            pending.reject(
+              Object.assign(
+                new Error(
+                  `The reply to ${pending.method || "the map request"} (cloud id ${data2.id}) from ${describeDevice(this.adapter, duid)} arrived but could not be decoded: ${error?.message || error}`
+                ),
+                { unansweredRequest: false }
+              )
+            );
+            return;
+          }
 
           if (!this.adapter.pendingRequests.has(data2.id)) {
             // The other silent drop on this path. An unsolicited map push
@@ -1055,6 +1085,18 @@ function resolveB01PendingResponse(
   dps,
   onCorrelatedReply = () => {}
 ) {
+  if (
+    dps &&
+    dps.msgId === undefined &&
+    dps.id === undefined &&
+    typeof adapter.onB01DatapointPush === "function" &&
+    adapter.isB01Device?.(duid)
+  ) {
+    // A datapoint push from a B01 robot. It is read in the robot's own
+    // dialect there; handed on raw it was read as classic datapoints.
+    adapter.onB01DatapointPush(duid, dps);
+    return true;
+  }
   if (!dps || dps.msgId === undefined || dps.id !== undefined) {
     return false;
   }

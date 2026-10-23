@@ -42,6 +42,7 @@ function createApi() {
   });
   api.vacuums["duid-1"] = {};
   api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+  api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
   api.setDeviceNotify(jest.fn());
   return api;
 }

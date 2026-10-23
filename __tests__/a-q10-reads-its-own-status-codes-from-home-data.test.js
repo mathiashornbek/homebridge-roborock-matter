@@ -80,17 +80,40 @@ async function q10Api(dpStatus) {
 }
 
 describe("a Q10 reads its own status codes from home data (#33)", () => {
-  // YXDeviceState -> the v1 state with the same meaning (same number).
-  test.each([
-    ["sleeping", 2, 2],
-    ["idle", 3, 3],
-    ["cleaning", 5, 5],
-    ["returning home", 6, 6],
-    ["charging", 8, 8],
-    ["paused", 10, 10],
-  ])("YXDeviceState %s (%i) is v1 state %i", async (_name, raw, v1) => {
-    const api = await q10Api(raw);
-    expect(Number(api.getVacuumDeviceStatus(Q10, "state"))).toBe(v1);
+  // One row per python-roborock YXDeviceState member, so the table can be
+  // diffed against the reference line by line. Both sources read it: the
+  // home-data snapshot and a pushed datapoint 121.
+  const YX_DEVICE_STATE_TO_V1 = [
+    ["SLEEPING", 2, 2],
+    ["IDLE", 3, 3],
+    ["CLEANING", 5, 5],
+    ["RETURNING_HOME", 6, 6],
+    ["REMOTE_CONTROL_ACTIVE", 7, 7],
+    ["CHARGING", 8, 8],
+    ["PAUSED", 10, 10],
+    ["ERROR", 12, 12],
+    ["UPDATING", 14, 14],
+    ["EMPTYING_THE_BIN", 22, 22],
+    ["MAPPING", 29, 29],
+    ["SAVING_MAP", 99, 5],
+    ["RELOCATING", 101, 5],
+    ["SWEEPING", 102, 5],
+    ["MOPPING", 103, 5],
+    ["SWEEP_AND_MOP", 104, 5],
+    ["TRANSITIONING", 105, 5],
+    ["WAITING_TO_CHARGE", 108, 8],
+  ];
+
+  test("every YXDeviceState reads as the v1 state with its meaning, from home data and from a push", async () => {
+    const { mapDpsToV1 } = require("../roborockLib/lib/b01Q10Adapter");
+    for (const [name, raw, v1] of YX_DEVICE_STATE_TO_V1) {
+      const api = await q10Api(raw);
+      expect([name, Number(api.getVacuumDeviceStatus(Q10, "state"))]).toEqual([
+        name,
+        v1,
+      ]);
+      expect([name, mapDpsToV1({ 121: raw }).state]).toEqual([name, v1]);
+    }
   });
 
   test("home data and the robot's own push agree on a Q10 charging in its dock", async () => {
@@ -130,26 +153,5 @@ describe("a Q10 reads its own status codes from home data (#33)", () => {
     expect(fromPush).toBe(66); // Docked
     // Fails on 3.34.0: home data published Stopped (0) for the same robot.
     expect(fromHomeData).toBe(fromPush);
-  });
-});
-
-describe("a Q10's run sub-states are a run, not v1's offline/locked", () => {
-  test.each([
-    ["sweeping", 102, 5],
-    ["mopping", 103, 5],
-    ["sweep and mop", 104, 5],
-    ["waiting to charge", 108, 8],
-  ])(
-    "pushed YXDeviceState %s (%i) normalises to v1 state %i",
-    async (_name, raw, v1) => {
-      const api = await q10Api(8);
-      expect(api.normalizePushedState(Q10, raw)).toBe(v1);
-    }
-  );
-
-  test("a classic robot's pushed state is never touched", async () => {
-    const api = await q10Api(8);
-    api.isB01Q10Device = () => false;
-    expect(api.normalizePushedState(Q10, 101)).toBe(101);
   });
 });

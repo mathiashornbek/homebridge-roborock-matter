@@ -878,7 +878,6 @@ class deviceFeatures {
         "roborock.vacuum.a140",
         "roborock.vacuum.a95",
         "roborock.vacuum.a159",
-        "roborock.vacuum.ss07",
       ].includes(robotModel),
       // isShakeMopStrengthSupported: p.DMM.currentProduct == p.Products.TanosS || p.DMM.currentProduct == p.Products.TanosSPlus || p.DMM.isGarnet || p.DMM.isTopazSV || p.DMM.isPearlPlus || p.DMM.isCoral || p.DMM.isTopazS || p.DMM.isTopazSPlus || p.DMM.isTopazSC || p.DMM.isTopazSV || p.DMM.isPearlPlus || p.DMM.isTanosSMax || p.DMM.isUltron || p.DMM.isUltronSPlus || p.DMM.isUltronSMop || p.DMM.isUltronSV || p.DMM.isPearl
       isShakeMopStrengthSupported: [
@@ -903,7 +902,6 @@ class deviceFeatures {
         "roborock.vacuum.a140",
         "roborock.vacuum.a95",
         "roborock.vacuum.a159",
-        "roborock.vacuum.ss07",
       ].includes(robotModel),
       // isWaterBoxSupported: [p.Products.Tanos_CE, p.Products.Tanos_CN].hasElement(p.DMM.currentProduct)
       isWaterBoxSupported: [
@@ -934,7 +932,6 @@ class deviceFeatures {
         "roborock.vacuum.a140",
         "roborock.vacuum.a95",
         "roborock.vacuum.a159",
-        "roborock.vacuum.ss07",
       ].includes(robotModel),
       isCustomWaterBoxDistanceSupported: !!(2147483648 & this.features),
       isBackChargeAutoWashSupported:
@@ -964,7 +961,6 @@ class deviceFeatures {
         "roborock.vacuum.a140",
         "roborock.vacuum.a95",
         "roborock.vacuum.a159",
-        "roborock.vacuum.ss07",
       ].includes(robotModel),
       // this isn't the correct way to use this. This code must be from a different robot
       // isVoiceControlSupported: !!(parseInt(`0x${this.featuresStr || "0"}`.slice(-10, -9)) & 2),
@@ -1015,7 +1011,8 @@ class deviceFeatures {
 
     if (productCategory == "robot.vacuum.cleaner") {
       // Shared action list for models with identical processSupportedFeatures config
-      // (Saros 10, and related a140/a95/a159/ss07 models)
+      // (Saros 10, and related a140/a95/a159 models). Not ss07: that is the
+      // Q10 S5, a B01 robot whose states come from its own adapter.
       const saros10ActionSet = [
         "setCleaningRecordsString",
         "setConsumablesInt",
@@ -1335,7 +1332,6 @@ class deviceFeatures {
         "roborock.vacuum.a140": saros10ActionSet,
         "roborock.vacuum.a95": saros10ActionSet,
         "roborock.vacuum.a159": saros10ActionSet,
-        "roborock.vacuum.ss07": saros10ActionSet,
       };
 
       // process modelConfig
