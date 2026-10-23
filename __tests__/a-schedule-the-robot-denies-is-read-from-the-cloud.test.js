@@ -466,12 +466,8 @@ describe("switching a cloud schedule from HomeKit", () => {
     const on = scheduleSwitch(manager, "scene:1").getCharacteristic(
       Characteristic.On
     );
-    const write = on.setHandler(false).then(
-      () => "resolved",
-      (error) => error
-    );
+    expect(on.setHandler(false)).toBeUndefined();
     await flushTimers(5000);
-    expect(await write).toBeInstanceOf(Error);
 
     expect(on.value).toBe(true);
     expect(platform.log.warn).toHaveBeenCalledWith(
@@ -489,12 +485,8 @@ describe("switching a cloud schedule from HomeKit", () => {
     const on = scheduleSwitch(manager, "scene:1").getCharacteristic(
       Characteristic.On
     );
-    const write = on.setHandler(false).then(
-      () => "resolved",
-      (error) => error
-    );
+    expect(on.setHandler(false)).toBeUndefined();
     await flushTimers(5000);
-    expect(await write).toBeInstanceOf(Error);
 
     expect(cloud.updateCloudSceneParam).not.toHaveBeenCalled();
     expect(platform.log.warn).toHaveBeenCalledWith(

@@ -186,7 +186,7 @@ describe("HomeKit schedule settings contract", () => {
     );
 
     expect(scheduleSource).toMatch(
-      /const refresh = this\.performRefresh\(generation, accountCoordinatorHeld\);[\s\S]*?this\.refreshInProgress = refresh;/
+      /const refresh = this\.performRefresh\(\s*generation,\s*accountCoordinatorHeld,\s*forceFresh\s*\);[\s\S]*?this\.refreshInProgress = refresh;/
     );
 
     expect(scheduleSource).toMatch(
@@ -265,24 +265,22 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain("generation !== this.refreshGeneration");
   });
 
-  test("schedule batches capture a timestamp before each verification phase", () => {
-    expect(scheduleSource).toContain("const primaryStartedAt = Date.now();");
-    expect(scheduleSource).toContain("const fallbackStartedAt = Date.now();");
-    expect(scheduleSource).toContain(
-      "await this.refreshDetailed(primaryStartedAt, true);"
+  test("schedule verification requests fresh reads after writes rather than adopting an older refresh", () => {
+    expect(scheduleSource).toMatch(
+      /!forceFresh &&[\s\S]*?this\.refreshInProgress/
     );
-    expect(scheduleSource).toContain(
-      "await this.refreshDetailed(fallbackStartedAt, true);"
-    );
+    expect(
+      scheduleSource.match(
+        /this\.refreshDetailed\(\s*Date\.now\(\),\s*true,\s*true\s*\)/g
+      )
+    ).toHaveLength(2);
   });
 
   test("schedule writes are serialized by the per-vacuum coordinator", () => {
     expect(scheduleSource).toContain(
       "new ScheduleWriteBatcher<ScheduleWriteRequest>("
     );
-    expect(scheduleSource).toContain(
-      "const outcome = this.coordinator.enqueueScheduleWrite("
-    );
+    expect(scheduleSource).toContain("this.coordinator.enqueueScheduleWrite(");
     expect(scheduleSource).toMatch(
       /private stopRuntime\(\): void \{[\s\S]*?this\.writeBatcher\.cancelPending\(\);/
     );
@@ -451,9 +449,9 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).toContain("`Schedule discovery for ${this.duid}: `");
   });
 
-  test("schedule switch GET returns cached state without waiting for refresh", () => {
+  test("schedule switch GET returns pending or cached state without waiting for refresh", () => {
     expect(scheduleSource).toMatch(
-      /\.onGet\(\(\) => \{[\s\S]*?void this\.coordinator\.refreshIfNeeded\(\);[\s\S]*?return this\.schedule\.enabled;/
+      /\.onGet\(\(\) => \{[\s\S]*?void this\.coordinator\.refreshIfNeeded\(\);[\s\S]*?return this\.displayValue\(\);/
     );
     expect(scheduleSource).not.toMatch(
       /\.onGet\(async \(\) => \{[\s\S]*?await this\.coordinator\.refreshIfNeeded\(\);/
@@ -461,13 +459,13 @@ describe("HomeKit schedule settings contract", () => {
   });
 
   test("schedule verification refreshes once per batch through the coordinator", () => {
-    expect(scheduleSource).toContain(
-      "await this.refreshDetailed(primaryStartedAt, true);"
-    );
-    expect(scheduleSource).toContain("const unconfirmed = primarySent.filter(");
-    expect(scheduleSource).toContain(
-      "await this.refreshDetailed(fallbackStartedAt, true);"
-    );
+    expect(
+      scheduleSource.match(
+        /await this\.refreshDetailed\(\s*Date\.now\(\),\s*true,\s*true\s*\)/g
+      )
+    ).toHaveLength(2);
+    expect(scheduleSource).toContain("verified(verification, request)");
+    expect(scheduleSource).toContain("verified(finalVerification, request)");
     expect(scheduleSource).toContain("this.cachedScheduleMatches(request)");
   });
 
