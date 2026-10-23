@@ -1877,9 +1877,25 @@ class Roborock {
 
     this.instance = clientID;
 
+    // A custom server (#43) replaces the region for the login and the account
+    // API; everything after the login follows the URLs its answer carries.
+    // An invalid one stops here: falling back to Roborock's own servers would
+    // send the account's email there.
+    this.loginServer = this.baseURL;
+    if (this.config.serverURL) {
+      try {
+        this.loginServer = roborockAuth.parseServerURL(this.config.serverURL);
+      } catch (error) {
+        this.log.error(
+          `${/** @type {any} */ (error)?.message || error} The plugin stays idle until the custom server URL is fixed in the plugin settings.`
+        );
+        return;
+      }
+    }
+
     // Initialize the login API (which is needed to get access to the real API).
     this.loginApi = roborockAuth.createLoginApi({
-      baseURL: this.baseURL,
+      baseURL: this.loginServer,
       username: this.config.username,
       clientID,
       language: this.language,
@@ -2367,7 +2383,7 @@ class Roborock {
       const region = await roborockAuth.getLoginRegion(
         loginApi,
         this.config.username,
-        this.baseURL
+        this.loginServer
       );
       const loginResult = await roborockAuth.loginByPassword(loginApi, {
         email: this.config.username,

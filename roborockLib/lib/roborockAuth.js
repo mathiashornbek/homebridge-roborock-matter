@@ -42,6 +42,53 @@ function parseHostname(baseURL) {
   }
 }
 
+/**
+ * The custom server URL from the plugin settings, checked and reduced to
+ * `https://host[:port]`, or an Error saying what is wrong with it.
+ *
+ * For a self-hosted Roborock server such as local_roborock_server (#43): the
+ * login and the account API go there instead of a Roborock region, and
+ * everything after the login follows the URLs the server's login answer
+ * carries (`rriot.r.a` for the IoT API, `rriot.r.m` for MQTT), as for
+ * Roborock's own servers. HTTPS only, with full certificate checks: the login
+ * sends the account's email and PIN, and the answer is the session. A server
+ * with a private certificate authority is trusted the Node way
+ * (NODE_EXTRA_CA_CERTS), never by turning verification off.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function parseServerURL(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error(
+      `The custom server URL "${text}" is not a URL. Enter it as https://host or https://host:port.`
+    );
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(
+      `The custom server URL must start with https:// (got "${url.protocol}//"). The login sends your email and PIN, so it never goes over plain HTTP.`
+    );
+  }
+  if (!url.hostname) {
+    throw new Error("The custom server URL has no host name.");
+  }
+  if (url.username || url.password) {
+    throw new Error(
+      "The custom server URL must not contain a user name or password."
+    );
+  }
+  if ((url.pathname && url.pathname !== "/") || url.search || url.hash) {
+    throw new Error(
+      `The custom server URL must be just the server (https://host or https://host:port), without "${url.pathname}${url.search}${url.hash}".`
+    );
+  }
+  return `https://${url.host}`;
+}
+
 function getRegionConfig(baseURL) {
   const hostname = parseHostname(baseURL);
   const labels = hostname.split(".").filter(Boolean);
@@ -246,7 +293,7 @@ const LOGIN_REFUSALS = {
     credentials: true,
   },
   2010: {
-    hint: "Roborock rejected the email or password. Check them in the plugin settings.",
+    hint: "The server rejected the login. Check the email and the password or code in the plugin settings (for a custom server, the PIN it was set up with).",
     credentials: true,
   },
   2012: {
@@ -405,6 +452,7 @@ module.exports = {
   getLoginRegion,
   getRegionConfig,
   loginRefusedError,
+  parseServerURL,
   signRequest,
   requestEmailCode,
   loginWithCode,

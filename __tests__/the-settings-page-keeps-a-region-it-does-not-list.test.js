@@ -32,12 +32,14 @@ test.each([
 ])(
   "%s survives an automatic save of another setting",
   async (_label, baseURL) => {
-    const page = await loadedPage({
+    const page = loadSettingsPage({
       email: "owner@example.com",
       baseURL,
       encryptedToken: "token",
     });
+    // init() loads the saved config itself, as Homebridge UI's "ready" does.
     page.run("init()");
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(page.run("getFormValues().baseURL")).toBe(baseURL);
 

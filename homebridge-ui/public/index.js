@@ -3,6 +3,8 @@ const elements = {
   password: document.getElementById("password"),
   passwordRow: document.getElementById("password-row"),
   baseUrl: document.getElementById("base-url"),
+  serverUrl: document.getElementById("server-url"),
+  serverUrlRow: document.getElementById("server-url-row"),
   skipDevices: document.getElementById("skip-devices"),
   devicesList: document.getElementById("devices-list"),
   devicesEmpty: document.getElementById("devices-empty"),
@@ -80,7 +82,12 @@ const state = {
   lastLocalTest: null,
   diagnosticsRefreshTimer: null,
   diagnosticsAutoRefreshAttempts: 0,
+  // The region saved in config.json, kept while a custom server is selected.
+  savedBaseURL: undefined,
 };
+
+// The Region option that stands for a self-hosted server (#43).
+const CUSTOM_SERVER = "custom";
 
 const DIAGNOSTICS_AUTO_REFRESH_DELAY_MS = 3000;
 const DIAGNOSTICS_AUTO_REFRESH_LIMIT = 2;
@@ -186,6 +193,13 @@ async function loadConfig() {
       elements.email.value = config.email;
     }
     selectRegion(config.baseURL || "https://usiot.roborock.com");
+    // The region stays saved underneath a custom server, so switching back
+    // to it needs no re-selection.
+    state.savedBaseURL = config.baseURL;
+    if (config.serverURL) {
+      elements.baseUrl.value = CUSTOM_SERVER;
+      elements.serverUrl.value = config.serverURL;
+    }
     if (config.skipDevices) {
       elements.skipDevices.value = config.skipDevices;
     }
@@ -258,7 +272,59 @@ function getPassword() {
 }
 
 function getBaseUrl() {
-  return elements.baseUrl.value;
+  return isCustomServer() ? state.savedBaseURL : elements.baseUrl.value;
+}
+
+function isCustomServer() {
+  return elements.baseUrl.value === CUSTOM_SERVER;
+}
+
+/** The custom server URL, or undefined (which clears it) for a region. */
+function getServerUrl() {
+  const value = isCustomServer() ? elements.serverUrl.value.trim() : "";
+  return value || undefined;
+}
+
+/**
+ * What is wrong with a custom server URL, or null. The plugin applies the
+ * same rule (roborockAuth.parseServerURL) and stays idle on a bad one; this
+ * says so before it is saved.
+ */
+function serverUrlProblem(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return "Enter the server URL as https://host or https://host:port.";
+  }
+  if (url.protocol !== "https:") {
+    return "The server URL must start with https://.";
+  }
+  if (
+    url.username ||
+    url.password ||
+    (url.pathname && url.pathname !== "/") ||
+    url.search ||
+    url.hash
+  ) {
+    return "The server URL must be just the server: https://host or https://host:port.";
+  }
+  return null;
+}
+
+/**
+ * A custom server logs in with its PIN as the verification code and has no
+ * password login, so its URL field and the code section replace the
+ * password row while nobody is logged in.
+ */
+function syncServerUrlRow() {
+  const custom = isCustomServer();
+  elements.serverUrlRow.classList.toggle("hidden", !custom);
+  if (!state.hasEncryptedToken) {
+    elements.passwordRow.classList.toggle("hidden", custom);
+    elements.login.classList.toggle("hidden", custom);
+    setTwoFactorVisible(custom);
+  }
 }
 
 function getSkipDevices() {
@@ -334,6 +400,22 @@ async function describeSavedCloudOnlyMode() {
   return hasUnsavedCloudOnlyEdit(config)
     ? `${label} (WARNING: the settings form has unsaved changes; this is the value the plugin is running)`
     : label;
+}
+
+/**
+ * Which server the saved config logs in to: the region's host, or "custom"
+ * for a self-hosted server — never its address, which is the user's own host
+ * name and has no business in a pasted report.
+ */
+async function describeSavedServer() {
+  const config = await readSavedPluginConfig();
+  if (!config) {
+    return "unavailable";
+  }
+  if (config.serverURL) {
+    return "custom";
+  }
+  return normalizeBaseUrl(config.baseURL).replace(/^https?:\/\//, "");
 }
 
 /** True when the cloud-only checkbox differs from what is saved in the config. */
@@ -667,6 +749,7 @@ function getCode() {
 const AUTO_SAVED_FIELDS = [
   "email",
   "baseURL",
+  "serverURL",
   "skipDevices",
   "debugMode",
   "matterChargedBatteryThreshold",
@@ -689,6 +772,7 @@ function getFormValues() {
     email: getEmail(),
     password: getPassword(),
     baseURL: getBaseUrl(),
+    serverURL: getServerUrl(),
     skipDevices: getSkipDevices(),
     debugMode: getDebugMode(),
     enableHomeKitActionSwitches: Boolean(
@@ -867,6 +951,13 @@ async function saveCredentials(showSuccess = false, { only = null } = {}) {
     showToast("error", "Email is required.");
     return;
   }
+  const serverProblem =
+    formValues.serverURL !== undefined &&
+    serverUrlProblem(formValues.serverURL);
+  if (serverProblem) {
+    showToast("error", serverProblem);
+    return;
+  }
 
   const patch = only
     ? pickFields(formValues, only)
@@ -895,14 +986,19 @@ async function saveCredentials(showSuccess = false, { only = null } = {}) {
 
 async function login() {
   const formValues = getFormValues();
-  const { email, password, baseURL } = formValues;
+  const { email, password, baseURL, serverURL } = formValues;
 
   if (!email || !password) {
     showToast("error", "Email and password are required.");
     return;
   }
 
-  const result = await request("/auth/login", { email, password, baseURL });
+  const result = await request("/auth/login", {
+    email,
+    password,
+    baseURL,
+    serverURL,
+  });
 
   if (result.ok) {
     // Drop the password once a token exists — the 2FA path below has always
@@ -945,12 +1041,17 @@ async function login() {
 async function sendTwoFactorEmail() {
   const email = getEmail();
   const baseURL = getBaseUrl();
+  const serverURL = getServerUrl();
   if (!email) {
     showToast("error", "Email is required.");
     return;
   }
 
-  const result = await request("/auth/send-2fa-email", { email, baseURL });
+  const result = await request("/auth/send-2fa-email", {
+    email,
+    baseURL,
+    serverURL,
+  });
   if (result.ok) {
     showToast("success", result.message || "Verification email sent.");
   } else {
@@ -960,7 +1061,7 @@ async function sendTwoFactorEmail() {
 
 async function verifyTwoFactorCode() {
   const formValues = getFormValues();
-  const { email, baseURL } = formValues;
+  const { email, baseURL, serverURL } = formValues;
   const code = getCode();
   if (!email) {
     showToast("error", "Email is required.");
@@ -971,10 +1072,16 @@ async function verifyTwoFactorCode() {
     return;
   }
 
+  if (serverURL !== undefined && serverUrlProblem(serverURL)) {
+    showToast("error", serverUrlProblem(serverURL));
+    return;
+  }
+
   const result = await request("/auth/verify-2fa-code", {
     email,
     code,
     baseURL,
+    serverURL,
   });
   if (result.ok) {
     const patch = {
@@ -1470,6 +1577,7 @@ async function buildDiagnosticsReport(result) {
     `token: ${hasToken ? "present" : "missing"}`,
     `homeData: ${result.hasHomeData ? "present" : "missing"}`,
     `cloudOnlyMode: ${await describeSavedCloudOnlyMode()}`,
+    `server: ${await describeSavedServer()}`,
     // Which Apple Home features are switched on decides what the plugin is
     // even allowed to publish, so a report that omits them cannot answer
     // "why doesn't Apple Home show X?" — the first question every one of
@@ -1762,6 +1870,8 @@ function setLoggedInState(isLoggedIn, hasPassword = false) {
   elements.email.parentElement.classList.toggle("readonly", isLoggedIn);
   elements.baseUrl.disabled = isLoggedIn;
   elements.baseUrl.parentElement.classList.toggle("readonly", isLoggedIn);
+  elements.serverUrl.readOnly = isLoggedIn;
+  syncServerUrlRow();
   updateAuthStatus(isLoggedIn, hasPassword);
 }
 
@@ -1952,7 +2062,11 @@ function init() {
       showToast("error", "Failed to copy Matter pairing value.");
     });
   });
-  elements.baseUrl.addEventListener("change", () => autoSave());
+  elements.baseUrl.addEventListener("change", () => {
+    syncServerUrlRow();
+    autoSave();
+  });
+  elements.serverUrl.addEventListener("change", () => autoSave());
   elements.skipDevices.addEventListener("change", () => {
     autoSave();
     renderManagedDevices();

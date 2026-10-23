@@ -117,10 +117,21 @@ class RoborockUiServer {
     return crypto.randomUUID();
   }
 
+  /**
+   * The server a login goes to: the custom server when one is set (#43),
+   * otherwise the region. Throws the validation message for a custom server
+   * URL that is not https://host[:port].
+   */
+  private loginServer(config: { baseURL?: string; serverURL?: string }) {
+    return config.serverURL
+      ? roborockAuth.parseServerURL(config.serverURL)
+      : config.baseURL || "usiot.roborock.com";
+  }
+
   private async buildLoginApi(config: Record<string, any>) {
     const clientID = await this.getClientId();
     return roborockAuth.createLoginApi({
-      baseURL: config.baseURL || "usiot.roborock.com",
+      baseURL: this.loginServer(config),
       username: config.email,
       clientID,
       language: "en",
@@ -130,6 +141,7 @@ class RoborockUiServer {
   private async sendTwoFactorEmail(payload: {
     email?: string;
     baseURL?: string;
+    serverURL?: string;
   }) {
     const email = payload.email;
     if (!email) {
@@ -140,6 +152,7 @@ class RoborockUiServer {
       const loginApi = await this.buildLoginApi({
         email,
         baseURL: payload.baseURL,
+        serverURL: payload.serverURL,
       });
       await roborockAuth.requestEmailCode(loginApi, email);
       return { ok: true, message: "Verification email sent." };
@@ -156,6 +169,7 @@ class RoborockUiServer {
     email?: string;
     code: string;
     baseURL?: string;
+    serverURL?: string;
   }) {
     const email = payload.email;
     if (!email) {
@@ -169,6 +183,7 @@ class RoborockUiServer {
     return this.performSignedLogin({
       email,
       baseURL: payload.baseURL,
+      serverURL: payload.serverURL,
       requestFailedLogLabel: "2FA verification request failed:",
       requestFailedFallbackMessage: "Verification failed.",
       successMessage: "Login completed and token saved.",
@@ -178,7 +193,7 @@ class RoborockUiServer {
         const region = await roborockAuth.getLoginRegion(
           loginApi,
           email,
-          payload.baseURL || "usiot.roborock.com"
+          this.loginServer(payload)
         );
         return roborockAuth.loginWithCode(loginApi, {
           email,
@@ -196,6 +211,7 @@ class RoborockUiServer {
     email?: string;
     password?: string;
     baseURL?: string;
+    serverURL?: string;
   }) {
     const email = payload.email;
     const password = payload.password;
@@ -207,6 +223,7 @@ class RoborockUiServer {
     return this.performSignedLogin({
       email,
       baseURL: payload.baseURL,
+      serverURL: payload.serverURL,
       requestFailedLogLabel: "Login request failed:",
       requestFailedFallbackMessage: "Login failed.",
       successMessage: "Login successful. Token saved.",
@@ -217,7 +234,7 @@ class RoborockUiServer {
         const region = await roborockAuth.getLoginRegion(
           loginApi,
           email,
-          payload.baseURL || "usiot.roborock.com"
+          this.loginServer(payload)
         );
         return roborockAuth.loginByPassword(loginApi, {
           email,
@@ -237,6 +254,7 @@ class RoborockUiServer {
   private async performSignedLogin(options: {
     email: string;
     baseURL?: string;
+    serverURL?: string;
     requestFailedLogLabel: string;
     requestFailedFallbackMessage: string;
     successMessage: string;
@@ -248,6 +266,7 @@ class RoborockUiServer {
     const {
       email,
       baseURL,
+      serverURL,
       requestFailedLogLabel,
       requestFailedFallbackMessage,
       successMessage,
@@ -259,7 +278,7 @@ class RoborockUiServer {
 
     let loginResult;
     try {
-      const loginApi = await this.buildLoginApi({ email, baseURL });
+      const loginApi = await this.buildLoginApi({ email, baseURL, serverURL });
       const nonce = this.buildNonce();
       const signData = await roborockAuth.signRequest(loginApi, nonce);
       if (!signData || !signData.k) {
