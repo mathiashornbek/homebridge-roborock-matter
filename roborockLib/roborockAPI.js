@@ -5478,6 +5478,28 @@ class Roborock {
   }
 
   /**
+   * Say once per robot that its B01 model names neither dialect family, and
+   * what that means for the user. Every request to it is refused at the send
+   * choke point; this is the one line that explains why.
+   *
+   * @param {string} duid
+   */
+  noteB01FamilyUnknown(duid) {
+    if (!this._b01FamilyUnknownNoticed) {
+      this._b01FamilyUnknownNoticed = new Set();
+    }
+    const model = this.getProductAttribute(duid, "model");
+    const key = `${duid}:${model}`;
+    if (this._b01FamilyUnknownNoticed.has(key)) {
+      return;
+    }
+    this._b01FamilyUnknownNoticed.add(key);
+    this.log.info(
+      `${this.describeDevice(duid)} speaks the B01 protocol, but its model (${model ? `'${model}'` : "missing from the Roborock home data"}) is neither a Q7 (sc*) nor a Q10 (ss*), so the plugin cannot tell which of the two B01 dialects it speaks and sends it nothing. Its tile follows the Roborock cloud snapshot, and commands from Apple Home fail until the model is known. python-roborock refuses such a model too; please report the model in issue #19.`
+    );
+  }
+
+  /**
    * Name a Q7 work status the adapter has no translation for, once per robot
    * and code. The answer is published without a state rather than as Idle, so
    * this line is the only place the number shows up.
@@ -5517,6 +5539,10 @@ class Roborock {
     // robot — "nothing known", never a value.
     if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
       this.noteB01Q10StatusPollNotAttempted(duid);
+      return null;
+    }
+    if (this.b01Family(duid) === null) {
+      this.noteB01FamilyUnknown(duid);
       return null;
     }
 
@@ -5858,7 +5884,7 @@ class Roborock {
     // and that is BOTH dialects, the premise of #19. Returning the cache is
     // what the throttled path above already returns, so every caller handles
     // it, and no failure state is allocated for a request never made.
-    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
+    if (this.b01Family(duid) !== b01Q7Adapter.B01_FAMILY.Q7) {
       return this.getB01RoomCache(duid);
     }
 
@@ -6055,6 +6081,9 @@ class Roborock {
     // handles it, and no state entry is allocated.
     if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
       this.noteB01Q10LiveRoomNotAttempted(duid);
+      return null;
+    }
+    if (this.b01Family(duid) === null) {
       return null;
     }
 
@@ -6563,9 +6592,14 @@ class Roborock {
    * @returns {{id: number, roborock: string, spec?: string} | null}
    */
   describeB01Fault(duid, errorCode) {
-    return this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
-      ? b01Q10Adapter.describeQ10Fault(errorCode)
-      : b01Q7Adapter.describeQ7Fault(errorCode);
+    switch (this.b01Family(duid)) {
+      case b01Q7Adapter.B01_FAMILY.Q10:
+        return b01Q10Adapter.describeQ10Fault(errorCode);
+      case b01Q7Adapter.B01_FAMILY.Q7:
+        return b01Q7Adapter.describeQ7Fault(errorCode);
+      default:
+        return null;
+    }
   }
 
   /**
@@ -6574,7 +6608,7 @@ class Roborock {
    * status, room and live-room loops cannot disagree about a robot.
    *
    * @param {string} duid
-   * @returns {string}
+   * @returns {string | null} null when the model names neither family
    */
   b01Family(duid) {
     return b01Q7Adapter.b01FamilyForModel(
@@ -6645,9 +6679,13 @@ class Roborock {
     ) {
       const rawStatus =
         device.deviceStatus[propertyID] ?? device.deviceStatus[property];
-      const translated = this.isB01Q10Device(duid)
-        ? b01Q10Adapter.translateQ10StatusToV1State(rawStatus)
-        : b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
+      const family = this.b01Family(duid);
+      const translated =
+        family === b01Q7Adapter.B01_FAMILY.Q10
+          ? b01Q10Adapter.translateQ10StatusToV1State(rawStatus)
+          : family === b01Q7Adapter.B01_FAMILY.Q7
+            ? b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus)
+            : null;
       // An untranslatable value is unknown. Falling through to the raw number
       // handed the Matter side a B01 code to read as a v1 state ("state 26"
       // on a Q7, pi-roborock.log 21 Oct 2026).

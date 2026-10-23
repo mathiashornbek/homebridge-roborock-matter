@@ -341,6 +341,7 @@ describe("refreshB01LiveRoom", () => {
     });
     api.vacuums["duid-q7"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     let robotState = 5; // B01 cleaning -> v1 state 5
     api.messageQueueHandler = {
       sendRequest: jest.fn(async () => ({

@@ -369,6 +369,18 @@ class messageQueueHandler {
       // Methods answered from NEUTRAL_RESPONSES never touch the wire, so they
       // are left alone either way — refusing those would regress the
       // room-mapping fix from 3.17.3, opened by this same reporter.
+      if (family === null && !neutral) {
+        // Neither dialect is known for this model, so neither is spoken: a
+        // guessed envelope is discarded by a robot of the other family and
+        // the request then waits out its timeout. Refused calmly (the code),
+        // and explained once by the status loop.
+        throw refusal(
+          "b01 family unknown",
+          `${describeDevice(this.adapter, duid)} speaks the B01 protocol, but its model (${model || "missing from the home data"}) is neither a Q7 (sc*) nor a Q10 (ss*), so ${method} was not sent.`,
+          "B01_METHOD_UNSUPPORTED"
+        );
+      }
+
       if (family === b01Q7Adapter.B01_FAMILY.Q10 && !neutral) {
         const q10 = b01Q10Adapter.translateOutgoing(method, params);
 

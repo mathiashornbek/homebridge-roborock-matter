@@ -145,15 +145,14 @@ describe("a Q7 is still polled exactly as before", () => {
     );
   });
 
-  test("an unrecognised B01 model is still treated as a Q7", async () => {
-    // The classifier defaults unknown models to Q7, and this loop must not
-    // invent a stricter rule of its own: a model nobody has classified yet
-    // keeps the behaviour it had before the split.
+  test("an unrecognised B01 model is not polled in either dialect", async () => {
+    // The classifier no longer defaults unknown models to Q7 (#19), and this
+    // loop follows it rather than inventing a rule of its own.
     const { api, sendRequest } = createApi("roborock.vacuum.zz99");
 
     await api.refreshB01Status("duid-unknown", { force: true });
 
-    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(sendRequest).not.toHaveBeenCalled();
   });
 
   test("a Q7 that really does fail still reports it", async () => {

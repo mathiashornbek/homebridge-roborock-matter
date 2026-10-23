@@ -112,8 +112,13 @@ const B01_FAMILY = { Q7: "Q7", Q10: "Q10" };
  * (`if "ss" in model_part`) which would misroute any future model that merely
  * contains those letters; this does not copy that.
  *
+ * Anything else, a missing model included, is neither family: null. It used
+ * to default to Q7, so a Q10 whose product lookup missed was sent Q7 frames it
+ * discards, every status tick (#19). python-roborock refuses such a device
+ * (`device_manager.device_creator`: UnsupportedDeviceError).
+ *
  * @param {string | null | undefined} model
- * @returns {string}
+ * @returns {string | null}
  */
 function b01FamilyForModel(model) {
   const suffix = String(model ?? "")
@@ -123,10 +128,10 @@ function b01FamilyForModel(model) {
   if (suffix && suffix.startsWith("ss")) {
     return B01_FAMILY.Q10;
   }
-  // Q7 remains the default for `sc*` and for anything unrecognised: it is
-  // what every B01 device was treated as before, so an unknown model cannot
-  // be made worse by this function than it already was.
-  return B01_FAMILY.Q7;
+  if (suffix && suffix.startsWith("sc")) {
+    return B01_FAMILY.Q7;
+  }
+  return null;
 }
 
 // Q7 `wind` (suction) codes <-> v1 fan_power codes.
@@ -164,14 +169,14 @@ const Q10_V1_FAN_POWER_TO_WIND = {
   106: 2, // custom -> balanced
 };
 
-/** @param {string} family */
+/** @param {string | null} family */
 function windToV1FanPower(family) {
   return family === B01_FAMILY.Q10
     ? Q10_WIND_TO_V1_FAN_POWER
     : Q7_WIND_TO_V1_FAN_POWER;
 }
 
-/** @param {string} family */
+/** @param {string | null} family */
 function v1FanPowerToWind(family) {
   return family === B01_FAMILY.Q10
     ? Q10_V1_FAN_POWER_TO_WIND
@@ -1160,6 +1165,7 @@ function normalizeSegmentIds(params) {
  * equivalent (callers decide between a neutral response and an error).
  * @param {string} method
  * @param {any} params
+ * @param {string | null} [family] Q7 when not given
  * @returns {{method: string, params: any, kind?: string} | null}
  */
 function translateOutgoing(method, params, family = B01_FAMILY.Q7) {

@@ -29,6 +29,7 @@ describe("B01 live-room responsiveness", () => {
   test("the first room of a run is fetched immediately, not after the map throttle", async () => {
     const api = createApi();
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.config = { debug: false };
     api.vacuums["duid-1"] = {};
 
@@ -72,6 +73,7 @@ describe("B01 live-room responsiveness", () => {
   test("the throttle is left alone while a run continues", async () => {
     const api = createApi();
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.config = { debug: false };
     api.vacuums["duid-1"] = {};
 

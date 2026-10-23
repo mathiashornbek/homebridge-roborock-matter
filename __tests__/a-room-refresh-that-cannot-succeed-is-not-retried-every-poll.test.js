@@ -136,7 +136,7 @@ describe("a Q10 room-list refresh is not attempted at all", () => {
     expect(sendRequest).toHaveBeenCalledWith("duid-q7", "get_map_list", {});
   });
 
-  test("an unknown B01 model is still treated as a Q7 and fetched", async () => {
+  test("a Q7-family model nobody has listed yet (sc99) is still fetched", async () => {
     const { api, sendRequest } = createApi(UNKNOWN_B01_MODEL);
 
     await api.refreshB01Rooms("duid-unknown");

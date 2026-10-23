@@ -327,6 +327,7 @@ describe("B01 getStatus end-to-end mapping", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.messageQueueHandler = {
       sendRequest: jest
         .fn()
@@ -392,6 +393,7 @@ describe("Field-test regressions (2.0.0-matter.2)", () => {
       enableMatterServiceArea: true,
     });
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     const vacuum = { getParameter: jest.fn() };
 
     const result = await api.refreshMatterServiceAreaRoomMappings(
@@ -488,6 +490,7 @@ describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.messageQueueHandler = {
       sendRequest: jest
         .fn()
@@ -518,6 +521,7 @@ describe("Q7 deep-hardening (2.0.0-matter.3)", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     let resolveRequest;
     api.messageQueueHandler = {
       sendRequest: jest.fn(
@@ -867,6 +871,7 @@ describe("Q7 charging tile (both status paths)", () => {
         products: [
           {
             id: "product-q7",
+            model: "roborock.vacuum.sc05",
             schema: [
               { id: 121, code: "state" },
               { id: 122, code: "battery" },
@@ -938,6 +943,7 @@ describe("B01 status self-healing (2.0.0-matter.6)", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     api.setDeviceNotify(jest.fn());
     return api;
   }
@@ -1569,6 +1575,7 @@ describe("Adaptive B01 poll cadence", () => {
     });
     api.vacuums["duid-1"] = {};
     api.getRobotVersion = jest.fn().mockResolvedValue("B01");
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
     let robotState = 1; // idle (B01 status 1 -> v1 state 3)
     api.messageQueueHandler = {
       sendRequest: jest.fn(async () => ({
@@ -1629,13 +1636,13 @@ describe("B01 is two families and their scales disagree", () => {
 
     // Upstream tests `if "ss" in model_part`, unanchored, which would call
     // this one a Q10. Anchoring is the whole point of not copying that.
-    expect(b01.b01FamilyForModel("roborock.vacuum.class1")).toBe(Q7);
+    expect(b01.b01FamilyForModel("roborock.vacuum.class1")).toBeNull();
 
-    // Anything unrecognised stays Q7, which is what every B01 device was
-    // treated as before, so this function cannot make an unknown model worse.
-    expect(b01.b01FamilyForModel("roborock.vacuum.a70")).toBe(Q7);
-    expect(b01.b01FamilyForModel(undefined)).toBe(Q7);
-    expect(b01.b01FamilyForModel(null)).toBe(Q7);
+    // Anything else names neither family (python-roborock refuses it too);
+    // see an-unknown-b01-model-is-not-spoken-to.test.js.
+    expect(b01.b01FamilyForModel("roborock.vacuum.a70")).toBeNull();
+    expect(b01.b01FamilyForModel(undefined)).toBeNull();
+    expect(b01.b01FamilyForModel(null)).toBeNull();
   });
 
   test("Max+ goes out as 5 on a Q7 and 8 on a Q10", () => {
