@@ -938,11 +938,12 @@ class localConnector {
           createRefusalError(
             `The robot refused ${method || "the request"} (local id ${id}): ${refusal}`,
             parsed_102
-          )
+          ),
+          "local"
         );
         return;
       }
-      resolve(result);
+      resolve(result, "local");
 
       if (this.adapter.deviceNotify) {
         this.adapter.deviceNotify("LocalMessage", {
