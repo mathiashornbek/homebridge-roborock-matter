@@ -4712,19 +4712,23 @@ class Roborock {
   /**
    * Whether this robot can be told to continue a paused room clean.
    *
-   * Classic v1 robots can. The B01/Q7 dialect has no measured verb for it:
-   * room cleaning there is `service.set_room_clean` with a `ctrl_value`, and
-   * the only three values read out of the protocol are STOP 0, START 1 and
-   * PAUSE 2 (`b01Q7Adapter.js`). There may well be a continue value — nobody
-   * has seen one, and a guessed control code sent to a paused robot is how
-   * the play button breaks for every B01 owner at once. So a B01 keeps
-   * today's behaviour and the limitation gets said out loud instead.
+   * Classic v1 robots can, and so can a Q10: dpResume (205) continues any
+   * paused task (python-roborock `resume_clean`, verified live). The Q7
+   * dialect has no measured verb for it: room cleaning there is
+   * `service.set_room_clean` with a `ctrl_value`, and the only three values
+   * read out of the protocol are STOP 0, START 1 and PAUSE 2
+   * (`b01Q7Adapter.js`). There may well be a continue value — nobody has seen
+   * one, and a guessed control code sent to a paused robot is how the play
+   * button breaks for every Q7 owner at once. So a Q7 keeps today's behaviour.
    *
    * @param {string} duid
    * @returns {boolean}
    */
   supportsSegmentResume(duid) {
-    return !this.isB01Device(duid);
+    return (
+      !this.isB01Device(duid) ||
+      this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
+    );
   }
 
   async load_multi_map(duid, mapId, options = {}) {
@@ -6735,6 +6739,20 @@ class Roborock {
     // A Q10 is B01 too, but numbers its states the v1 way plus a few of its
     // own; the Q7 table turned a charging Q10 into Stopped (#33). Each family
     // reads its own table.
+    // A Q10 reports its state by pushing it, and the push path keeps what it
+    // pushed already translated (onB01DatapointPush). That is fresher than
+    // the home-data snapshot, and it is the only source of fields the
+    // snapshot does not carry, such as the clean task behind `in_cleaning`.
+    if (
+      device.pv === b01Q7Adapter.B01_PROTOCOL_VERSION &&
+      this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
+    ) {
+      const pushed = this.getLastKnownLiveStatus(duid)?.[property];
+      if (pushed !== undefined) {
+        return pushed;
+      }
+    }
+
     if (
       property === "state" &&
       device.pv === b01Q7Adapter.B01_PROTOCOL_VERSION &&

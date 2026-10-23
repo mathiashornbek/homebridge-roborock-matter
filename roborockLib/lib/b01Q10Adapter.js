@@ -51,6 +51,7 @@ const B01_Q10_DP = {
   BATTERY: 122,
   FAN_LEVEL: 123,
   CLEAN_MODE: 137,
+  CLEAN_TASK_TYPE: 138,
   START_CLEAN: 201,
   START_BACK: 202,
   START_DOCK_TASK: 203,
@@ -98,6 +99,15 @@ const MATTER_TO_Q10_CLEAN_TYPE = { 0: 2, 1: 3, 2: 1 };
 const Q10_CLEAN_TYPE_TO_MATTER = { 1: 2, 2: 0, 3: 1 };
 
 /**
+ * dpCleanTaskType (138, `YXDeviceCleanTask`) -> v1 `in_cleaning`, the field
+ * the accessory reads to choose a resume verb: 0 idle -> 0 complete, 1 smart
+ * (whole home) -> 1, 2 electoral (rooms) -> 3 segment, 3 divideareas (zone)
+ * -> 2. Mapping (4) and spot (5) have no v1 counterpart.
+ * @type {Record<number, number>}
+ */
+const Q10_CLEAN_TASK_TO_IN_CLEANING = { 0: 0, 1: 1, 2: 3, 3: 2 };
+
+/**
  * The plugin's name for dpRequestDps. There is no v1 method for it: a classic
  * robot answers a status read, a Q10 can only be asked to push.
  */
@@ -123,6 +133,12 @@ function translateOutgoing(method, params) {
       return { dp: B01_Q10_DP.STOP, params: 0 };
     case "app_pause":
       return { dp: B01_Q10_DP.PAUSE, params: 0 };
+    case "resume_segment_clean":
+    case "resume_zoned_clean":
+      // dpResume continues whatever task is paused ("Verified live":
+      // python-roborock q10/vacuum.py resume_clean). app_start would write
+      // dpStartClean, a fresh whole-home run.
+      return { dp: B01_Q10_DP.RESUME, params: 0 };
     case "app_charge":
       return { dp: B01_Q10_DP.START_BACK, params: Q10_BACK_TO_DOCK_CHARGE };
     case "app_start_collect_dust":
@@ -383,6 +399,15 @@ function mapDpsToV1(dps) {
       Q10_CLEAN_TYPE_TO_MATTER[Number(flat[String(B01_Q10_DP.CLEAN_MODE)])];
     if (cleanType !== undefined) {
       v1.matter_clean_type = cleanType;
+    }
+  }
+  if (has(B01_Q10_DP.CLEAN_TASK_TYPE)) {
+    const inCleaning =
+      Q10_CLEAN_TASK_TO_IN_CLEANING[
+        Number(flat[String(B01_Q10_DP.CLEAN_TASK_TYPE)])
+      ];
+    if (inCleaning !== undefined) {
+      v1.in_cleaning = inCleaning;
     }
   }
   if (has(B01_Q10_DP.FAULT)) {
