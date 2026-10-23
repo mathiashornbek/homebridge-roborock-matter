@@ -48,7 +48,13 @@ one did, and `null` means no eligible timeout has been observed. It is useful
 on single-robot accounts without relaxing the two-robot correlation rule.
 `lastReadTimeoutAgeMs` dates that observation at `capturedAt`; later traffic
 does not rewrite the historical result. Disconnect and connect reset both
-fields. Writes, B01 translated reads, and old-generation timeouts cannot
+fields. `lastEligibleRead` separately retains the latest eligible timeout across
+connections, including its original `generation`, `rawSilenceDuringRequest`, and
+`ageMs` at snapshot capture. It is initially null, changes only on an eligible
+read timeout, and is not used by recovery or breaker decisions. This lets a
+report distinguish historical evidence from the new session's current state;
+the hourly per-robot transport lines remain the broader traffic summary.
+Writes, B01 translated reads, and old-generation timeouts cannot
 supply this observation. An idle or non-answering robot can produce raw silence
 on a healthy session: this is evidence to inspect, not a session-fault verdict
 or a reason to change breaker/recovery policy in this PR.
