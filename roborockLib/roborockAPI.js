@@ -8,7 +8,11 @@ const crypto = require("crypto");
 
 const roborockAuth = require("./lib/roborockAuth");
 
-const rrLocalConnector = require("./lib/localConnector").localConnector;
+const {
+  localConnector: rrLocalConnector,
+  LOCAL_MUTE_REMOTE_REASON,
+  LOCAL_MUTE_TIMEOUT_LIMIT,
+} = require("./lib/localConnector");
 const roborock_mqtt_connector =
   require("./lib/roborock_mqtt_connector").roborock_mqtt_connector;
 const rrMessage = require("./lib/message").message;
@@ -30,6 +34,7 @@ const b01Q7Adapter = require("./lib/b01Q7Adapter");
 const b01Q10Adapter = require("./lib/b01Q10Adapter");
 const { describeDroppedFrames } = require("./lib/roborock_mqtt_connector");
 const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
+const { TransportTally } = require("./lib/transportTally");
 const { LateReplyTracker } = require("./lib/lateReplies");
 
 // v1 states in which the robot is actively doing something and state
@@ -75,19 +80,6 @@ const CLOUD_ONLY_TRANSPORT_MARKERS = Object.freeze({
 // the report came to state that a LAN connection had been attempted and failed
 // for robots the plugin never attempts a LAN connection to.
 const UNEXPLAINED_REMOTE_REASON = "remote-device";
-
-// A local socket that completed its TCP handshake and then answered nothing.
-// This is a different failure from a connect that failed, and conflating the
-// two is what made it invisible: the port is reachable, so nothing looks
-// broken, while every request still dies of silence at its timeout.
-const LOCAL_MUTE_REMOTE_REASON = "local-socket-connected-but-mute";
-
-// Consecutive local timeouts tolerated before the LAN is written off for a
-// robot. One is noise — a single lost frame on a healthy network is ordinary,
-// and exiling that robot to the cloud for it would be worse than the bug this
-// bound fixes. Three in a row on a socket that keeps reporting itself
-// connected is not noise.
-const LOCAL_MUTE_TIMEOUT_LIMIT = 3;
 
 // Minimum gap between live-room map fetch attempts while cleaning. The map
 // payload is an order of magnitude heavier than get_status, so it rides a
@@ -432,7 +424,9 @@ const SIMPLE_VACUUM_COMMANDS = new Set([
   "load_multi_map",
 ]);
 
-const TRANSIENT_ERROR_LOG_THROTTLE_MS = 6 * 60 * 60 * 1000;
+// One warning per robot per kind per hour, the first of that hour; the hourly
+// transport summary (lib/transportTally.js) counts the rest.
+const TRANSIENT_ERROR_LOG_THROTTLE_MS = 60 * 60 * 1000;
 // python-roborock mqtt/health_manager.py: TIMEOUT_THRESHOLD, RESTART_COOLDOWN.
 const CLOUD_SILENCES_BEFORE_SESSION_RESTART = 3;
 const CLOUD_SESSION_RESTART_COOLDOWN_MS = 30 * 60 * 1000;
@@ -512,12 +506,6 @@ class Roborock {
     // see markDeviceRemote.
     /** @type {Map<string, string>} */
     this.remoteDeviceReasons = new Map();
-    // Consecutive local request timeouts per robot, counted only while the
-    // local client still reports itself connected. Reset by any local reply:
-    // the count has to mean "this socket answers nothing", not "this socket has
-    // ever timed out".
-    /** @type {Map<string, number>} */
-    this.localMuteTimeouts = new Map();
 
     this.name = "roborock";
     this.deviceNotify = null;
@@ -541,6 +529,11 @@ class Roborock {
     // Consecutive unanswered cloud requests while MQTT says it is connected.
     // See noteCloudSilence().
     this.cloudSessionHealth = { consecutiveSilences: 0, lastRestartAt: 0 };
+    // How each robot's requests fared per transport, logged hourly when
+    // anything failed. See noteTransportOutcome().
+    this.transportTally = new TransportTally(this.log, (duid) =>
+      this.describeDevice(duid)
+    );
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -1703,6 +1696,7 @@ class Roborock {
       "cloud-only-mode",
       "cloud-only-mqtt-unavailable",
       "network-info-cloud-only",
+      "cloud-only-method",
       "secure-command",
       "photo-command",
       "preferred-cloud-command",
@@ -1716,6 +1710,8 @@ class Roborock {
       "cloud-only-mode": "cloud-only mode is enabled",
       "cloud-only-mqtt-unavailable":
         "cloud-only mode is enabled but Roborock cloud MQTT is unavailable",
+      "cloud-only-method":
+        "this request is only ever sent through the Roborock cloud, as python-roborock sends it",
       "cloud-request": "cloud transport was selected for this command",
       "device-offline": "Roborock currently reports the vacuum offline",
       "device-offline-during-connect":
@@ -1744,7 +1740,7 @@ class Roborock {
       "marked-remote-after-connect-failure":
         "local TCP connection failed and the vacuum was marked remote",
       [LOCAL_MUTE_REMOTE_REASON]:
-        "the local TCP socket connected but the vacuum answered nothing on it, so the cloud is used instead",
+        "the vacuum stopped answering on its local TCP socket, so the plugin closed it and is reconnecting; the cloud is used until the vacuum answers on the LAN again",
       [b01Q7Adapter.B01_CLOUD_ONLY_REMOTE_REASON]:
         "this model speaks only Roborock's cloud protocol, which has no LAN control surface",
     };
@@ -3291,7 +3287,9 @@ class Roborock {
   }
 
   /**
-   * Any reply came back over the cloud: the session delivers.
+   * A V1 request was answered over the cloud: python-roborock's
+   * `HealthManager.on_success`. B01 replies and refusals do not get here, so
+   * a Q7 answering every 15 seconds cannot hide a V1 robot's silence.
    *
    * @returns {void}
    */
@@ -3300,7 +3298,7 @@ class Roborock {
   }
 
   /**
-   * A cloud request timed out while MQTT reported itself connected.
+   * A V1 cloud request timed out while MQTT reported itself connected.
    *
    * python-roborock's HealthManager exists for exactly this — "the MQTT
    * connection appears to be alive but no messages are being received" — and
@@ -3343,6 +3341,18 @@ class Roborock {
         );
       });
     return true;
+  }
+
+  /**
+   * One request outcome on one transport, for the hourly summary.
+   *
+   * @param {string} duid
+   * @param {"local" | "cloud"} transport
+   * @param {import("./lib/transportTally").Outcome} outcome
+   * @returns {void}
+   */
+  noteTransportOutcome(duid, transport, outcome) {
+    this.transportTally.note(duid, transport, outcome);
   }
 
   /**
@@ -3523,7 +3533,7 @@ class Roborock {
     }
 
     this.log.info(
-      `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. This is the robot or the Roborock cloud declining to reply, not a connection failure — those are reported separately.${verdict}`
+      `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. Each of those requests went out on a connection that stayed up until it timed out, so this is the robot or the Roborock cloud not replying, not a connection failure — those are reported separately.${verdict}`
     );
     return true;
   }
@@ -3611,63 +3621,6 @@ class Roborock {
       isRemote: true,
       remoteReason,
     });
-  }
-
-  /**
-   * A local reply arrived, so the socket is not mute. Called from the one place
-   * a local response lands, so the count measures the socket's current silence
-   * rather than its history.
-   *
-   * @param {string} duid
-   * @returns {void}
-   */
-  noteLocalRequestSucceeded(duid) {
-    if (!duid) {
-      return;
-    }
-
-    this.localMuteTimeouts.delete(duid);
-  }
-
-  /**
-   * A local request timed out on a socket that reported itself connected. After
-   * LOCAL_MUTE_TIMEOUT_LIMIT of those in a row the LAN is written off for this
-   * robot and the cloud is used instead, because the alternative is paying the
-   * full timeout on every poll and every command for the life of the process.
-   *
-   * @param {string} duid
-   * @param {string} [method] the request that died, for the log line
-   * @returns {Promise<void>}
-   */
-  async noteLocalRequestTimedOut(duid, method) {
-    if (!duid) {
-      return;
-    }
-
-    const failures = (this.localMuteTimeouts.get(duid) || 0) + 1;
-    this.localMuteTimeouts.set(duid, failures);
-
-    if (failures < LOCAL_MUTE_TIMEOUT_LIMIT) {
-      return;
-    }
-
-    // Already written off: say it once, then stay quiet. The timeouts keep
-    // coming until something upstream changes, and a warning per poll would
-    // bury the one line that explains the switch.
-    if (this.remoteDevices.has(duid)) {
-      return;
-    }
-
-    this.log.warn(
-      `The local connection to ${this.describeDevice(duid)} connected but answered nothing: ` +
-        `${failures} requests in a row timed out${method ? ` (last: ${method})` : ""}. ` +
-        `Using the Roborock cloud for this robot instead. The LAN port is reachable, ` +
-        `so this is not a blocked port — the robot is not replying on it. On a segmented ` +
-        `network, check that the reply path back to Homebridge is open, not just the ` +
-        `outbound one.`
-    );
-
-    await this.markDeviceRemote(duid, LOCAL_MUTE_REMOTE_REASON);
   }
 
   /**
@@ -4511,8 +4464,6 @@ class Roborock {
       if (waitForResult) {
         await commandPromise;
       }
-    } else if (command === "get_photo") {
-      this.vacuums[duid].getParameter(duid, "get_photo", parameters);
     } else {
       this.log.warn(`Command ${command} not found.`);
     }
@@ -4716,7 +4667,7 @@ class Roborock {
         suppressedAttributes: {},
       });
 
-      const throttleNote = ` Future transient ${kind} warnings for this robot will be logged at most once every ${this.formatThrottleDuration(this.errorLogThrottleMs)}.`;
+      const throttleNote = ` Future transient ${kind} warnings for this robot will be logged at most once every ${this.formatThrottleDuration(this.errorLogThrottleMs)}; an hourly line counts every request per transport.`;
       const summaryNote =
         suppressedCount > 0
           ? ` ${suppressedCount} similar warning(s) across ${this.formatSuppressedAttributes(suppressedAttributes)} were suppressed.`

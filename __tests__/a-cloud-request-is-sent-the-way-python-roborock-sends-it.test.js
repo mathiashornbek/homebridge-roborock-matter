@@ -60,6 +60,61 @@ test("the map request payload is python-roborock's, character for character", as
   }
 });
 
+// python-roborock's MQTT strategy encodes EVERY V1 request with its security
+// data (devices/rpc/v1_channel.py `_create_mqtt_rpc_strategy`), not only the
+// map requests; its local strategy encodes none. Produced by python-roborock
+// 7.13.0:
+//
+//   RequestMessage("get_prop", params=["get_status"], timestamp=1790000000,
+//     request_id=7143)._as_payload(security_data=SecurityData(
+//     endpoint="ENDPOINT", nonce=bytes.fromhex("00112233445566778899aabbccddeeff")))
+const PYTHON_ROBOROCK_STATUS_PAYLOAD =
+  '{"dps":{"101":"{\\"id\\":7143,\\"method\\":\\"get_prop\\",\\"params\\":[\\"get_status\\"],\\"security\\":{\\"endpoint\\":\\"ENDPOINT\\",\\"nonce\\":\\"00112233445566778899aabbccddeeff\\"}}"},"t":1790000000}';
+
+describe("an ordinary request carries the security block over the cloud only", () => {
+  const adapter = {
+    nonce: Buffer.from("00112233445566778899aabbccddeeff", "hex"),
+    rr_mqtt_connector: { getEndpoint: () => "ENDPOINT" },
+    getRobotVersion: async () => "1.0",
+    log: { debug() {}, info() {}, warn() {}, error() {} },
+  };
+
+  beforeEach(() => jest.useFakeTimers({ now: 1790000000 * 1000 }));
+  afterEach(() => jest.useRealTimers());
+
+  test("over MQTT, a status read is python-roborock's, character for character", async () => {
+    const payload = await new message(adapter).buildPayload(
+      "duid",
+      101,
+      7143,
+      "get_prop",
+      ["get_status"],
+      false,
+      false
+    );
+
+    expect(payload).toBe(PYTHON_ROBOROCK_STATUS_PAYLOAD);
+  });
+
+  test("over the LAN it carries none", async () => {
+    const payload = await new message(adapter).buildPayload(
+      "duid",
+      4,
+      7143,
+      "get_prop",
+      ["get_status"],
+      false,
+      false
+    );
+
+    expect(JSON.parse(JSON.parse(payload).dps["101"])).toEqual({
+      id: 7143,
+      method: "get_prop",
+      params: ["get_status"],
+    });
+  });
+});
+
 test("every request is published at QoS 0, as python-roborock publishes it", async () => {
   const client = {
     on: jest.fn(),

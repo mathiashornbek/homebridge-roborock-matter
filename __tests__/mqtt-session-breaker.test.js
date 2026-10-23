@@ -228,7 +228,10 @@ test("local failures still count even while cloud correlation exists", async () 
   await establishSilence();
   govern();
   adapter.localConnector.isConnected.mockReturnValue(true);
-  const error = await timeout("robot-a", "get_consumable");
+  // The LAN timeout is retried once over the cloud, which is silent too.
+  const request = await startRequest("robot-a", "get_consumable");
+  await jest.advanceTimersByTimeAsync(20_000);
+  const error = await request.result;
   expect(error.message).toContain("Local request");
   expect(snapshot().correlatedSilenceObserved).toBe(true);
   expect(isUnansweredRequest(error)).toBe(true);
@@ -256,8 +259,12 @@ test("a previous-generation read cannot inherit new-generation silence", async (
   await jest.advanceTimersByTimeAsync(30_000);
   const error = await old.result;
   expect(snapshot().correlatedSilenceObserved).toBe(true);
-  expect(isUnansweredRequest(error)).toBe(true);
-  expect(outcomes.at(-1).counted).toBe(true);
+  expect(error.accountSessionWasSilent).not.toBe(true);
+  // Nor is it counted: it went out on a link that is gone, which says
+  // nothing about the robot (transport artefacts never count).
+  expect(error.transportWasUp).toBe(false);
+  expect(isUnansweredRequest(error)).toBe(false);
+  expect(outcomes.at(-1).counted).toBe(false);
 });
 
 test("a read with inbound activity cannot inherit later silence on other reads", async () => {
@@ -353,8 +360,11 @@ test.each(["robot-a", "robot-b"])(
     await timeout("robot-a", "get_consumable");
     await timeout("robot-a", "get_consumable");
     const error = await timeout(thirdRobot, "get_consumable");
-    expect(mockClient.endAsync).toHaveBeenCalledTimes(1);
-    expect(mockClient.reconnect).toHaveBeenCalledTimes(1);
+    // A fresh session: this client ended, a new one after the back-off,
+    // never reconnect() on the old one.
+    expect(mockClient.end).toHaveBeenCalledTimes(1);
+    expect(mockClient.end).toHaveBeenCalledWith(true);
+    expect(mockClient.reconnect).not.toHaveBeenCalled();
     expect(outcomes).toHaveLength(3);
     expect(outcomes.filter((outcome) => outcome.counted)).toHaveLength(
       thirdRobot === "robot-b" ? 2 : 3
@@ -363,10 +373,12 @@ test.each(["robot-a", "robot-b"])(
       thirdRobot === "robot-b"
     );
 
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(require("mqtt").connect).toHaveBeenCalledTimes(2);
     mockHandlers.get("connect")({ sessionPresent: false });
     acknowledge();
     await timeout("robot-a", "get_consumable");
-    expect(mockClient.reconnect).toHaveBeenCalledTimes(1);
+    expect(require("mqtt").connect).toHaveBeenCalledTimes(2);
     expect(outcomes).toHaveLength(4);
     expect(outcomes.at(-1).counted).toBe(true);
   }

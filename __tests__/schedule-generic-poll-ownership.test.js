@@ -42,7 +42,7 @@ describe("generic timer poll ownership", () => {
     );
     const legacyTimerBranch = branchBetween(
       '} else if (parameter == "get_timer") {',
-      '} else if (parameter == "get_photo") {'
+      'parameter == "get_dust_collection_switch_status"'
     );
 
     for (const branch of [serverTimerBranch, legacyTimerBranch]) {
@@ -70,7 +70,7 @@ describe("generic timer poll ownership", () => {
   test("the cloud schedule probe rides inside the debug-gated timer branch", () => {
     const legacyTimerBranch = branchBetween(
       '} else if (parameter == "get_timer") {',
-      '} else if (parameter == "get_photo") {'
+      'parameter == "get_dust_collection_switch_status"'
     );
 
     expect(legacyTimerBranch).toContain(
@@ -86,7 +86,7 @@ describe("generic timer poll ownership", () => {
   test("the probe cannot fail the poll it rides on", () => {
     const legacyTimerBranch = branchBetween(
       '} else if (parameter == "get_timer") {',
-      '} else if (parameter == "get_photo") {'
+      'parameter == "get_dust_collection_switch_status"'
     );
 
     expect(legacyTimerBranch).toMatch(

@@ -1,7 +1,5 @@
 const {
-  parsePhotoPayload,
   parseProtocol301Header,
-  payloadStartsWith,
 } = require("../roborockLib/lib/roborock_mqtt_connector");
 
 describe("Roborock MQTT connector payload parsing", () => {
@@ -22,21 +20,6 @@ describe("Roborock MQTT connector payload parsing", () => {
         endpoint: "endpoint",
         id: 42,
       })
-    );
-  });
-
-  test("does not parse truncated Roborock photo headers", () => {
-    expect(parsePhotoPayload(Buffer.from("ROBOROC"))).toBeNull();
-    expect(parsePhotoPayload(Buffer.from("ROBOROCK"))).toBeNull();
-    expect(parsePhotoPayload(Buffer.from("not-photo"))).toBeNull();
-  });
-
-  test("recognizes payload prefixes without relying on Buffer coercion", () => {
-    expect(payloadStartsWith(Buffer.from("ROBOROCK-data"), "ROBOROCK")).toBe(
-      true
-    );
-    expect(payloadStartsWith(Buffer.from("OTHER-data"), "ROBOROCK")).toBe(
-      false
     );
   });
 });

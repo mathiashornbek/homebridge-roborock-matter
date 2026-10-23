@@ -566,7 +566,8 @@ test("a disconnected request timeout does not claim a subscription is unacknowle
 
 test("automatic resubscribe restores silence observations without callback grants", async () => {
   mockHandlers.get("close")();
-  mockHandlers.get("reconnect")();
+  // The connector builds the next client after its 10 s back-off.
+  await jest.advanceTimersByTimeAsync(10_000);
   mockHandlers.get("connect")({ sessionPresent: false });
   expect(snapshot().subscriptionAcknowledged).toBe(false);
   acknowledge();
@@ -603,11 +604,13 @@ test("packets received while disconnected cannot acknowledge a session", () => {
 });
 
 test.each(["before-connect", "after-connect", "after-connect-suback"])(
-  "reconnect SUBACK %s cannot acknowledge or revoke the connect generation",
+  "a previous connection's SUBACK %s cannot acknowledge or revoke the connect generation",
   (order) => {
-    mockHandlers.get("close")();
-    mockHandlers.get("reconnect")();
+    // The subscribe callback of the connection that just closed.
     const legacy = mockSubscriptions.at(-1);
+    mockHandlers.get("close")();
+    // The connector builds the next client after its 10 s back-off.
+    jest.advanceTimersByTime(10_000);
     if (order === "before-connect") legacy(null, [{ qos: 1 }]);
     expect(snapshot().subscriptionAcknowledged).toBe(false);
     mockHandlers.get("connect")({ sessionPresent: true });
@@ -623,7 +626,8 @@ test.each(["before-connect", "after-connect", "after-connect-suback"])(
       generation: 2,
       subscriptionAcknowledged: true,
     });
-    expect(mockClient.subscribe).toHaveBeenCalledTimes(3);
+    // One SUBSCRIBE per connection.
+    expect(mockClient.subscribe).toHaveBeenCalledTimes(2);
   }
 );
 

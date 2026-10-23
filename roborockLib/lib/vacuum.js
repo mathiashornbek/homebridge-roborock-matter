@@ -3,7 +3,6 @@
 const rrMessage = require("./message").message;
 const RRMapParser = require("./RRMapParser");
 const fs = require("fs");
-const zlib = require("zlib");
 const { describeDevice } = require("./describeDevice");
 const { isKnownStatusAttribute } = require("./deviceFeatures");
 
@@ -546,20 +545,14 @@ class vacuum {
      * @param {string} method
      * @param {unknown} params
      * @param {boolean} [secure]
-     * @param {boolean} [photo]
      */
-    const sendParameterRequest = (
-      method,
-      params,
-      secure = false,
-      photo = false
-    ) =>
+    const sendParameterRequest = (method, params, secure = false) =>
       this.adapter.messageQueueHandler.sendRequest(
         duid,
         method,
         params,
         secure,
-        photo,
+        false,
         requestOptions
       );
 
@@ -1099,42 +1092,6 @@ class vacuum {
             );
           }
         }
-      } else if (parameter == "get_photo") {
-        const photoresponse = await sendParameterRequest(
-          "get_photo",
-          attribute,
-          true,
-          true
-        );
-
-        if (this.isGZIP(photoresponse)) {
-          this.adapter.log.debug(`gzipped photo found.`);
-          this.adapter.log.debug(JSON.stringify(photoresponse));
-
-          this.unzipBuffer(photoresponse, (error, photoData) => {
-            if (error) {
-              this.adapter.catchError(
-                error,
-                "get_photo",
-                duid,
-                this.robotModel
-              );
-            } else {
-              const extractedPhoto = this.extractPhoto(photoData);
-
-              if (extractedPhoto) {
-                const photo = {};
-                photo.duid = duid;
-                photo.command = "get_photo";
-                photo.image = `data:image/jpeg;base64,${extractedPhoto.toString("base64")}`;
-
-                if (this.adapter.socket) {
-                  this.adapter.socket.send(JSON.stringify(photo));
-                }
-              }
-            }
-          });
-        }
       } else if (
         parameter == "get_dust_collection_switch_status" ||
         parameter == "get_wash_towel_mode" ||
@@ -1225,39 +1182,6 @@ class vacuum {
       clearWaterBoxStatus: (dss >> 2) & 0b11,
       isUpdownWaterReady: dss & 0b11,
     };
-  }
-
-  unzipBuffer(buffer, callback) {
-    zlib.gunzip(buffer, callback);
-  }
-
-  isGZIP(buffer) {
-    return buffer.length >= 2 && buffer[0] == 31 && buffer[1] == 139;
-  }
-  extractPhoto(buffer) {
-    // Verify that the buffer is long enough to hold the header
-    if (buffer.length < 10) {
-      return false;
-    }
-
-    // Check the signature
-    if (
-      buffer[26] == 74 &&
-      buffer[27] == 70 &&
-      buffer[28] == 73 &&
-      buffer[29] == 70
-    ) {
-      return buffer.slice(20);
-    } else if (
-      buffer[42] == 74 &&
-      buffer[43] == 70 &&
-      buffer[44] == 73 &&
-      buffer[45] == 70
-    ) {
-      return buffer.slice(36);
-    }
-
-    return false;
   }
 }
 

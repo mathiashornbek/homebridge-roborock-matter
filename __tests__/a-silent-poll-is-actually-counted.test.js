@@ -261,8 +261,10 @@ describe("the message layer really does report both outcomes", () => {
   );
 
   test("a timeout tells the register", () => {
+    // Once per request, with its final outcome: a LAN timeout that the cloud
+    // retry then answers was answered.
     const arms = source.match(/noteRequestUnanswered\?\.\(/g) || [];
-    expect(arms.length).toBe(2); // cloud and local
+    expect(arms.length).toBe(1);
   });
 
   test("a reply tells the register", () => {
@@ -274,7 +276,8 @@ describe("the message layer really does report both outcomes", () => {
     // consecutive transport exclusions dead code.
     expect(source).toMatch(/unansweredRequestError\(/);
     expect(source).toMatch(/isConnected\?\.\(\)/);
-    expect(source).toMatch(/isConnected\?\.\(duid\)/);
+    // The LAN asks the socket the request was written on.
+    expect(source).toMatch(/handle \? handle\.isUp\(\) : false/);
   });
 
   test("pollParameter no longer pretends to observe the outcome", () => {

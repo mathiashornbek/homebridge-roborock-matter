@@ -14,14 +14,30 @@ const {
 
 const PORT = 58866;
 const TIMEOUT = 5000; // 5 Sekunden Timeout
-const LOCAL_RECONNECT_DELAY_MS = 60000;
 const LOCAL_CONNECT_TIMEOUT_MS = 4000;
-// A failed connect attempt now re-arms itself, so the delay has to grow: a
-// robot that is unplugged for a week must not be probed every minute for a
-// week. Doubling from LOCAL_RECONNECT_DELAY_MS keeps the first retries
-// responsive (60s, 2m, 4m, 8m) and the cap keeps a permanently absent robot
-// down to four probes an hour.
-const LOCAL_RECONNECT_MAX_DELAY_MS = 900000;
+// python-roborock's local reconnect policy (devices/rpc/v1_channel.py): the
+// first attempt after a loss at once, then MIN_RECONNECT_INTERVAL growing by
+// RECONNECT_MULTIPLIER up to MAX_RECONNECT_INTERVAL, starting over once the
+// robot answers again. A robot unplugged for a week is probed six times an
+// hour, not every minute.
+const LOCAL_RECONNECT_DELAY_MS = 60000;
+const LOCAL_RECONNECT_MULTIPLIER = 1.5;
+const LOCAL_RECONNECT_MAX_DELAY_MS = 600000;
+// python-roborock checks its local connection every 15 s
+// (LOCAL_CONNECTION_CHECK_INTERVAL), so its "at once" is never sooner than
+// that after the previous connect. Kept as a floor between two connects, so a
+// robot that accepts and immediately closes cannot be reconnected in a loop.
+const LOCAL_CONNECT_MIN_GAP_MS = 15000;
+// python-roborock's keep-alive (devices/transport/local_channel.py): a
+// header-only PING_REQUEST every `_PING_INTERVAL`, answered within `_TIMEOUT`.
+const PING_INTERVAL_MS = 10000;
+const PING_TIMEOUT_MS = 5000;
+// A socket that leaves this many probes in a row unanswered — keep-alive pings
+// of a robot known to answer them, or requests — is closed and reconnected.
+// One is noise: a single lost frame on a healthy LAN is ordinary.
+const LOCAL_MUTE_TIMEOUT_LIMIT = 3;
+// The transport reason recorded when that happens.
+const LOCAL_MUTE_REMOTE_REASON = "local-socket-connected-but-mute";
 
 // Upper bound for a plausible local TCP frame. Everything the robot sends over
 // the LAN socket is a single Roborock message: a 19 byte header, an AES
@@ -107,6 +123,7 @@ const shortMessageParser = new Parser()
  */
 const HELLO_REQUEST = 0;
 const HELLO_RESPONSE = 1;
+const PING_REQUEST = 2;
 const PING_RESPONSE = 3;
 /** python-roborock's `_TIMEOUT` for each hello attempt. */
 const HELLO_TIMEOUT_MS = 5000;
@@ -116,10 +133,33 @@ const NEGOTIABLE_LOCAL_VERSIONS = ["1.0", "L01"];
 const LOCAL_REPLY_PROTOCOLS = new Set([4, 5, 102]);
 
 /**
- * A hello request frame, byte for byte as python-roborock builds one:
- * version, seq 1, random = our connect nonce, timestamp, protocol 0, no
- * payload (so no length field), CRC32 over all of that. 21 bytes, behind the
- * usual 4-byte length prefix.
+ * A frame with no payload, byte for byte as python-roborock's local encoder
+ * builds one: version, seq, random, timestamp, protocol, no payload (so no
+ * length field), CRC32 over all of that. 21 bytes, behind the usual 4-byte
+ * length prefix.
+ *
+ * @param {string} version "1.0" or "L01"
+ * @param {number} seq
+ * @param {number} random
+ * @param {number} timestamp seconds
+ * @param {number} protocol
+ * @returns {Buffer}
+ */
+function buildHeaderOnlyFrame(version, seq, random, timestamp, protocol) {
+  const body = Buffer.alloc(21);
+  body.write(version, 0, "latin1");
+  body.writeUInt32BE(seq >>> 0, 3);
+  body.writeUInt32BE(random >>> 0, 7);
+  body.writeUInt32BE(timestamp >>> 0, 11);
+  body.writeUInt16BE(protocol, 15);
+  body.writeUInt32BE(CRC32.buf(body.subarray(0, 17)) >>> 0, 17);
+  const prefix = Buffer.alloc(4);
+  prefix.writeUInt32BE(body.length, 0);
+  return Buffer.concat([prefix, body]);
+}
+
+/**
+ * The hello: seq 1, random = our connect nonce, protocol 0.
  *
  * @param {string} version "1.0" or "L01"
  * @param {number} connectNonce
@@ -127,16 +167,27 @@ const LOCAL_REPLY_PROTOCOLS = new Set([4, 5, 102]);
  * @returns {Buffer}
  */
 function buildHelloFrame(version, connectNonce, timestamp) {
-  const body = Buffer.alloc(21);
-  body.write(version, 0, "latin1");
-  body.writeUInt32BE(1, 3);
-  body.writeUInt32BE(connectNonce >>> 0, 7);
-  body.writeUInt32BE(timestamp >>> 0, 11);
-  body.writeUInt16BE(HELLO_REQUEST, 15);
-  body.writeUInt32BE(CRC32.buf(body.subarray(0, 17)) >>> 0, 17);
-  const prefix = Buffer.alloc(4);
-  prefix.writeUInt32BE(body.length, 0);
-  return Buffer.concat([prefix, body]);
+  return buildHeaderOnlyFrame(
+    version,
+    1,
+    connectNonce,
+    timestamp,
+    HELLO_REQUEST
+  );
+}
+
+/**
+ * The keep-alive ping: protocol 2; the robot answers protocol 3 with the
+ * same seq.
+ *
+ * @param {string} version
+ * @param {number} seq
+ * @param {number} random
+ * @param {number} timestamp seconds
+ * @returns {Buffer}
+ */
+function buildPingFrame(version, seq, random, timestamp) {
+  return buildHeaderOnlyFrame(version, seq, random, timestamp, PING_REQUEST);
 }
 
 class localConnector {
@@ -178,9 +229,32 @@ class localConnector {
     this.reportedNegotiations = new Map();
     this.reconnectTimers = new Map();
     this.connectPromises = new Map();
-    // Consecutive failed local connects per duid, used to back the retry delay
-    // off. Reset the moment a connect succeeds.
+    /**
+     * Requests written on a socket and not yet answered, per robot, so that
+     * the moment their socket goes they can be retried instead of waiting
+     * out a timeout on a socket already known to be closed.
+     * @type {Map<string, Set<{client: any, onLost: (cause: string) => void}>>}
+     */
+    this.inFlight = new Map();
+    // Consecutive reconnects per duid since the robot last answered, used to
+    // back the retry delay off. Reset the moment the robot answers on a
+    // socket (python-roborock resets once connect + hello succeed).
     this.reconnectAttempts = new Map();
+    /** @type {Map<string, number>} when each robot's last connect started */
+    this.lastConnectAttemptAt = new Map();
+    /** Keep-alive ping counters, in python-roborock's `get_next_int` ranges. */
+    this.pingCounter = 0;
+    /** Robots seen answering a keep-alive ping, whose missed pings count. */
+    this.answersPings = new Set();
+    /** Robots that have answered anything on the LAN in this process. */
+    this.everHeard = new Set();
+    /**
+     * Robots whose last socket was closed for not answering. Until a socket
+     * answers again, a new one is not used for requests, and one whose hello
+     * goes unanswered is closed — python-roborock's rule for every socket.
+     * @type {Set<string>}
+     */
+    this.requireHello = new Set();
     /**
      * The discovery pass currently listening, if any. See getLocalDevices for
      * why there can only be one.
@@ -200,17 +274,24 @@ class localConnector {
   }
 
   /**
-   * Delay before the next reconnect for `duid`, growing with the number of
-   * consecutive failures. The first retry after a healthy connection is still
-   * LOCAL_RECONNECT_DELAY_MS, because a successful connect zeroes the counter.
+   * Delay before the next reconnect for `duid`, python-roborock's way: the
+   * first attempt after the robot last answered at once (but not within
+   * LOCAL_CONNECT_MIN_GAP_MS of the previous connect), then 60 s growing by
+   * 1.5 up to 10 minutes.
    * @param {string} duid
    * @returns {number}
    */
   nextReconnectDelay(duid) {
     const attempt = (this.reconnectAttempts.get(duid) || 0) + 1;
     this.reconnectAttempts.set(duid, attempt);
+    if (attempt === 1) {
+      const sinceLastConnect =
+        Date.now() - (this.lastConnectAttemptAt.get(duid) ?? 0);
+      return Math.max(0, LOCAL_CONNECT_MIN_GAP_MS - sinceLastConnect);
+    }
     return Math.min(
-      LOCAL_RECONNECT_DELAY_MS * Math.pow(2, attempt - 1),
+      LOCAL_RECONNECT_DELAY_MS *
+        Math.pow(LOCAL_RECONNECT_MULTIPLIER, attempt - 2),
       LOCAL_RECONNECT_MAX_DELAY_MS
     );
   }
@@ -399,7 +480,9 @@ class localConnector {
     delete this.localClients[duid];
 
     this.forgetNegotiation(duid);
+    this.stopKeepAlive(client);
     client.destroy();
+    this.failInFlight(duid, client, "the plugin reset the local connection");
     await this.adapter.updateTransportDiagnostics(duid, {
       tcpConnectionState: "disconnected",
       lastTransport: "cloud",
@@ -408,9 +491,6 @@ class localConnector {
   }
 
   async markLocalConnected(duid) {
-    // The robot answered, so the back-off starts over for the next outage.
-    this.reconnectAttempts.delete(duid);
-
     if (this.adapter.clearRemoteDevice(duid)) {
       this.adapter.log.debug(
         `Local TCP connected for ${duid}; clearing remote fallback marker.`
@@ -418,7 +498,11 @@ class localConnector {
     }
 
     await this.adapter.updateTransportDiagnostics(duid, {
-      tcpConnectionState: "connected",
+      // After a socket was closed for silence, the new one is not called
+      // connected until the robot answers on it (noteHeard).
+      tcpConnectionState: this.requireHello.has(duid)
+        ? "verifying"
+        : "connected",
       isRemote: false,
       remoteReason: null,
       lastTransport: "local",
@@ -463,6 +547,7 @@ class localConnector {
     if (existingClient?.connected || existingClient?.connecting) {
       return;
     }
+    this.lastConnectAttemptAt.set(duid, Date.now());
 
     const client = new EnhancedSocket();
     await this.adapter.updateTransportDiagnostics(duid, {
@@ -537,24 +622,58 @@ class localConnector {
       this.handleLocalData(duid, client, message);
     });
 
-    client.on("close", () => {
+    // Whichever of these comes first says why the socket went; every request
+    // still waiting on it is handed back at once (see writeRequest).
+    client.on("end", () => {
+      this.stopKeepAlive(client);
+      this.failInFlight(duid, client, "the robot closed the connection");
+    });
+
+    // Also what dropUnanswered runs, so a socket closed for silence is
+    // reconnected even if its 'close' never comes.
+    client.retire = () => {
+      this.stopKeepAlive(client);
+      this.failInFlight(
+        duid,
+        client,
+        client.closeCause === "unanswered"
+          ? "the plugin closed it because the robot stopped answering"
+          : "the connection closed"
+      );
+      if (client.retired) {
+        return;
+      }
+      client.retired = true;
+      client.connected = false;
       if (this.localClients[duid] !== client) {
         return;
       }
+      this.adapter.noteTransportOutcome?.(duid, "local", "socketClosed");
       this.adapter.log.debug(
         `tcp client for ${duid} disconnected, attempting to reconnect...`
       );
-      this.adapter.updateTransportDiagnostics(duid, {
-        tcpConnectionState: "disconnected",
-        lastTransport: "cloud",
-        lastTransportReason: "tcp-disconnected",
-      });
+      this.adapter.updateTransportDiagnostics(
+        duid,
+        client.closeCause === "unanswered"
+          ? {
+              tcpConnectionState: "unanswered",
+              lastTransport: "cloud",
+              lastTransportReason: LOCAL_MUTE_REMOTE_REASON,
+            }
+          : {
+              tcpConnectionState: "disconnected",
+              lastTransport: "cloud",
+              lastTransportReason: "tcp-disconnected",
+            }
+      );
       this.forgetNegotiation(duid);
       this.scheduleReconnect(duid, ip, this.nextReconnectDelay(duid));
-      client.connected = false;
-    });
+    };
+    client.on("close", () => client.retire());
 
     client.on("error", (error) => {
+      this.stopKeepAlive(client);
+      this.failInFlight(duid, client, error.code || error.message);
       this.adapter.log.debug(
         `error on tcp client for ${duid}. ${error.message}`
       );
@@ -571,11 +690,28 @@ class localConnector {
       // attached — the answer has to land somewhere. Every local request
       // awaits it (awaitLocalNegotiation), so nothing goes out on the socket
       // before the robot has said which protocol it speaks.
-      this.negotiateLocalProtocol(duid).catch((error) => {
-        this.adapter.log.debug(
-          `Local hello on connect failed for ${duid}: ${error?.message || error}`
-        );
-      });
+      // The keep-alive starts once the hello has settled, as
+      // python-roborock starts its loop right after a successful hello.
+      this.negotiateLocalProtocol(duid)
+        .catch((error) => {
+          this.adapter.log.debug(
+            `Local hello on connect failed for ${duid}: ${error?.message || error}`
+          );
+          return null;
+        })
+        .then((version) => {
+          if (
+            version === null &&
+            this.requireHello.has(duid) &&
+            !client.heard &&
+            this.localClients[duid] === client &&
+            client.connected
+          ) {
+            this.dropUnanswered(duid, client, "the hello");
+            return;
+          }
+          this.startKeepAlive(duid, client);
+        });
     }
 
     if (connectFailed) {
@@ -604,6 +740,7 @@ class localConnector {
    * @param {Buffer} message
    */
   handleLocalData(duid, client, message) {
+    this.noteHeard(duid, client);
     try {
       if (client.chunkBuffer.length == 0) {
         this.adapter.log.debug(`new chunk started`);
@@ -653,7 +790,12 @@ class localConnector {
           offset += 4 + segmentLength;
 
           try {
-            this.processLocalSegment(duid, segmentLength, currentBuffer);
+            this.processLocalSegment(
+              duid,
+              segmentLength,
+              currentBuffer,
+              client
+            );
           } catch (error) {
             // One frame the robot sent in a shape we cannot read (a payload
             // that is not JSON after decryption, a dps["102"] with unexpected
@@ -700,8 +842,14 @@ class localConnector {
    * @param {string} duid
    * @param {number} segmentLength
    * @param {Buffer} currentBuffer
+   * @param {any} [client] the socket it arrived on
    */
-  processLocalSegment(duid, segmentLength, currentBuffer) {
+  processLocalSegment(
+    duid,
+    segmentLength,
+    currentBuffer,
+    client = this.localClients[duid]
+  ) {
     // A hello or ping answer: a bare header (17 bytes), or a header with a
     // CRC (21). It carries no payload, so it is settled here and never
     // decoded. Until 3.36.0 only an L01 hello answer was recognised, and only
@@ -714,6 +862,7 @@ class localConnector {
           return;
         }
         if (shortMessage.protocol === PING_RESPONSE) {
+          this.settlePing(duid, client, shortMessage.seq);
           return;
         }
       } catch (error) {
@@ -770,12 +919,6 @@ class localConnector {
         this.adapter.pendingRequests.get(id);
       this.adapter.clearTimeout(timeout);
       this.adapter.pendingRequests.delete(id);
-      // Proof that this socket is not mute, so any run of timeouts counted
-      // against it starts over. A refusal still proves the socket answers —
-      // it is the request that failed, not the transport.
-      if (this.adapter.noteLocalRequestSucceeded) {
-        this.adapter.noteLocalRequestSucceeded(duid);
-      }
       if (refusal && typeof reject === "function") {
         reject(
           createRefusalError(
@@ -845,16 +988,6 @@ class localConnector {
     return { status: "complete", consumed: offset, declaredLength: 0 };
   }
 
-  checkComplete(buffer) {
-    return this.scanChunkBuffer(buffer).status == "complete";
-  }
-
-  clearChunkBuffer(duid) {
-    if (this.localClients[duid]) {
-      this.localClients[duid].chunkBuffer = Buffer.alloc(0);
-    }
-  }
-
   sendMessage(duid, message) {
     const client = this.localClients[duid];
     if (client) {
@@ -862,9 +995,293 @@ class localConnector {
     }
   }
 
+  /**
+   * Write a request frame on the robot's current socket and watch that socket
+   * for it: if the socket goes before the reply, `onLost` is called at once
+   * with why, so the request can be retried over the cloud rather than wait
+   * out its timeout on a socket already known to be closed.
+   *
+   * @param {string} duid
+   * @param {Buffer} frame
+   * @param {(cause: string) => void} onLost
+   * @returns {{release: () => void, isUp: () => boolean} | null} null when
+   *   there is no connected socket to write on
+   */
+  writeRequest(duid, frame, onLost) {
+    const client = this.localClients[duid];
+    if (!this.isConnected(duid) || client?.destroyed) {
+      return null;
+    }
+    const entry = { client, onLost };
+    let entries = this.inFlight.get(duid);
+    if (!entries) {
+      entries = new Set();
+      this.inFlight.set(duid, entries);
+    }
+    entries.add(entry);
+    try {
+      this.sendMessage(duid, frame);
+    } catch (error) {
+      entries.delete(entry);
+      this.adapter.log.debug(
+        `Could not write to the local socket for ${duid}: ${error?.message || error}`
+      );
+      return null;
+    }
+    return {
+      release: () => {
+        this.inFlight.get(duid)?.delete(entry);
+      },
+      isUp: () =>
+        this.localClients[duid] === client && Boolean(this.isConnected(duid)),
+      noteUnanswered: (method) =>
+        this.noteUnanswered(duid, client, `the ${method} request`),
+    };
+  }
+
+  /**
+   * The socket went: hand every request still waiting on it back.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} cause
+   * @returns {void}
+   */
+  failInFlight(duid, client, cause) {
+    const entries = this.inFlight.get(duid);
+    if (!entries) {
+      return;
+    }
+    for (const entry of [...entries]) {
+      if (entry.client !== client) {
+        continue;
+      }
+      entries.delete(entry);
+      try {
+        entry.onLost(cause);
+      } catch (error) {
+        this.adapter.log.debug(
+          `Handing back a request lost with the local socket for ${duid} failed: ${error?.message || error}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Whether requests can go to this robot's socket: connected, and — after a
+   * socket was closed for silence — answering again.
+   *
+   * @param {string} duid
+   * @returns {boolean | undefined}
+   */
   isConnected(duid) {
-    if (this.localClients[duid]) {
-      return this.localClients[duid].connected;
+    const client = this.localClients[duid];
+    if (client) {
+      return (
+        client.connected && !(this.requireHello.has(duid) && !client.heard)
+      );
+    }
+  }
+
+  /**
+   * Something arrived on this socket, so it is not dead: its run of
+   * unanswered probes is over, and the reconnect back-off starts over.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @returns {void}
+   */
+  noteHeard(duid, client) {
+    client.unanswered = 0;
+    if (client.heard) {
+      return;
+    }
+    client.heard = true;
+    this.everHeard.add(duid);
+    this.reconnectAttempts.delete(duid);
+    if (this.requireHello.delete(duid) && this.localClients[duid] === client) {
+      this.adapter.log.info(
+        `${describeDevice(this.adapter, duid)} answers on the LAN again; local requests resume.`
+      );
+      void this.adapter.updateTransportDiagnostics(duid, {
+        tcpConnectionState: "connected",
+        lastTransport: "local",
+        lastTransportReason: "tcp-connected",
+      });
+    }
+  }
+
+  /**
+   * The robot left a probe unanswered on this socket while it was up: a
+   * request, or a keep-alive ping of a robot known to answer them. A run of
+   * LOCAL_MUTE_TIMEOUT_LIMIT closes the socket.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} what the probe, for the log line
+   * @returns {void}
+   */
+  noteUnanswered(duid, client, what) {
+    if (this.localClients[duid] !== client || !client?.connected) {
+      return;
+    }
+    client.unanswered = (client.unanswered || 0) + 1;
+    if (client.unanswered >= LOCAL_MUTE_TIMEOUT_LIMIT) {
+      this.dropUnanswered(duid, client, what);
+    }
+  }
+
+  /**
+   * Close a socket the robot has stopped answering on, and reconnect.
+   *
+   * A socket the robot forgot — Wi-Fi blip, AP restart, a roam — stays open
+   * on this side for as long as nothing is written to it. Until 3.39.0 such a
+   * socket marked the robot cloud-only for the life of the process while the
+   * socket itself stayed open, because only a NEW connect cleared the mark.
+   * Now the socket goes, the reconnect decides, and the new socket is used as
+   * soon as the robot answers on it.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} what the last probe that went unanswered
+   * @returns {void}
+   */
+  dropUnanswered(duid, client, what) {
+    const firstOfEpisode = !this.requireHello.has(duid);
+    this.requireHello.add(duid);
+    client.closeCause = "unanswered";
+    const line =
+      `The local connection to ${describeDevice(this.adapter, duid)} stopped answering ` +
+      `(${what} went unanswered${client.unanswered ? `, ${client.unanswered} in a row` : ""}). ` +
+      `The plugin closed it and is reconnecting; until the robot answers on the LAN ` +
+      `again, its requests use the Roborock cloud.` +
+      (this.everHeard.has(duid)
+        ? ""
+        : ` The LAN port is reachable, so this is not a blocked port — the robot is not ` +
+          `replying on it. On a segmented network, check that the reply path back to ` +
+          `Homebridge is open, not just the outbound one.`);
+    (firstOfEpisode ? this.adapter.log.warn : this.adapter.log.debug).call(
+      this.adapter.log,
+      line
+    );
+    try {
+      client.destroy?.();
+    } catch (error) {
+      this.adapter.log.debug(
+        `Closing the local socket for ${duid} failed: ${error?.message || error}`
+      );
+    }
+    client.retire?.();
+  }
+
+  /**
+   * Ping this socket every PING_INTERVAL_MS for as long as it is the robot's
+   * socket, as python-roborock's `_keep_alive_loop` does.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @returns {void}
+   */
+  startKeepAlive(duid, client) {
+    if (
+      client.keepAliveTimer ||
+      this.localClients[duid] !== client ||
+      !client.connected
+    ) {
+      return;
+    }
+    const { setTimer } = getTimerFns(this.adapter);
+    const tick = () => {
+      client.keepAliveTimer = null;
+      if (this.localClients[duid] !== client || !client.connected) {
+        return;
+      }
+      this.sendPing(duid, client);
+      client.keepAliveTimer = setTimer(tick, PING_INTERVAL_MS);
+    };
+    client.keepAliveTimer = setTimer(tick, PING_INTERVAL_MS);
+  }
+
+  /** @param {any} client @returns {void} */
+  stopKeepAlive(client) {
+    if (!client) {
+      return;
+    }
+    const { clearTimer } = getTimerFns(this.adapter);
+    if (client.keepAliveTimer) {
+      clearTimer(client.keepAliveTimer);
+      client.keepAliveTimer = null;
+    }
+    if (client.pingWaiter) {
+      clearTimer(client.pingWaiter.timeout);
+      client.pingWaiter = null;
+    }
+  }
+
+  /**
+   * One header-only ping, in the version the hello agreed ("1.0" when none
+   * did, as python-roborock defaults), answered within PING_TIMEOUT_MS.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @returns {void}
+   */
+  sendPing(duid, client) {
+    if (client.pingWaiter) {
+      return;
+    }
+    this.pingCounter += 1;
+    const seq = 100000 + (this.pingCounter % 900000);
+    const random = 10000 + (this.pingCounter % 90000);
+    const version = this.negotiatedVersions.get(duid) || "1.0";
+    const { setTimer } = getTimerFns(this.adapter);
+    client.pingWaiter = {
+      seq,
+      timeout: setTimer(() => {
+        client.pingWaiter = null;
+        this.notePingMissed(duid, client);
+      }, PING_TIMEOUT_MS),
+    };
+    try {
+      client.write(
+        buildPingFrame(version, seq, random, Math.floor(Date.now() / 1000))
+      );
+    } catch (error) {
+      this.adapter.log.debug(
+        `Could not send the local keep-alive ping to ${duid}: ${error?.message || error}`
+      );
+    }
+  }
+
+  /**
+   * @param {string} duid
+   * @param {any} client
+   * @param {number} seq
+   * @returns {void}
+   */
+  settlePing(duid, client, seq) {
+    const waiter = client?.pingWaiter;
+    if (!waiter || waiter.seq !== seq) {
+      return;
+    }
+    getTimerFns(this.adapter).clearTimer(waiter.timeout);
+    client.pingWaiter = null;
+    this.answersPings.add(duid);
+  }
+
+  /**
+   * @param {string} duid
+   * @param {any} client
+   * @returns {void}
+   */
+  notePingMissed(duid, client) {
+    this.adapter.log.debug(
+      `Keep-alive ping to ${describeDevice(this.adapter, duid)} went unanswered for ${PING_TIMEOUT_MS / 1000} seconds.`
+    );
+    // A robot that has never answered a ping may just not speak it; only a
+    // robot known to answer them is judged by them.
+    if (this.answersPings.has(duid)) {
+      this.noteUnanswered(duid, client, "a keep-alive ping");
     }
   }
 
@@ -1341,6 +1758,9 @@ class localConnector {
       this.clearReconnectTimer(duid);
     }
     this.reconnectAttempts.clear();
+    for (const client of Object.values(this.localClients)) {
+      this.stopKeepAlive(client);
+    }
   }
 
   /**
@@ -1363,6 +1783,7 @@ class localConnector {
       const client = this.localClients[duid];
       delete this.localClients[duid];
       this.forgetNegotiation(duid);
+      this.stopKeepAlive(client);
       try {
         client?.removeAllListeners?.();
         client?.destroy?.();
@@ -1382,4 +1803,8 @@ class localConnector {
 module.exports = {
   localConnector,
   buildHelloFrame,
+  buildPingFrame,
+  PING_INTERVAL_MS,
+  LOCAL_MUTE_TIMEOUT_LIMIT,
+  LOCAL_MUTE_REMOTE_REASON,
 };

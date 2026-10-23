@@ -29,6 +29,10 @@
  * Passing `force` is the whole fix. There is never a reason to wait for a
  * queue to drain over a connection we have already concluded is dead — that
  * is the only situation in which this function is called.
+ *
+ * A session restart no longer calls `reconnect()` on the same client at all:
+ * it ends the client (forced) and builds a new one after the back-off, as
+ * python-roborock does. Ending is still forced, and still must never wait.
  */
 
 "use strict";
@@ -118,39 +122,52 @@ function makeClient({ outgoingMessages = 1 } = {}) {
 }
 
 describe("a reconnect does not wait for a dead link", () => {
+  beforeEach(() => jest.useFakeTimers());
   afterEach(() => {
     jest.clearAllMocks();
+    jest.useRealTimers();
   });
 
-  test("tears the client down even when the outgoing queue can never drain", async () => {
+  test("tears the client down even when the outgoing queue can never drain, and a new one follows", async () => {
     const client = makeClient({ outgoingMessages: 3 });
-    mqtt.connect.mockReturnValue(client);
+    const next = makeClient();
+    mqtt.connect.mockReturnValueOnce(client).mockReturnValueOnce(next);
 
     const connector = new roborock_mqtt_connector(makeAdapter());
     await connector.initUser(USERDATA);
 
-    await connector.reconnectClient(true);
+    await expect(connector.reconnectClient(true)).resolves.toBe(true);
 
     expect(client.stillWaitingToDrain).toBe(false);
     expect(client.tornDown).toBe(true);
-    expect(client.reconnectCalls).toBe(1);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(mqtt.connect).toHaveBeenCalledTimes(2);
+    expect(client.reconnectCalls).toBe(0);
+    connector.disconnect();
   });
 
   test("a second attempt still does real work instead of silently doing nothing", async () => {
-    const client = makeClient({ outgoingMessages: 2 });
-    mqtt.connect.mockReturnValue(client);
+    const first = makeClient({ outgoingMessages: 2 });
+    const second = makeClient({ outgoingMessages: 2 });
+    mqtt.connect
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second)
+      .mockReturnValue(makeClient());
 
     const connector = new roborock_mqtt_connector(makeAdapter());
     await connector.initUser(USERDATA);
 
     await connector.reconnectClient(true);
-    client.tornDown = false;
+    await jest.advanceTimersByTimeAsync(10_000);
     await connector.reconnectClient(true);
+    await jest.advanceTimersByTimeAsync(15_000);
 
     // The field symptom was an hourly retry that had become a no-op: the
     // connection stayed down for as long as the process lived.
-    expect(client.tornDown).toBe(true);
-    expect(client.reconnectCalls).toBe(2);
+    expect(first.tornDown).toBe(true);
+    expect(second.tornDown).toBe(true);
+    expect(mqtt.connect).toHaveBeenCalledTimes(3);
+    connector.disconnect();
   });
 
   test("mqtt.js still refuses to finish an unforced end while messages are queued", () => {

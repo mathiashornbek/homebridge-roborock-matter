@@ -67,7 +67,11 @@ jest.mock("net", () => {
 
 const { localConnector } = require("../roborockLib/lib/localConnector");
 
-const LOCAL_RECONNECT_DELAY_MS = 60000;
+// python-roborock retries a lost local connection at once, bounded by its 15 s
+// connection check; the plugin keeps that bound between two connects.
+const LOCAL_CONNECT_MIN_GAP_MS = 15000;
+const isFirstRetry = (delayMs) =>
+  delayMs >= 0 && delayMs <= LOCAL_CONNECT_MIN_GAP_MS;
 const DUID = "duid-lan-1";
 const IP = "192.168.1.42";
 
@@ -379,12 +383,12 @@ describe("a chunk boundary inside a length prefix keeps framing aligned", () => 
     expect(socket.chunkBuffer.length).toBe(0);
   });
 
-  test("checkComplete does not claim a partial header is a complete frame set", () => {
+  test("the scan does not claim a partial header is a complete frame set", () => {
     const stream = Buffer.concat([replyFrame(1), replyFrame(2)]);
     const withPartialHeader = stream.subarray(0, replyFrame(1).length + 2);
 
-    expect(connector.checkComplete(Buffer.alloc(0))).toBe(true);
-    expect(connector.checkComplete(replyFrame(1))).toBe(true);
+    expect(connector.scanChunkBuffer(Buffer.alloc(0)).status).toBe("complete");
+    expect(connector.scanChunkBuffer(replyFrame(1)).status).toBe("complete");
     expect(connector.scanChunkBuffer(withPartialHeader)).toEqual({
       status: "complete",
       consumed: replyFrame(1).length,
@@ -401,7 +405,7 @@ describe("a failed local reconnect re-arms itself", () => {
     // promise settled, so a failed connect scheduled nothing at all and the
     // robot stayed on the cloud path until Homebridge restarted.
     expect(connector.reconnectTimers.has(DUID)).toBe(true);
-    expect(adapter.__pendingDelays()).toContain(LOCAL_RECONNECT_DELAY_MS);
+    expect(adapter.__pendingDelays().some(isFirstRetry)).toBe(true);
   });
 
   test("repeated failures back off instead of hammering the robot", async () => {
@@ -416,7 +420,9 @@ describe("a failed local reconnect re-arms itself", () => {
       delete connector.localClients[DUID];
     }
 
-    expect(delays).toEqual([60000, 120000, 240000, 480000, 900000, 900000]);
+    // python-roborock's policy: at once, then 1 minute growing by 1.5.
+    expect(isFirstRetry(delays[0])).toBe(true);
+    expect(delays.slice(1)).toEqual([60000, 90000, 135000, 202500, 303750]);
   });
 
   test("firing the retry timer actually reconnects, and success resets the back-off", async () => {
@@ -438,14 +444,15 @@ describe("a failed local reconnect re-arms itself", () => {
     await socket.__connectCallback();
     await flush();
 
+    // A TCP connect alone proves nothing; the robot answering does.
+    expect(connector.reconnectAttempts.get(DUID)).toBe(2);
+    socket.emit("data", replyFrame(4242));
     expect(connector.reconnectAttempts.has(DUID)).toBe(false);
 
-    // A normal disconnect after a healthy connection keeps the old delay.
+    // A disconnect after the robot answered is retried at once again.
     socket.emit("close");
     const closeTimerId = connector.reconnectTimers.get(DUID);
-    expect(adapter.__timers.get(closeTimerId).delayMs).toBe(
-      LOCAL_RECONNECT_DELAY_MS
-    );
+    expect(isFirstRetry(adapter.__timers.get(closeTimerId).delayMs)).toBe(true);
   });
 
   test("the retry timer is tracked so it can be cleared on shutdown", async () => {
@@ -483,9 +490,7 @@ describe("a failed local reconnect re-arms itself", () => {
 
     await connectFailing(connector);
     const timerId = connector.reconnectTimers.get(DUID);
-    expect(adapter.__timers.get(timerId).delayMs).toBe(
-      LOCAL_RECONNECT_DELAY_MS
-    );
+    expect(isFirstRetry(adapter.__timers.get(timerId).delayMs)).toBe(true);
   });
 });
 

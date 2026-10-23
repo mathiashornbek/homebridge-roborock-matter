@@ -49,6 +49,20 @@ const METHOD_REQUEST_TIMEOUTS = {
 };
 
 /**
+ * Requests python-roborock 7.13.0 sends over MQTT only, even to a robot whose
+ * LAN socket is up: the `MapsTrait` read and map switch (`@mqtt_rpc_channel`),
+ * the map content (`map_rpc_channel`), obstacle photos (`blob_rpc_channel`)
+ * and the network info `V1Channel` fetches through `mqtt_rpc_channel`.
+ */
+const CLOUD_ONLY_METHODS = new Set([
+  "get_map_v1",
+  "get_multi_maps_list",
+  "load_multi_map",
+  "get_network_info",
+  "get_photo",
+]);
+
+/**
  * @param {string} method
  * @param {number} [requestTimeoutMs]
  * @returns {number}
@@ -166,7 +180,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 
 /**
  * @typedef {Object} MessageBuilder
- * @property {(duid: string, protocol: number, messageID: number, method: string, params: unknown[], secure: boolean, photo: boolean, options?: {b01Q10Dps?: Record<string, unknown>}) => Promise<unknown>} buildPayload
+ * @property {(duid: string, protocol: number, messageID: number, method: string, params: unknown[], secure: boolean, unused: boolean, options?: {b01Q10Dps?: Record<string, unknown>}) => Promise<unknown>} buildPayload
  * @property {(duid: string, protocol: number, timestamp: number, payload: unknown) => Promise<Buffer | null | undefined>} buildRoborockMessage
  */
 
@@ -174,7 +188,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @typedef {Object} LocalConnector
  * @property {(duid: string) => boolean} isConnected
  * @property {(duid: string, message: Buffer) => void} sendMessage
- * @property {(duid: string) => void} clearChunkBuffer
+ * @property {(duid: string, frame: Buffer, onLost: (cause: string) => void) => LocalRequestHandle | null} [writeRequest]
  * @property {(duid: string) => Promise<void>} [awaitLocalNegotiation]
  * @property {(duid: string) => string | undefined} [getNegotiatedVersion]
  */
@@ -182,6 +196,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 /**
  * @typedef {Object} MqttConnector
  * @property {import("./mqttSessionDiagnostics").MqttSessionDiagnostics} [sessionDiagnostics]
+ * @property {number} [linkId] which connection is current
  * @property {() => boolean} isConnected
  * @property {(duid: string, message: Buffer, onNotSent?: (error: Error) => void) => void} sendMessage
  */
@@ -204,21 +219,71 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * be dead code against a string the plugin cannot produce.
  *
  * @param {string} message
- * @param {boolean} transportWasUp whether the link was up AT REJECTION TIME
+ * @param {boolean} transportWasUp whether every link the request went out on
+ *   was still up AT REJECTION TIME
  * @param {boolean} [accountSessionWasSilent=false] correlated silence on this cloud read
- * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean, accountSessionWasSilent: boolean}}
+ * @param {string} [transientKind] how catchError files it
+ * @returns {Error & {unansweredRequest: boolean, transportWasUp: boolean, accountSessionWasSilent: boolean, transientKind?: string}}
  */
 function unansweredRequestError(
   message,
   transportWasUp,
-  accountSessionWasSilent = false
+  accountSessionWasSilent = false,
+  transientKind = undefined
 ) {
   return Object.assign(new Error(message), {
     unansweredRequest: true,
     transportWasUp,
     accountSessionWasSilent,
+    ...(transientKind ? { transientKind } : {}),
   });
 }
+
+/**
+ * The least a cloud retry may be given out of a caller's explicit budget; a
+ * cloud round trip rarely takes more than a few hundred milliseconds.
+ */
+const MIN_CLOUD_RETRY_MS = 1000;
+
+/** @param {unknown} error @returns {boolean} */
+function isUnanswered(error) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      /** @type {any} */ (error).unansweredRequest === true
+  );
+}
+
+/** @param {unknown} error @returns {string} */
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * @typedef {Object} LocalRequestHandle
+ * @property {() => void} release stop watching the socket for this request
+ * @property {() => boolean} isUp whether the socket it was written on is
+ *   still the robot's socket and connected
+ * @property {(method: string) => void} [noteUnanswered] the robot left it
+ *   unanswered on a live socket
+ */
+
+/**
+ * @typedef {Object} RequestContext
+ * @property {string} duid
+ * @property {string} method
+ * @property {unknown[]} params
+ * @property {boolean} secure
+ * @property {any} messageID
+ * @property {string} version
+ * @property {unknown} payload
+ * @property {boolean} deviceOnline
+ * @property {boolean} allowOfflineCloudSend
+ * @property {RequestOptions} options
+ * @property {string} cloudReason
+ * @property {"cloud" | "local"} first
+ * @property {Buffer} frame
+ */
 
 /**
  * @typedef {Object} MessageQueueAdapter
@@ -238,8 +303,11 @@ function unansweredRequestError(
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(duid: string, method: string) => void} [noteRequestAnswered]
- * @property {() => void} [noteCloudReply] Any reply over the cloud.
- * @property {() => boolean} [noteCloudSilence] A cloud request timed out
+ * @property {(duid: string, transport: "local" | "cloud", outcome: import("./transportTally").Outcome) => void} [noteTransportOutcome]
+ *   For the hourly per-robot transport summary.
+ * @property {() => void} [noteCloudReply] A V1 cloud request was answered
+ *   (not refused).
+ * @property {() => boolean} [noteCloudSilence] A V1 cloud request timed out
  *   while MQTT reported itself connected.
  * @property {(duid: string, method: string, error: unknown) => void} [noteRequestUnanswered]
  * @property {import("./lateReplies").LateReplyTracker} [lateReplies] Remembers
@@ -278,7 +346,8 @@ class messageQueueHandler {
    * @param {string} method
    * @param {unknown[]} params
    * @param {boolean} [secure=false]
-   * @param {boolean} [photo=false]
+   * @param {boolean} [_unused=false] the photo flag's old slot, kept so
+   *   positional callers stay valid; nothing asks for a photo
    * @param {RequestOptions} [options]
    * @returns {Promise<unknown | undefined>}
    */
@@ -287,7 +356,7 @@ class messageQueueHandler {
     method,
     params,
     secure = false,
-    photo = false,
+    _unused = false,
     options = {}
   ) {
     const remoteConnection = await this.adapter.isRemoteDevice(duid);
@@ -305,8 +374,7 @@ class messageQueueHandler {
       !preferCloudConnection &&
       !remoteConnection &&
       !secure &&
-      !photo &&
-      method != "get_network_info";
+      !CLOUD_ONLY_METHODS.has(method);
 
     if (
       preferLocalConnection &&
@@ -426,8 +494,7 @@ class messageQueueHandler {
       preferCloudConnection ||
       remoteConnection ||
       secure ||
-      photo ||
-      method == "get_network_info";
+      CLOUD_ONLY_METHODS.has(method);
     if (!useCloudConnection && !localConnectionState && mqttConnectionState) {
       useCloudConnection = true;
       await this.adapter.updateTransportDiagnostics(duid, {
@@ -469,14 +536,11 @@ class messageQueueHandler {
       }
     }
 
-    let messageID = /** @type {any} */ (
+    const messageID = /** @type {any} */ (
       b01Q7Adapter.isB01Protocol(version)
         ? b01Q7Adapter.createB01MessageId()
         : this.adapter.getRequestId()
     );
-    if (photo && typeof messageID === "number") {
-      messageID = messageID % 256; // this is a special case. Otherwise photo requests will not have the correct ID in the response.
-    }
     const timestamp = Math.floor(Date.now() / 1000);
 
     const protocol = useCloudConnection ? 101 : 4;
@@ -489,7 +553,7 @@ class messageQueueHandler {
       method,
       params,
       secure,
-      photo,
+      false,
       b01Q10Dps ? { b01Q10Dps } : {}
     );
     const roborockMessage = await this.adapter.message.buildRoborockMessage(
@@ -590,182 +654,24 @@ class messageQueueHandler {
           );
           resolve(["ok"]);
         } else {
-          // setup Timeout
-          const requestTimeout = getRequestTimeout(
+          this.requestWithCloudRetry({
+            duid,
             method,
-            options.requestTimeoutMs
-          );
-          const timeoutSeconds = Math.round(requestTimeout / 1000);
-          // Read BEFORE the send, so the timeout can subtract and report what
-          // arrived while this particular request was outstanding.
-          const receiptsAtSend =
-            typeof this.adapter.getCloudMessageReceiptCount === "function"
-              ? this.adapter.getCloudMessageReceiptCount(duid)
-              : null;
-          const sessionDiagnostics =
-            this.adapter.rr_mqtt_connector.sessionDiagnostics;
-          const sessionRequest = useCloudConnection
-            ? sessionDiagnostics?.captureRequest()
-            : undefined;
-          const timeout = this.adapter.setTimeout(() => {
-            this.adapter.pendingRequests.delete(messageID);
-            this.adapter.localConnector.clearChunkBuffer(duid);
-            if (useCloudConnection) {
-              // The link state READ NOW, not the copy taken before the send.
-              // A link that died mid-flight is the entire case the give-up
-              // register's transport exclusion exists for, and both previous
-              // attempts at that exclusion were dead code because they read a
-              // value captured before the request even went out.
-              const transportWasUp = Boolean(
-                this.adapter.rr_mqtt_connector?.isConnected?.()
-              );
-              const sessionHealth = sessionDiagnostics?.noteTimeout(
-                duid,
-                method,
-                sessionRequest
-              );
-              const sessionSummary = sessionHealth?.correlatedSilenceObserved
-                ? ` MQTT session: correlated silence across ${sessionHealth.silentReadRobotCount} robots (generation ${sessionHealth.generation}).`
-                : sessionHealth?.connected &&
-                    !sessionHealth.subscriptionAcknowledged
-                  ? ` MQTT session: subscription not acknowledged (generation ${sessionHealth.generation}).`
-                  : "";
-              const error = unansweredRequestError(
-                `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionSummary}`,
-                transportWasUp,
-                Boolean(
-                  transportWasUp &&
-                    sessionHealth?.requestWasSilent &&
-                    sessionHealth?.correlatedSilenceObserved
-                )
-              );
-              this.adapter.noteRequestUnanswered?.(duid, method, error);
-              this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
-              // A link that says it is up and delivers NOTHING from this
-              // robot while the request waits is the stale session
-              // python-roborock restarts. A frame that did arrive — a
-              // get_map_v1 acknowledgement whose map never follows, a status
-              // push — means the session delivers, so it is not counted
-              // (found in review). B01 is left out: a Q10 command is
-              // fire-and-forget by design.
-              const deliveredMeanwhile =
-                receiptsAtSend !== null &&
-                typeof this.adapter.getCloudMessageReceiptCount ===
-                  "function" &&
-                this.adapter.getCloudMessageReceiptCount(duid) > receiptsAtSend;
-              if (
-                transportWasUp &&
-                !deliveredMeanwhile &&
-                !b01Q7Adapter.isB01Protocol(version)
-              ) {
-                this.adapter.noteCloudSilence?.();
-              }
-              reject(error);
-            } else {
-              // A socket that keeps reporting itself connected while every
-              // request dies of silence is not a transport worth retrying
-              // forever. Fire-and-forget: the caller is owed its rejection now,
-              // not after the bookkeeping resolves.
-              if (this.adapter.noteLocalRequestTimedOut) {
-                Promise.resolve(
-                  this.adapter.noteLocalRequestTimedOut(duid, method)
-                ).catch(() => {});
-              }
-              const transportWasUp = Boolean(
-                this.adapter.localConnector?.isConnected?.(duid)
-              );
-              const error = unansweredRequestError(
-                `Local request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds Local connect state: ${transportWasUp}`,
-                transportWasUp
-              );
-              this.adapter.noteRequestUnanswered?.(duid, method, error);
-              this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
-              reject(error);
-            }
-          }, requestTimeout);
-
-          // Store request with resolve and reject functions.
-          // `secure` travels with the entry so the MQTT receiver can tell a
-          // secure request (whose protocol-102 reply is only an ack — the real
-          // payload arrives on protocol 301) from an ordinary one (whose 102
-          // reply IS the result). It used to guess by comparing the result to
-          // the string "ok", which silently never matched.
-          this.adapter.pendingRequests.set(messageID, {
-            // Wrapped so the give-up register learns of an answer HERE, in the
-            // one place that knows a reply arrived. Until 3.32.0 the register
-            // was told by `pollParameter`, whose try/catch never fired:
-            // `vacuum.getParameter` swallows its own errors (it calls
-            // catchError, which only logs) and resolves `undefined`. So every
-            // poll looked like a success, the failure branch was unreachable,
-            // and the register never counted a single one — including all
-            // seven methods in #22/#24 that it was built for.
-            resolve: (value) => {
-              if (!useCloudConnection) {
-                sessionDiagnostics?.noteActivity("local");
-                sessionDiagnostics?.emit();
-              }
-              this.adapter.noteRequestAnswered?.(duid, method);
-              if (useCloudConnection) {
-                this.adapter.noteCloudReply?.();
-              }
-              resolve(value);
-            },
-            // A refusal is an answer too. The reply handlers (cloud 102,
-            // local protocol 4, B01 code) hand the robot's own error to the
-            // STORED reject; timeouts and no-link refusals use the promise's
-            // reject directly, and shutdown uses `abandon`. Until 3.35.0 this
-            // was the bare reject, so a robot that kept saying "no" neither
-            // counted nor reset: five silences, one refusal, one silence, and
-            // the method was given up on although the robot had just replied.
-            reject: (error) => {
-              this.adapter.noteRequestAnswered?.(duid, method);
-              if (useCloudConnection) {
-                this.adapter.noteCloudReply?.();
-              }
-              reject(error);
-            },
-            abandon: reject,
-            timeout,
+            params,
             secure,
-            method,
-          });
-
-          if (useCloudConnection) {
-            if (!deviceOnline && allowOfflineCloudSend) {
-              this.adapter.log.debug(
-                `Device ${duid} is marked offline, but sending method ${method} via cloud because the command explicitly allows offline cloud delivery.`
-              );
-            }
-            // The link can drop between the connection check above and this
-            // publish (there are awaits in between). mqtt.js then refuses the
-            // publish; fail the request now, as the refusal it is, rather than
-            // let its timeout read a dead link as a robot that did not answer.
-            this.adapter.rr_mqtt_connector.sendMessage(
-              duid,
-              roborockMessage,
-              () => {
-                const pending = this.adapter.pendingRequests.get(messageID);
-                if (!pending) {
-                  return;
-                }
-                this.adapter.clearTimeout(pending.timeout);
-                this.adapter.pendingRequests.delete(messageID);
-                reject(
-                  refusal(
-                    "cloud unavailable",
-                    `The Roborock cloud connection was lost before the ${method} request could be sent, so it was not sent.`
-                  )
-                );
-              }
-            );
-            const lastTransportReason =
+            messageID,
+            version,
+            payload,
+            deviceOnline,
+            allowOfflineCloudSend,
+            options,
+            cloudReason:
               [
                 {
                   condition: !deviceOnline && allowOfflineCloudSend,
                   reason: "offline-cloud-command",
                 },
                 { condition: secure, reason: "secure-command" },
-                { condition: photo, reason: "photo-command" },
                 { condition: cloudOnlyConnection, reason: "cloud-only-mode" },
                 {
                   condition: preferCloudConnection,
@@ -776,30 +682,14 @@ class messageQueueHandler {
                   condition: method == "get_network_info",
                   reason: "network-info-cloud-only",
                 },
-              ].find((entry) => entry.condition)?.reason ?? "cloud-request";
-            this.adapter.updateTransportDiagnostics(duid, {
-              lastTransport: "cloud",
-              lastTransportReason,
-              lastCommandMethod: method,
-            });
-            this.adapter.log.debug(
-              `Sent payload for ${duid} with ${payload} using cloud connection`
-            );
-          } else {
-            const lengthBuffer = Buffer.alloc(4);
-            lengthBuffer.writeUInt32BE(roborockMessage.length, 0);
-
-            const fullMessage = Buffer.concat([lengthBuffer, roborockMessage]);
-            this.adapter.localConnector.sendMessage(duid, fullMessage);
-            this.adapter.updateTransportDiagnostics(duid, {
-              lastTransport: "local",
-              lastTransportReason: "local-request",
-              lastCommandMethod: method,
-            });
-            this.adapter.log.debug(
-              `Sent payload for ${duid} with ${payload} using local connection`
-            );
-          }
+                {
+                  condition: CLOUD_ONLY_METHODS.has(method),
+                  reason: "cloud-only-method",
+                },
+              ].find((entry) => entry.condition)?.reason ?? "cloud-request",
+            first: useCloudConnection ? "cloud" : "local",
+            frame: roborockMessage,
+          }).then(resolve, reject);
         }
       }).finally(() => {
         this.adapter.log.debug(
@@ -821,9 +711,421 @@ class messageQueueHandler {
       );
     }
   }
+
+  /**
+   * Send a built request and wait for its reply, the way python-roborock's
+   * `RpcChannel.send_command` does: over the LAN first when that is the
+   * chosen transport, and when the LAN attempt fails — its socket closed, or
+   * nothing answered within the timeout — the SAME request (same id) once
+   * more over MQTT. A refusal is an answer and is never retried.
+   *
+   * With an explicit `requestTimeoutMs` the caller owns a budget, so the
+   * cloud retry only gets what is left of it.
+   *
+   * @param {RequestContext} context
+   * @returns {Promise<unknown>}
+   */
+  async requestWithCloudRetry(context) {
+    const { duid, method, options } = context;
+    const requestTimeout = getRequestTimeout(method, options.requestTimeoutMs);
+    const startedAt = Date.now();
+    try {
+      if (context.first === "cloud") {
+        return await this.exchangeOverCloud(
+          context,
+          context.frame,
+          requestTimeout
+        );
+      }
+      try {
+        return await this.exchangeOverLocal(
+          context,
+          context.frame,
+          requestTimeout
+        );
+      } catch (localError) {
+        const retryTimeout = this.cloudRetryTimeout(
+          context,
+          localError,
+          requestTimeout - (Date.now() - startedAt)
+        );
+        if (retryTimeout === null) {
+          throw localError;
+        }
+        this.adapter.log.debug(
+          `Retrying ${method} (id ${context.messageID}) for ${duid} over the cloud: ${errorText(localError)}`
+        );
+        this.adapter.noteTransportOutcome?.(duid, "local", "retried");
+        const payload = await this.adapter.message.buildPayload(
+          duid,
+          101,
+          context.messageID,
+          method,
+          context.params,
+          context.secure,
+          false,
+          {}
+        );
+        const frame = await this.adapter.message.buildRoborockMessage(
+          duid,
+          101,
+          Math.floor(Date.now() / 1000),
+          payload
+        );
+        if (!frame) {
+          throw localError;
+        }
+        return await this.exchangeOverCloud(
+          { ...context, payload, cloudReason: "local-failed-cloud-retry" },
+          frame,
+          retryTimeout,
+          localError
+        );
+      }
+    } catch (error) {
+      if (isUnanswered(error)) {
+        this.adapter.noteRequestUnanswered?.(duid, method, error);
+        this.adapter.lateReplies?.noteTimedOut(context.messageID, duid, method);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * How long the cloud retry of a failed LAN request may wait, or null when
+   * it is not retried: the failure was an answer, the cloud is down, or the
+   * robot is offline per home data (the cloud would refuse it anyway).
+   *
+   * @param {RequestContext} context
+   * @param {unknown} localError
+   * @param {number} remainingMs what is left of an explicit budget
+   * @returns {number | null}
+   */
+  cloudRetryTimeout(context, localError, remainingMs) {
+    const failure = /** @type {any} */ (localError);
+    const retryable =
+      failure?.localTransportLost === true ||
+      (failure?.unansweredRequest === true &&
+        failure?.transientKind === "local timeout");
+    if (!retryable) {
+      return null;
+    }
+    if (!this.adapter.rr_mqtt_connector.isConnected()) {
+      return null;
+    }
+    if (!context.deviceOnline && !context.options.allowOfflineCloudSend) {
+      return null;
+    }
+    const explicit = Number(context.options.requestTimeoutMs);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return remainingMs >= MIN_CLOUD_RETRY_MS ? Math.round(remainingMs) : null;
+    }
+    return getRequestTimeout(context.method);
+  }
+
+  /**
+   * One attempt over MQTT.
+   *
+   * @param {RequestContext} context
+   * @param {Buffer} frame
+   * @param {number} requestTimeout
+   * @param {unknown} [localError] the LAN failure this attempt retries
+   * @returns {Promise<unknown>}
+   */
+  exchangeOverCloud(context, frame, requestTimeout, localError) {
+    const { duid, method, messageID, version, secure } = context;
+    const timeoutSeconds = Math.round(requestTimeout / 1000);
+    return new Promise((resolve, reject) => {
+      // Read BEFORE the send, so the timeout can subtract and report what
+      // arrived while this particular request was outstanding.
+      const receiptsAtSend =
+        typeof this.adapter.getCloudMessageReceiptCount === "function"
+          ? this.adapter.getCloudMessageReceiptCount(duid)
+          : null;
+      const sessionDiagnostics =
+        this.adapter.rr_mqtt_connector.sessionDiagnostics;
+      const sessionRequest = sessionDiagnostics?.captureRequest();
+      const linkAtSend = this.adapter.rr_mqtt_connector.linkId;
+      // The requests python-roborock's HealthManager hears about: V1 RPCs
+      // over MQTT, and nothing from the B01 channels.
+      const feedsCloudHealth = !b01Q7Adapter.isB01Protocol(version);
+      // A retry after the LAN socket closed under its request is a transport
+      // event, not a request the robot left unanswered on a working link.
+      const localWasUp =
+        localError === undefined ||
+        /** @type {any} */ (localError)?.transportWasUp === true;
+      const timeout = this.adapter.setTimeout(() => {
+        this.adapter.pendingRequests.delete(messageID);
+        // The link state READ NOW, not the copy taken before the send. A
+        // link that died mid-flight is the entire case the give-up
+        // register's transport exclusion exists for, and both previous
+        // attempts at that exclusion were dead code because they read a
+        // value captured before the request even went out. And it must be
+        // the SAME link: a request in flight across a session restart went
+        // out on a connection that is gone, whatever its successor does.
+        const transportWasUp =
+          Boolean(this.adapter.rr_mqtt_connector?.isConnected?.()) &&
+          this.adapter.rr_mqtt_connector.linkId === linkAtSend;
+        const sessionHealth = sessionDiagnostics?.noteTimeout(
+          duid,
+          method,
+          sessionRequest
+        );
+        const sessionSummary = sessionHealth?.correlatedSilenceObserved
+          ? ` MQTT session: correlated silence across ${sessionHealth.silentReadRobotCount} robots (generation ${sessionHealth.generation}).`
+          : sessionHealth?.connected && !sessionHealth.subscriptionAcknowledged
+            ? ` MQTT session: subscription not acknowledged (generation ${sessionHealth.generation}).`
+            : "";
+        const retried = localError
+          ? ` It was the cloud retry after the local attempt failed: ${errorText(localError)}`
+          : "";
+        const error = unansweredRequestError(
+          `Cloud request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds. MQTT connection state: ${transportWasUp}${describeCloudSilence(this.adapter, duid, receiptsAtSend)}${sessionSummary}${retried}`,
+          transportWasUp && localWasUp,
+          // A LAN silence the retry follows is the robot's own, whatever the
+          // account session was doing.
+          Boolean(
+            !localError &&
+              transportWasUp &&
+              sessionHealth?.requestWasSilent &&
+              sessionHealth?.correlatedSilenceObserved
+          ),
+          "cloud timeout"
+        );
+        // python-roborock's HealthManager counts every V1 MQTT timeout,
+        // whatever else the robot's frames did meanwhile (its map decoder
+        // ignores the 102 acknowledgement too). B01 never feeds it, in
+        // either direction.
+        if (transportWasUp && feedsCloudHealth) {
+          this.adapter.noteCloudSilence?.();
+        }
+        this.adapter.noteTransportOutcome?.(duid, "cloud", "timeout");
+        reject(error);
+      }, requestTimeout);
+
+      // `secure` travels with the entry so the MQTT receiver can tell a
+      // secure request (whose protocol-102 reply is only an ack — the real
+      // payload arrives on protocol 301) from an ordinary one (whose 102
+      // reply IS the result). It used to guess by comparing the result to
+      // the string "ok", which silently never matched.
+      this.adapter.pendingRequests.set(messageID, {
+        // Wrapped so the give-up register learns of an answer HERE, in the
+        // one place that knows a reply arrived. Until 3.32.0 the register
+        // was told by `pollParameter`, whose try/catch never fired:
+        // `vacuum.getParameter` swallows its own errors (it calls
+        // catchError, which only logs) and resolves `undefined`. So every
+        // poll looked like a success, the failure branch was unreachable,
+        // and the register never counted a single one — including all
+        // seven methods in #22/#24 that it was built for.
+        resolve: (value) => {
+          this.adapter.noteRequestAnswered?.(duid, method);
+          if (feedsCloudHealth) {
+            this.adapter.noteCloudReply?.();
+          }
+          this.adapter.noteTransportOutcome?.(duid, "cloud", "ok");
+          resolve(value);
+        },
+        // A refusal is an answer too. The reply handlers (cloud 102, local
+        // protocol 4, B01 code) hand the robot's own error to the STORED
+        // reject; timeouts and no-link refusals use the promise's reject
+        // directly, and shutdown uses `abandon`. Until 3.35.0 this was the
+        // bare reject, so a robot that kept saying "no" neither counted nor
+        // reset: five silences, one refusal, one silence, and the method was
+        // given up on although the robot had just replied.
+        // Not a cloud-health success: python-roborock's `_send_rpc` raises
+        // an API error before it reaches `on_success`.
+        reject: (error) => {
+          this.adapter.noteRequestAnswered?.(duid, method);
+          this.adapter.noteTransportOutcome?.(duid, "cloud", "ok");
+          reject(error);
+        },
+        abandon: reject,
+        timeout,
+        secure,
+        method,
+      });
+
+      if (!context.deviceOnline && context.allowOfflineCloudSend) {
+        this.adapter.log.debug(
+          `Device ${duid} is marked offline, but sending method ${method} via cloud because the command explicitly allows offline cloud delivery.`
+        );
+      }
+      // The link can drop between the connection check and this publish
+      // (there are awaits in between). mqtt.js then refuses the publish;
+      // fail the request now, as the refusal it is, rather than let its
+      // timeout read a dead link as a robot that did not answer.
+      this.adapter.rr_mqtt_connector.sendMessage(duid, frame, () => {
+        const pending = this.adapter.pendingRequests.get(messageID);
+        if (!pending || pending.timeout !== timeout) {
+          return;
+        }
+        this.adapter.clearTimeout(pending.timeout);
+        this.adapter.pendingRequests.delete(messageID);
+        this.adapter.noteTransportOutcome?.(duid, "cloud", "notSent");
+        reject(
+          refusal(
+            "cloud unavailable",
+            `The Roborock cloud connection was lost before the ${method} request could be sent, so it was not sent.`
+          )
+        );
+      });
+      this.adapter.updateTransportDiagnostics(duid, {
+        lastTransport: "cloud",
+        lastTransportReason: context.cloudReason,
+        lastCommandMethod: method,
+      });
+      this.adapter.log.debug(
+        `Sent payload for ${duid} with ${context.payload} using cloud connection`
+      );
+    });
+  }
+
+  /**
+   * One attempt over the LAN. Settles the moment the socket it was written on
+   * closes: a request must never wait out its timeout on a socket already
+   * known to be gone.
+   *
+   * @param {RequestContext} context
+   * @param {Buffer} frame
+   * @param {number} requestTimeout
+   * @returns {Promise<unknown>}
+   */
+  exchangeOverLocal(context, frame, requestTimeout) {
+    const { duid, method, messageID, secure } = context;
+    const timeoutSeconds = Math.round(requestTimeout / 1000);
+    const sessionDiagnostics =
+      this.adapter.rr_mqtt_connector.sessionDiagnostics;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      /** @type {LocalRequestHandle | null} */
+      let handle = null;
+      /**
+       * @param {(value: any) => void} settle
+       * @param {unknown} value
+       */
+      const finish = (settle, value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        handle?.release();
+        settle(value);
+      };
+      const timeout = this.adapter.setTimeout(() => {
+        this.adapter.pendingRequests.delete(messageID);
+        // Up means the socket this request was written on is still the
+        // robot's socket and still connected.
+        const transportWasUp = handle ? handle.isUp() : false;
+        // Silence on a live socket counts toward closing it (see
+        // localConnector.dropUnanswered).
+        if (transportWasUp) {
+          handle?.noteUnanswered?.(method);
+        }
+        this.adapter.noteTransportOutcome?.(duid, "local", "timeout");
+        finish(
+          reject,
+          unansweredRequestError(
+            `Local request with id ${messageID} with method ${method} timed out after ${timeoutSeconds} seconds Local connect state: ${transportWasUp}`,
+            transportWasUp,
+            false,
+            "local timeout"
+          )
+        );
+      }, requestTimeout);
+
+      this.adapter.pendingRequests.set(messageID, {
+        resolve: (value) => {
+          sessionDiagnostics?.noteActivity("local");
+          sessionDiagnostics?.emit();
+          this.adapter.noteRequestAnswered?.(duid, method);
+          this.adapter.noteTransportOutcome?.(duid, "local", "ok");
+          finish(resolve, value);
+        },
+        reject: (error) => {
+          this.adapter.noteRequestAnswered?.(duid, method);
+          this.adapter.noteTransportOutcome?.(duid, "local", "ok");
+          finish(reject, error);
+        },
+        abandon: (error) => finish(reject, error),
+        timeout,
+        secure,
+        method,
+      });
+
+      const lengthBuffer = Buffer.alloc(4);
+      lengthBuffer.writeUInt32BE(frame.length, 0);
+      const fullMessage = Buffer.concat([lengthBuffer, frame]);
+      const written = this.writeLocal(duid, fullMessage, (cause) => {
+        const pending = this.adapter.pendingRequests.get(messageID);
+        if (!pending || pending.timeout !== timeout) {
+          return;
+        }
+        this.adapter.clearTimeout(timeout);
+        this.adapter.pendingRequests.delete(messageID);
+        this.adapter.noteTransportOutcome?.(duid, "local", "lost");
+        finish(
+          reject,
+          Object.assign(
+            refusal(
+              "local connection unavailable",
+              `The local connection to ${describeDevice(this.adapter, duid)} closed before ${method} (local id ${messageID}) was answered: ${cause}.`
+            ),
+            { localTransportLost: true }
+          )
+        );
+      });
+      handle = written;
+      if (!handle) {
+        return;
+      }
+      if (settled) {
+        // Answered while it was being written (a test double): nothing is
+        // left to watch for.
+        handle.release();
+      }
+      this.adapter.updateTransportDiagnostics(duid, {
+        lastTransport: "local",
+        lastTransportReason: "local-request",
+        lastCommandMethod: method,
+      });
+      this.adapter.log.debug(
+        `Sent payload for ${duid} with ${context.payload} using local connection`
+      );
+    });
+  }
+
+  /**
+   * Write a frame on the robot's socket and have `onLost` called if that
+   * socket goes before the reply. A connector without in-flight tracking
+   * (test doubles) gets a handle that only reads the connection state.
+   *
+   * @param {string} duid
+   * @param {Buffer} frame
+   * @param {(cause: string) => void} onLost
+   * @returns {LocalRequestHandle | null} null when nothing could be written,
+   *   after `onLost` has been told
+   */
+  writeLocal(duid, frame, onLost) {
+    const connector = this.adapter.localConnector;
+    if (typeof connector.writeRequest === "function") {
+      const handle = connector.writeRequest(duid, frame, onLost);
+      if (!handle) {
+        onLost(
+          "the socket was no longer connected when the request was written"
+        );
+      }
+      return handle;
+    }
+    connector.sendMessage(duid, frame);
+    return {
+      release() {},
+      isUp: () => Boolean(connector.isConnected(duid)),
+    };
+  }
 }
 
 module.exports = {
+  CLOUD_ONLY_METHODS,
   messageQueueHandler,
   getRequestTimeout,
   refusal,
