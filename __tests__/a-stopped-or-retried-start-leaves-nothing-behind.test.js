@@ -109,7 +109,8 @@ describe("a retried start", () => {
     });
     jest.spyOn(roborockAuth, "createLoginApi").mockReturnValue({
       defaults: { headers: { common: {} } },
-      get: async () => ({ data: { data: { rrHomeId: 1 } } }),
+      // getHomeDetail as Roborock answers it: the envelope carries a code.
+      get: async () => ({ data: { code: 200, data: { rrHomeId: 1 } } }),
     });
     jest.spyOn(axios, "create").mockReturnValue({
       interceptors: { request: { use() {} } },

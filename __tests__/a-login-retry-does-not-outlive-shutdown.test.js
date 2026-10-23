@@ -3,20 +3,23 @@ const os = require("os");
 const path = require("path");
 const { Roborock } = require("../roborockLib/roborockAPI");
 
-// There are TWO startup retries in this file, and only one of them was ever
-// wired to shutdown.
+// There used to be TWO startup retries in this file, and only one of them was
+// ever wired to shutdown.
 //
 // `scheduleStartServiceRetry` (3.20.0) keeps its handle on
 // `this.startServiceRetryTimer`, checks `bInited` before it fires, and is
 // cleared by `clearTimersAndIntervals`. That one is fine.
 //
-// The login retry in `startService` is the older one. It kept its handle in a
-// local `const`, so `clearTimersAndIntervals` had nothing to clear even in
+// The login retry in `startService` was the older one. It kept its handle in
+// a local `const`, so `clearTimersAndIntervals` had nothing to clear even in
 // principle, and the callback had no `bInited` guard. A login that failed on
 // a network error armed a timer for up to 10 minutes; if Homebridge shut the
 // adapter down inside that window, the timer still fired into the corpse and
 // ran `startService` again — a fresh login, a new MQTT client and a new set
 // of intervals on an adapter whose sockets had already been destroyed.
+//
+// A failed login now arms the same loop as a failed home-details fetch, so
+// these pin that loop from the login side.
 //
 // This is also where the suite's `You are trying to require a file after the
 // Jest environment has been torn down` came from: `startService` opens with
@@ -70,7 +73,7 @@ describe("the login retry does not outlive shutdown", () => {
 
     // The handle has to live on the instance. A local const is unclearable
     // by construction, which is the whole defect.
-    expect(api.loginRetryTimer).toBeTruthy();
+    expect(api.startServiceRetryTimer).toBeTruthy();
   });
 
   test("stopService cancels a pending login retry", async () => {
@@ -78,11 +81,11 @@ describe("the login retry does not outlive shutdown", () => {
     const api = createApi();
 
     await failLogin(api);
-    expect(api.loginRetryTimer).toBeTruthy();
+    expect(api.startServiceRetryTimer).toBeTruthy();
 
     await api.stopService();
 
-    expect(api.loginRetryTimer).toBeNull();
+    expect(api.startServiceRetryTimer).toBeNull();
 
     // Ten minutes is the backoff ceiling; nothing may fire in that window.
     const startService = jest.spyOn(api, "startService");
@@ -95,7 +98,7 @@ describe("the login retry does not outlive shutdown", () => {
     const api = createApi();
 
     await failLogin(api);
-    const armed = api.loginRetryTimer;
+    const armed = api.startServiceRetryTimer;
     expect(armed).toBeTruthy();
 
     // Simulate the race the clear cannot win: shutdown happens, but the
@@ -115,7 +118,7 @@ describe("the login retry does not outlive shutdown", () => {
     const api = createApi();
 
     await failLogin(api);
-    expect(api.loginRetryTimer).toBeTruthy();
+    expect(api.startServiceRetryTimer).toBeTruthy();
 
     const startService = jest
       .spyOn(api, "startService")
@@ -135,6 +138,6 @@ describe("the login retry does not outlive shutdown", () => {
 
     jest.advanceTimersByTime(60000);
 
-    expect(api.loginRetryTimer).toBeNull();
+    expect(api.startServiceRetryTimer).toBeNull();
   });
 });

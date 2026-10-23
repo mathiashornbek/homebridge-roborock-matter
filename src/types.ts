@@ -69,6 +69,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   password?: string;
   debugMode: boolean;
   baseURL?: string;
+  serverURL?: string;
   encryptedToken?: string;
   skipDevices?: string;
   transientWarningThrottleHours?: number;
@@ -81,6 +82,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableMatterChargingDockedStates?: boolean;
   enableMatterFaultReporting?: boolean;
   enableMatterTankFaultReporting?: boolean;
+  enableMatterDockPhases?: boolean;
   matterChargedBatteryThreshold?: number;
   cloudOnlyMode?: boolean;
   preferCloudForMatterCommands?: boolean;

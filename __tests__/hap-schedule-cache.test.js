@@ -18,8 +18,18 @@ const scheduleModule = require("../src/hap_schedule_accessory.ts");
 const RoborockHapScheduleAccessory = scheduleModule.default;
 const { ScheduleAccountCoordinator, scheduleFailureBackoffMs } = scheduleModule;
 
+// Every coordinator a test builds, so the retry read a failed refresh arms
+// is cancelled when the test ends.
+const coordinators = [];
+afterEach(() => {
+  for (const coordinator of coordinators.splice(0)) {
+    coordinator.shutdown();
+  }
+});
+
 function makeCoordinator() {
   const coordinator = Object.create(RoborockHapScheduleAccessory.prototype);
+  coordinators.push(coordinator);
 
   coordinator.platform = {
     roborockAPI: {},
@@ -33,7 +43,8 @@ function makeCoordinator() {
   coordinator.duid = "device-1";
   coordinator.scheduleAccessories = new Map();
   coordinator.routineSwitches = new Map();
-  coordinator.managerAccessory = {};
+  // A real accessory always has a service list.
+  coordinator.managerAccessory = { services: [] };
   coordinator.vacuumName = "Test Vacuum";
   coordinator.managerRemoved = false;
   coordinator.cachedSchedules = undefined;

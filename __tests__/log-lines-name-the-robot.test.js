@@ -100,7 +100,7 @@ const INTERNAL_CONTRACT_MESSAGES = [
 // Interpolations that put a raw device identifier in front of a human.
 // `describeDevice(duid)` and `getVacuumName()` are the sanctioned wrappers.
 const BARE_DUID =
-  /\$\{\s*duid\s*\}|\$\{\s*String\(duid\)\s*\}|\$\{\s*this\.accessory\.context\??\.?\.duid[^}]*\}/;
+  /\$\{\s*(?:this\.)?duid\s*\}|\$\{\s*String\(duid\)\s*\}|\$\{\s*this\.accessory\.context\??\.?\.duid[^}]*\}/;
 
 describe("log lines identify robots by name", () => {
   test("no info/warn/error line in any source file prints a bare duid", () => {

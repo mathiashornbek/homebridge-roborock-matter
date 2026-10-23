@@ -89,8 +89,9 @@ describe("a bad cloud day at startup is survivable", () => {
 
     jest.advanceTimersByTime(60000);
     expect(api.startService).toHaveBeenCalledTimes(1);
-    // And it is called WITHOUT Homebridge's callback: that fired once at the
-    // original startup and must not fire again.
+    // With no arguments: a start takes none. Publishing the robots once it
+    // succeeds is the ready listener's job, for a retried start as for the
+    // first one (every-successful-start-publishes-the-robots.test.js).
     expect(api.startService).toHaveBeenCalledWith();
   });
 

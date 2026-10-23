@@ -117,10 +117,21 @@ class RoborockUiServer {
     return crypto.randomUUID();
   }
 
+  /**
+   * The server a login goes to: the custom server when one is set (#43),
+   * otherwise the region. Throws the validation message for a custom server
+   * URL that is not https://host[:port].
+   */
+  private loginServer(config: { baseURL?: string; serverURL?: string }) {
+    return config.serverURL
+      ? roborockAuth.parseServerURL(config.serverURL)
+      : config.baseURL || "usiot.roborock.com";
+  }
+
   private async buildLoginApi(config: Record<string, any>) {
     const clientID = await this.getClientId();
     return roborockAuth.createLoginApi({
-      baseURL: config.baseURL || "usiot.roborock.com",
+      baseURL: this.loginServer(config),
       username: config.email,
       clientID,
       language: "en",
@@ -130,6 +141,7 @@ class RoborockUiServer {
   private async sendTwoFactorEmail(payload: {
     email?: string;
     baseURL?: string;
+    serverURL?: string;
   }) {
     const email = payload.email;
     if (!email) {
@@ -140,6 +152,7 @@ class RoborockUiServer {
       const loginApi = await this.buildLoginApi({
         email,
         baseURL: payload.baseURL,
+        serverURL: payload.serverURL,
       });
       await roborockAuth.requestEmailCode(loginApi, email);
       return { ok: true, message: "Verification email sent." };
@@ -156,6 +169,7 @@ class RoborockUiServer {
     email?: string;
     code: string;
     baseURL?: string;
+    serverURL?: string;
   }) {
     const email = payload.email;
     if (!email) {
@@ -169,24 +183,13 @@ class RoborockUiServer {
     return this.performSignedLogin({
       email,
       baseURL: payload.baseURL,
+      serverURL: payload.serverURL,
       requestFailedLogLabel: "2FA verification request failed:",
       requestFailedFallbackMessage: "Verification failed.",
       successMessage: "Login completed and token saved.",
       failureLogLabel: "2FA verification failed:",
       failureFallbackMessage: "Verification failed.",
-      performLogin: async (loginApi, nonce, k) => {
-        const region = roborockAuth.getRegionConfig(
-          payload.baseURL || "usiot.roborock.com"
-        );
-        return roborockAuth.loginWithCode(loginApi, {
-          email,
-          code: payload.code,
-          country: region.country,
-          countryCode: region.countryCode,
-          k,
-          s: nonce,
-        });
-      },
+      credentials: { code: payload.code },
     });
   }
 
@@ -194,6 +197,7 @@ class RoborockUiServer {
     email?: string;
     password?: string;
     baseURL?: string;
+    serverURL?: string;
   }) {
     const email = payload.email;
     const password = payload.password;
@@ -205,59 +209,55 @@ class RoborockUiServer {
     return this.performSignedLogin({
       email,
       baseURL: payload.baseURL,
+      serverURL: payload.serverURL,
       requestFailedLogLabel: "Login request failed:",
       requestFailedFallbackMessage: "Login failed.",
       successMessage: "Login successful. Token saved.",
       failureLogLabel: "Login failed:",
       failureFallbackMessage: "Login failed. Check your credentials.",
       checkTwoFactorRequired: true,
-      performLogin: (loginApi, nonce, k) =>
-        roborockAuth.loginByPassword(loginApi, {
-          email,
-          password,
-          k,
-          s: nonce,
-        }),
+      credentials: { password },
     });
   }
 
   // Shared by verifyTwoFactorCode and loginWithPassword: both build a login
-  // API, sign a nonce, invoke a login function with the resulting `k`, then
-  // map the response to the same success/failure shape (loginWithPassword
-  // additionally treats code 2031 as "two-factor required").
+  // API, log in through roborockAuth.signedLogin (the plugin's own login
+  // uses it too), then map the response to the same success/failure shape
+  // (loginWithPassword additionally treats code 2031 as "two-factor
+  // required").
   private async performSignedLogin(options: {
     email: string;
     baseURL?: string;
+    serverURL?: string;
     requestFailedLogLabel: string;
     requestFailedFallbackMessage: string;
     successMessage: string;
     failureLogLabel: string;
     failureFallbackMessage: string;
     checkTwoFactorRequired?: boolean;
-    performLogin: (loginApi: any, nonce: string, k: string) => Promise<any>;
+    credentials: { code: string } | { password: string };
   }) {
     const {
       email,
       baseURL,
+      serverURL,
       requestFailedLogLabel,
       requestFailedFallbackMessage,
       successMessage,
       failureLogLabel,
       failureFallbackMessage,
       checkTwoFactorRequired,
-      performLogin,
+      credentials,
     } = options;
 
     let loginResult;
     try {
-      const loginApi = await this.buildLoginApi({ email, baseURL });
-      const nonce = this.buildNonce();
-      const signData = await roborockAuth.signRequest(loginApi, nonce);
-      if (!signData || !signData.k) {
-        return { ok: false, message: "Failed to create login signature." };
-      }
-
-      loginResult = await performLogin(loginApi, nonce, signData.k);
+      const loginApi = await this.buildLoginApi({ email, baseURL, serverURL });
+      loginResult = await roborockAuth.signedLogin(loginApi, {
+        email,
+        server: this.loginServer({ baseURL, serverURL }),
+        ...credentials,
+      });
     } catch (error: any) {
       console.error(requestFailedLogLabel, error?.message || error);
       return {
@@ -284,7 +284,13 @@ class RoborockUiServer {
     }
 
     console.error(failureLogLabel, loginResult);
-    return { ok: false, message: loginResult?.msg || failureFallbackMessage };
+    // Roborock's own text ("user agreement not accepted") does not say what
+    // to do; the known refusals do.
+    const refusal = roborockAuth.describeLoginRefusal(loginResult);
+    return {
+      ok: false,
+      message: refusal?.hint || loginResult?.msg || failureFallbackMessage,
+    };
   }
 
   private async logout() {
@@ -844,15 +850,6 @@ class RoborockUiServer {
     const code = error?.code ? `${error.code}: ` : "";
     const message = error?.message || String(error);
     return `${code}${message}`;
-  }
-
-  private buildNonce(): string {
-    return crypto
-      .randomBytes(12)
-      .toString("base64")
-      .substring(0, 16)
-      .replace(/\+/g, "X")
-      .replace(/\//g, "Y");
   }
 
   private readJsonFile(filePath: string): any | null {

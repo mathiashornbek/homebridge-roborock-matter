@@ -1,117 +1,81 @@
-jest.mock("../src/hap_schedule_accessory", () => {
-  const instances = [];
+"use strict";
 
-  class FakeScheduleAccessory {
-    constructor(platform, accessory, duid) {
-      this.platform = platform;
-      this.managerAccessory = accessory;
-      this.duid = duid;
-      this.initialize = jest.fn().mockResolvedValue({
-        success: false,
-        hasSchedules: false,
-      });
-      this.restoreScheduleHandlersFromAccessory = jest
-        .fn()
-        .mockReturnValue(true);
-      this.setScheduleExposure = jest.fn();
-      this.attachRoutineAccessory = jest.fn();
-      this.removeRoutineServices = jest.fn();
-      this.routineCount = 0;
+// A schedule reading that fails as a whole at startup (no source could be
+// read) must not cost the user the schedule tiles Homebridge restored: the
+// cached switches get their handlers back so a press works meanwhile, the
+// cached accessory stays registered, and the coordinator stays to read
+// again. The platform used to do the restoring itself and drop the
+// coordinator when there was nothing to restore; the coordinator now does
+// both halves, and keeps reading until a reading succeeds
+// (a-timed-out-timer-read-does-not-withhold-routines.test.js).
 
-      instances.push(this);
-    }
-  }
-
-  return {
-    __esModule: true,
-    default: FakeScheduleAccessory,
-    isHapScheduleAccessory: (accessory) =>
-      typeof accessory?.context?.duid === "string" &&
-      accessory.context.duid.length > 0 &&
-      accessory.context.extension !== "routines",
-    isHapRoutineAccessory: (accessory) =>
-      accessory?.context?.extension === "routines",
-    __instances: instances,
-  };
-});
-
+const {
+  PlatformAccessory,
+  hap,
+  makeScheduleAccount,
+  makeSchedulePlatform,
+  switchSubtypes,
+} = require("../test-support/schedule-account");
 const RoborockPlatform = require("../src/platform").default;
 
-function makeHarness() {
-  const cachedAccessory = {
-    UUID: "schedule-uuid-device-1",
-    displayName: "Test Robot Schedules",
-    context: {
-      duid: "device-1",
-      kind: "hap",
-      extension: "schedules",
-    },
-  };
-
-  const platform = Object.create(RoborockPlatform.prototype);
-
-  platform.platformConfig = {
-    enableHomeKitActionSwitches: true,
-    enableHomeKitScheduleSwitches: true,
-  };
-
-  platform.accessories = [cachedAccessory];
-  platform.hapScheduleAccessories = new Map();
-  platform.scheduleAccountCoordinator = {
-    policyDescription: jest.fn().mockReturnValue("Schedule cloud policy"),
-  };
-  platform.schedulePolicyLogged = false;
-
-  platform.log = {
-    debug: jest.fn(),
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-  };
-
-  platform.api = {
-    hap: {
-      uuid: {
-        generate: jest.fn((seed) =>
-          seed === "hap:roborock:schedules:device-1"
-            ? "schedule-uuid-device-1"
-            : seed
-        ),
-      },
-    },
-    unregisterPlatformAccessories: jest.fn(),
-    registerPlatformAccessories: jest.fn(),
-  };
-
-  platform.getVacuumDisplayName = jest.fn(() => "Test Robot");
-  platform.removeHapScheduleAccessory = jest.fn();
-
-  return {
-    platform,
-    cachedAccessory,
-  };
-}
+const DUID = "device-1";
 
 describe("HAP schedule startup recovery", () => {
-  test("failed startup refresh restores the cached schedule coordinator", async () => {
-    const { platform, cachedAccessory } = makeHarness();
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
 
-    platform.syncHapSchedules([{ duid: "device-1" }]);
+  test("a failed startup reading keeps the cached schedule accessory and gives its switches their handlers", async () => {
+    const account = makeScheduleAccount({
+      duid: DUID,
+      serverTimers: new Error("socket hang up"),
+    });
+    account.getCloudScenes.mockRejectedValue(new Error("socket hang up"));
 
-    await Promise.resolve();
-    await Promise.resolve();
+    const cached = new PlatformAccessory(
+      "Test Robot Schedules",
+      hap.uuid.generate(`hap:roborock:schedules:${DUID}`)
+    );
+    cached.context = {
+      kind: "hapExtension",
+      extension: "schedules",
+      duid: DUID,
+    };
+    cached.addService(
+      hap.Service.Switch,
+      "Test Robot Schedule 1",
+      "roborock-schedule-timer-2"
+    );
 
-    expect(platform.hapScheduleAccessories.has("device-1")).toBe(true);
+    const platform = Object.create(RoborockPlatform.prototype);
+    Object.assign(platform, makeSchedulePlatform(account), {
+      platformConfig: {
+        enableHomeKitActionSwitches: true,
+        enableHomeKitScheduleSwitches: true,
+      },
+      accessories: [cached],
+      hapScheduleAccessories: new Map(),
+      schedulePolicyLogged: true,
+    });
+    platform.api = {
+      ...platform.api,
+      platformAccessory: PlatformAccessory,
+      registerPlatformAccessories: jest.fn(),
+      unregisterPlatformAccessories: jest.fn(),
+    };
+    platform.getVacuumDisplayName = () => "Test Robot";
 
-    const coordinator = platform.hapScheduleAccessories.get("device-1");
+    platform.syncHapSchedules([{ duid: DUID }]);
+    await jest.advanceTimersByTimeAsync(0);
 
-    expect(coordinator.initialize).toHaveBeenCalledWith("Test Robot");
-    expect(
-      coordinator.restoreScheduleHandlersFromAccessory
-    ).toHaveBeenCalledTimes(1);
-
-    expect(platform.accessories).toContain(cachedAccessory);
-
+    expect(platform.hapScheduleAccessories.has(DUID)).toBe(true);
+    expect(platform.accessories).toContain(cached);
     expect(platform.api.unregisterPlatformAccessories).not.toHaveBeenCalled();
+    expect(switchSubtypes(cached)).toEqual(["roborock-schedule-timer-2"]);
+    const on = cached
+      .getServiceById(hap.Service.Switch, "roborock-schedule-timer-2")
+      .getCharacteristic(hap.Characteristic.On);
+    expect(typeof on.setHandler).toBe("function");
+
+    platform.hapScheduleAccessories.get(DUID).shutdown();
   });
 });

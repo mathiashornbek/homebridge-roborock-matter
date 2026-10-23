@@ -18,6 +18,12 @@ import { HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME } from "./settings";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const VERIFY_DELAY_MS = 3000;
+// How long a schedule switch's HomeKit write may take to answer. hap-nodejs
+// logs "slow to respond" at 3 s (Accessory.TIMEOUT_WARNING) and answers the
+// controller OPERATION_TIMED_OUT at 9 s, and the write with its verification
+// takes 4 s at the very least. So the write answers when Roborock has
+// accepted it, or at this budget, and verification finishes behind it.
+const SCHEDULE_WRITE_ANSWER_BUDGET_MS = 2500;
 const WRITE_SUPPRESSION_MS = 5000;
 // WHY FIVE MINUTES, IN THE AUTHOR'S OWN WORDS. Recorded here rather than left
 // in the pull request, because the next person to look at this number will
@@ -125,6 +131,18 @@ export function scheduleFailureBackoffMs(
   return Math.round(baseDelay * jitterFactor);
 }
 
+/**
+ * Whether a failure is the cloud saying "slow down", which pauses the whole
+ * account's schedule and Routine traffic for an hour.
+ *
+ * A status field of 429 (on the error or its HTTP response) or a phrase that
+ * says so. Never a bare "429" in free text: the plugin's own timeout messages
+ * carry request ids and message counts, and request 429 or "429 cloud
+ * message(s) since startup" is no rate limit.
+ */
+const SCHEDULE_THROTTLE_PHRASE =
+  /too many requests|rate[ -]?limit(?:ed|ing)?|request limit|frequency limit|throttl(?:ed|ing)/i;
+
 export function isDefiniteScheduleThrottle(error: unknown): boolean {
   const candidates: unknown[] = [error];
   const visited = new Set<unknown>();
@@ -134,14 +152,8 @@ export function isDefiniteScheduleThrottle(error: unknown): boolean {
     if (candidate == null || visited.has(candidate)) continue;
     visited.add(candidate);
 
-    if (typeof candidate === "number" && candidate === 429) return true;
-
     if (typeof candidate === "string") {
-      if (
-        /\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?|request limit|frequency limit|throttl(?:ed|ing)/i.test(
-          candidate
-        )
-      ) {
+      if (SCHEDULE_THROTTLE_PHRASE.test(candidate)) {
         return true;
       }
       continue;
@@ -149,14 +161,14 @@ export function isDefiniteScheduleThrottle(error: unknown): boolean {
 
     if (typeof candidate !== "object") continue;
     const record = candidate as Record<string, unknown>;
-    candidates.push(
-      record.status,
-      record.statusCode,
-      record.code,
-      record.message,
-      record.cause,
-      record.response
-    );
+    if (
+      [record.status, record.statusCode, record.code].some(
+        (field) => String(field) === "429"
+      )
+    ) {
+      return true;
+    }
+    candidates.push(record.message, record.cause, record.response);
   }
 
   return false;
@@ -363,6 +375,10 @@ export class ScheduleWriteBatcher<T> {
 interface ScheduleWriteRequest {
   scheduleId: string;
   enabled: boolean;
+  /** Called once Roborock has accepted the write, before verification. */
+  onSent?: () => void;
+  /** Called at once when Roborock refuses the write; that refusal is final. */
+  onRefused?: (error: unknown) => void;
 }
 
 export interface HapScheduleContext {
@@ -538,6 +554,8 @@ export default class RoborockHapScheduleAccessory {
   // wants only the Routines still needs the scene reading, so the schedule
   // half can be switched off without losing the coordinator.
   private exposeSchedules = true;
+  private onScheduleCount: ((count: number) => void) | undefined;
+  private retryReadTimer: ReturnType<typeof scheduleTimer> | undefined;
 
   constructor(
     private readonly platform: RoborockPlatform,
@@ -700,6 +718,20 @@ export default class RoborockHapScheduleAccessory {
     return this.scheduleAccessories.size;
   }
 
+  /** The robot as a log line names it: its name, never a bare duid. */
+  get robotName(): string {
+    const api = this.platform.roborockAPI as {
+      describeDevice?: (duid: string) => string;
+    };
+    return (
+      this.vacuumName ||
+      (typeof api?.describeDevice === "function"
+        ? api.describeDevice(this.duid)
+        : "") ||
+      "this robot"
+    );
+  }
+
   /**
    * The PlatformAccessory the schedule switches live in.
    *
@@ -722,32 +754,52 @@ export default class RoborockHapScheduleAccessory {
    * still unknown. A later successful cloud refresh remains authoritative.
    */
   restoreScheduleHandlersFromAccessory(): boolean {
+    const restored = this.schedulesFromAccessory();
+    const switchServiceCount = this.managerAccessory.services.filter(
+      (service) => service.UUID === this.platform.Service.Switch.UUID
+    ).length;
+    const scheduleSwitchServiceCount = this.managerAccessory.services.filter(
+      (service) => this.scheduleIdOf(service) !== null
+    ).length;
+
+    if (restored.length === 0) {
+      this.platform.log.debug(
+        `Schedule restoration for ${this.vacuumName}: ` +
+          `managerUUID=${this.managerAccessory.UUID}; ` +
+          `services=${this.managerAccessory.services.length}; ` +
+          `switchServices=${switchServiceCount}; ` +
+          `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
+          `restored=0; handlersReattached=false`
+      );
+      return false;
+    }
+
+    this.sync(restored);
+
+    this.platform.log.debug(
+      `Schedule restoration for ${this.vacuumName}: ` +
+        `managerUUID=${this.managerAccessory.UUID}; ` +
+        `services=${this.managerAccessory.services.length}; ` +
+        `switchServices=${switchServiceCount}; ` +
+        `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
+        `restored=${restored.length}; ` +
+        `scheduleIds=${restored.map((schedule) => schedule.id).join(",")}; ` +
+        `handlersReattached=true`
+    );
+
+    return true;
+  }
+
+  /**
+   * The schedules the accessory's Switch services stand for, as Homebridge
+   * restored them: local knowledge only, never cached as a reading.
+   */
+  private schedulesFromAccessory(): RoborockSchedule[] {
     const restored: RoborockSchedule[] = [];
     const seen = new Set<string>();
-    let switchServiceCount = 0;
-    let scheduleSwitchServiceCount = 0;
 
     for (const service of this.managerAccessory.services) {
-      if (service.UUID !== this.platform.Service.Switch.UUID) {
-        continue;
-      }
-
-      switchServiceCount++;
-
-      const subtype = service.subtype;
-      if (typeof subtype !== "string" || !subtype.startsWith(SERVICE_PREFIX)) {
-        continue;
-      }
-
-      scheduleSwitchServiceCount++;
-
-      let scheduleId: string;
-      try {
-        scheduleId = decodeURIComponent(subtype.slice(SERVICE_PREFIX.length));
-      } catch {
-        continue;
-      }
-
+      const scheduleId = this.scheduleIdOf(service);
       if (!scheduleId || seen.has(scheduleId)) {
         continue;
       }
@@ -788,36 +840,51 @@ export default class RoborockHapScheduleAccessory {
       });
     }
 
-    if (restored.length === 0) {
-      this.platform.log.debug(
-        `Schedule restoration for ${this.vacuumName}: ` +
-          `managerUUID=${this.managerAccessory.UUID}; ` +
-          `services=${this.managerAccessory.services.length}; ` +
-          `switchServices=${switchServiceCount}; ` +
-          `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
-          `restored=0; handlersReattached=false`
-      );
-      return false;
-    }
-
-    restored.sort((a, b) =>
+    return restored.sort((a, b) =>
       a.id.localeCompare(b.id, undefined, { numeric: true })
     );
+  }
 
-    this.sync(restored);
-
-    this.platform.log.debug(
-      `Schedule restoration for ${this.vacuumName}: ` +
-        `managerUUID=${this.managerAccessory.UUID}; ` +
-        `services=${this.managerAccessory.services.length}; ` +
-        `switchServices=${switchServiceCount}; ` +
-        `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
-        `restored=${restored.length}; ` +
-        `scheduleIds=${restored.map((schedule) => schedule.id).join(",")}; ` +
-        `handlersReattached=true`
+  /** The restored switches of one source, for a source that failed. */
+  private restoredSchedulesOfSource(
+    source: ScheduleSource
+  ): RoborockSchedule[] {
+    return this.schedulesFromAccessory().filter(
+      (schedule) => (schedule.source ?? "serverTimer") === source
     );
+  }
 
-    return true;
+  /**
+   * Read again once the back-off is over, until a reading is complete. One
+   * timer at a time, unref'd, and gone with the coordinator's runtime.
+   */
+  private scheduleRetryRead(): void {
+    if (this.disposed || this.retryReadTimer) {
+      return;
+    }
+    const now = Date.now();
+    const delay = Math.max(
+      this.nextRefreshAttemptAt - now,
+      this.accountCoordinator.cooldownRemainingMs(now),
+      0
+    );
+    const timer = scheduleTimer(() => {
+      this.retryReadTimer = undefined;
+      if (!this.disposed) {
+        void this.refreshDetailed();
+      }
+    }, delay);
+    unrefTimer(timer);
+    this.retryReadTimer = timer;
+  }
+
+  /**
+   * Called after every reading that was applied, with the number of schedule
+   * switches it left. The platform publishes the schedule accessory from
+   * this — including after a retry that succeeds long after startup.
+   */
+  onScheduleReading(listener: ((count: number) => void) | undefined): void {
+    this.onScheduleCount = listener;
   }
 
   async refreshIfNeeded(): Promise<boolean> {
@@ -1009,52 +1076,71 @@ export default class RoborockHapScheduleAccessory {
       const timerSchedules = this.serverTimerSchedulesFrom(readings.timers);
       const sceneSchedules = this.cloudSceneSchedulesFrom(readings.scenes);
 
-      // A source that failed can only be papered over with its own previous
-      // good reading. Without one — the first refresh after a restart, with
-      // switches restored from the cache — applying the other source's list
-      // would remove every switch the failed source owns, so the whole
-      // refresh is preserved and backs off, exactly as it did with one source.
-      const unrecoverable =
-        (!timerSchedules.ok && this.lastServerTimerSchedules === undefined) ||
-        (!sceneSchedules.ok && this.lastCloudSceneSchedules === undefined);
+      const failures = [
+        { outcome: timerSchedules, reading: readings.timers },
+        { outcome: sceneSchedules, reading: readings.scenes },
+      ].filter(({ outcome }) => !outcome.ok);
+      const somethingRead = [
+        { outcome: timerSchedules, reading: readings.timers },
+        { outcome: sceneSchedules, reading: readings.scenes },
+      ].some(({ outcome, reading }) => outcome.ok && reading.state === "read");
 
-      if (unrecoverable) {
-        // Keep every switch and back off.
-        const throttled = [readings.timers, readings.scenes].find(
-          (reading) =>
+      if (failures.length > 0) {
+        // Back off, and keep reading after the back-off by itself: a source
+        // that failed at startup used to be read again only when Apple Home
+        // asked a switch for its state, which never happens for a switch
+        // that was never published.
+        const throttled = failures.find(
+          ({ reading }) =>
             reading.state === "failed" &&
             isDefiniteScheduleThrottle(reading.error)
         );
-        if (throttled && throttled.state === "failed") {
-          this.recordScheduleThrottle(throttled.error);
+        if (throttled && throttled.reading.state === "failed") {
+          this.recordScheduleThrottle(throttled.reading.error);
         } else {
           this.recordRefreshFailure();
         }
+        this.scheduleRetryRead();
+      }
 
-        const reasons = [timerSchedules, sceneSchedules]
-          .filter((outcome) => !outcome.ok && outcome.reason)
-          .map((outcome) => outcome.reason)
+      if (failures.length > 0 && !somethingRead) {
+        // Nothing to apply. Keep every switch, and give the ones Homebridge
+        // restored from its cache their handlers so a press works meanwhile.
+        if (this.scheduleAccessories.size === 0) {
+          this.restoreScheduleHandlersFromAccessory();
+        }
+        const reasons = failures
+          .map(({ outcome }) => outcome.reason)
+          .filter(Boolean)
           .join("; ");
         this.platform.log.warn(
-          `Unable to refresh Roborock schedules for ${this.duid}: ${reasons}. Preserving existing schedules.`
+          `Unable to refresh Roborock schedules for ${this.robotName}: ${reasons}. Preserving existing schedules.`
         );
         return preserved();
       }
 
+      // Each source on its own. One that failed keeps exactly the switches of
+      // its own kind: its last good reading, or, before there was one, the
+      // switches Homebridge restored for it. The other source's reading is
+      // applied, and the Routines follow the scene reading alone. A timed-out
+      // device-side read used to veto the whole reading at startup, Routines
+      // included.
       const merged: RoborockSchedule[] = [
         ...(timerSchedules.ok
           ? timerSchedules.schedules
-          : this.lastServerTimerSchedules ?? []),
+          : this.lastServerTimerSchedules ??
+            this.restoredSchedulesOfSource("serverTimer")),
         ...(sceneSchedules.ok
           ? sceneSchedules.schedules
-          : this.lastCloudSceneSchedules ?? []),
+          : this.lastCloudSceneSchedules ??
+            this.restoredSchedulesOfSource("cloudScene")),
       ];
 
       if (timerSchedules.ok) {
         this.lastServerTimerSchedules = timerSchedules.schedules;
       } else if (timerSchedules.reason) {
         this.platform.log.warn(
-          `Unable to refresh the device-side schedules for ${this.duid}: ${timerSchedules.reason}. Keeping the previous ones.`
+          `Unable to refresh the device-side schedules for ${this.robotName}: ${timerSchedules.reason}. Keeping the previous ones and trying again shortly.`
         );
       }
 
@@ -1065,7 +1151,7 @@ export default class RoborockHapScheduleAccessory {
         }
       } else if (sceneSchedules.reason) {
         this.platform.log.warn(
-          `Unable to refresh the Routines for ${this.duid}: ${sceneSchedules.reason}. Keeping the previous ones.`
+          `Unable to refresh the Routines for ${this.robotName}: ${sceneSchedules.reason}. Keeping the previous ones and trying again shortly.`
         );
       }
 
@@ -1073,11 +1159,17 @@ export default class RoborockHapScheduleAccessory {
         ...schedule,
         timer: [...schedule.timer],
       }));
-      this.lastScheduleRefreshAt = Date.now();
-      this.clearRefreshFailure();
+      if (failures.length === 0) {
+        // Only a complete reading counts as fresh, so an incomplete one is
+        // read again after its back-off rather than served for five minutes.
+        this.lastScheduleRefreshAt = Date.now();
+        this.clearRefreshFailure();
+      }
 
-      this.platform.log.info(
-        `Schedule parser: parsed ${this.duid}; result count=${merged.length}` +
+      // Debug: it is written on every reading, up to twelve an hour per
+      // robot while a Home app is open.
+      this.platform.log.debug(
+        `Schedule parser: parsed ${this.robotName}; result count=${merged.length}` +
           (readings.scenes.state === "read"
             ? ` (device timers=${timerSchedules.ok ? timerSchedules.schedules.length : "kept"}, ` +
               `cloud routines with a timer=${sceneSchedules.ok ? sceneSchedules.schedules.length : "kept"}` +
@@ -1091,6 +1183,7 @@ export default class RoborockHapScheduleAccessory {
       if (readings.scenes.state === "read") {
         this.syncRoutines(readings.scenes.value);
       }
+      this.onScheduleCount?.(this.scheduleCount);
 
       // A successful empty snapshot is authoritative information. It is
       // different from a failed/untrusted cloud response.
@@ -1108,9 +1201,10 @@ export default class RoborockHapScheduleAccessory {
       } else {
         this.recordRefreshFailure();
       }
+      this.scheduleRetryRead();
       const message = error instanceof Error ? error.message : String(error);
       this.platform.log.warn(
-        `Unable to refresh Roborock schedules for ${this.duid}: ${message}. Preserving existing schedules.`
+        `Unable to refresh Roborock schedules for ${this.robotName}: ${message}. Preserving existing schedules.`
       );
       return preserved();
     }
@@ -1132,7 +1226,7 @@ export default class RoborockHapScheduleAccessory {
       if (isServerTimerRefusal(error)) {
         this.serverTimersRefused = true;
         this.platform.log.info(
-          `${this.vacuumName || this.duid} does not offer a device-side schedule list (${
+          `${this.robotName} does not offer a device-side schedule list (${
             error instanceof Error ? error.message : String(error)
           }). Its schedules are read from the account's Routines instead, and the device-side list is not asked again this session.`
         );
@@ -1175,7 +1269,7 @@ export default class RoborockHapScheduleAccessory {
       if (status >= 400 && status < 500 && status !== 429) {
         this.cloudScenesUnavailable = true;
         this.platform.log.info(
-          `The Roborock account does not show Routines for ${this.vacuumName || this.duid} (HTTP ${status}); they are not asked for again this session.`
+          `The Roborock account does not show Routines for ${this.robotName} (HTTP ${status}); they are not asked for again this session.`
         );
         return { state: "skipped" };
       }
@@ -1268,8 +1362,12 @@ export default class RoborockHapScheduleAccessory {
     return { ok: true, schedules, reason: undefined };
   }
 
-  enqueueScheduleWrite(scheduleId: string, enabled: boolean): Promise<boolean> {
-    return this.writeBatcher.enqueue({ scheduleId, enabled });
+  enqueueScheduleWrite(
+    scheduleId: string,
+    enabled: boolean,
+    progress: Pick<ScheduleWriteRequest, "onSent" | "onRefused"> = {}
+  ): Promise<boolean> {
+    return this.writeBatcher.enqueue({ scheduleId, enabled, ...progress });
   }
 
   private async executeScheduleWriteBatch(
@@ -1299,7 +1397,7 @@ export default class RoborockHapScheduleAccessory {
 
       try {
         this.platform.log.info(
-          `Schedule command: ${request.enabled ? "enabling" : "disabling"} ${this.duid}/${request.scheduleId}.`
+          `Schedule command: ${request.enabled ? "enabling" : "disabling"} schedule ${request.scheduleId} of ${this.robotName}.`
         );
         this.accountCoordinator.recordRequest("primaryWrite");
         if (isCloudSceneScheduleId(request.scheduleId)) {
@@ -1314,8 +1412,10 @@ export default class RoborockHapScheduleAccessory {
           );
         }
         primarySent.push(request);
+        request.onSent?.();
       } catch (error) {
         failures.set(request.scheduleId, error);
+        request.onRefused?.(error);
         if (isDefiniteScheduleThrottle(error)) {
           this.recordScheduleThrottle(error);
           return new Map(
@@ -1349,8 +1449,8 @@ export default class RoborockHapScheduleAccessory {
       (request) => !isCloudSceneScheduleId(request.scheduleId)
     );
     const primaryConfirmed = primarySent.length - unconfirmed.length;
-    this.platform.log.info(
-      `Schedule batch verification for ${this.duid}: ` +
+    this.platform.log.debug(
+      `Schedule batch verification for ${this.robotName}: ` +
         `requested=${requests.length}; primarySent=${primarySent.length}; ` +
         `primaryConfirmed=${primaryConfirmed}; fallbackNeeded=${fallback.length}.`
     );
@@ -1381,7 +1481,7 @@ export default class RoborockHapScheduleAccessory {
 
       try {
         this.platform.log.warn(
-          `Schedule command: upd_server_timer was not confirmed for ${this.duid}/${request.scheduleId}; trying upd_timer fallback.`
+          `Schedule command: upd_server_timer was not confirmed for schedule ${request.scheduleId} of ${this.robotName}; trying upd_timer fallback.`
         );
         this.accountCoordinator.recordRequest("fallbackWrite");
         await updateTimer(api, this.duid, request.scheduleId, request.enabled, {
@@ -1421,8 +1521,8 @@ export default class RoborockHapScheduleAccessory {
     const fallbackConfirmed = fallbackSent.filter((request) =>
       this.cachedScheduleMatches(request)
     ).length;
-    this.platform.log.info(
-      `Schedule fallback verification for ${this.duid}: ` +
+    this.platform.log.debug(
+      `Schedule fallback verification for ${this.robotName}: ` +
         `requested=${requests.length}; primarySent=${primarySent.length}; ` +
         `primaryConfirmed=${primaryConfirmed}; fallbackNeeded=${fallback.length}; ` +
         `fallbackSent=${fallbackSent.length}; fallbackConfirmed=${fallbackConfirmed}; ` +
@@ -1713,6 +1813,10 @@ export default class RoborockHapScheduleAccessory {
 
   private stopRuntime(): void {
     this.disposed = true;
+    if (this.retryReadTimer) {
+      clearTimer(this.retryReadTimer);
+      this.retryReadTimer = undefined;
+    }
     this.refreshGeneration++;
     this.refreshInProgress = undefined;
     this.refreshInProgressStartedAt = 0;
@@ -1843,6 +1947,45 @@ export default class RoborockHapScheduleAccessory {
 
       this.scheduleAccessories.delete(id);
       this.platform.api.updatePlatformAccessories([this.managerAccessory]);
+    }
+
+    // A switch Homebridge restored from its cache has no child until
+    // something builds one, so the loop above never saw it: a schedule
+    // deleted in the app while Homebridge was stopped kept its switch, with
+    // no handler, for good. The accessory says which switches exist.
+    let removedRestored = false;
+    for (const service of [...this.managerAccessory.services]) {
+      const id = this.scheduleIdOf(service);
+      if (id === null || ids.has(id)) continue;
+
+      this.platform.log.debug(
+        `Schedule sync: removing the cached switch of ${id}, which the account no longer has.`
+      );
+      this.managerAccessory.removeService(service);
+      removedRestored = true;
+    }
+    if (removedRestored) {
+      this.platform.api.updatePlatformAccessories([this.managerAccessory]);
+    }
+  }
+
+  /** The schedule id a Switch service carries in its subtype, or null. */
+  private scheduleIdOf(service: {
+    UUID: string;
+    subtype?: string;
+  }): string | null {
+    const subtype = service.subtype;
+    if (
+      service.UUID !== this.platform.Service.Switch.UUID ||
+      typeof subtype !== "string" ||
+      !subtype.startsWith(SERVICE_PREFIX)
+    ) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(subtype.slice(SERVICE_PREFIX.length)) || null;
+    } catch {
+      return null;
     }
   }
 }
@@ -1998,52 +2141,118 @@ class RoborockHapScheduleSwitchAccessory {
       throw this.writeFailed();
     }
 
-    try {
-      this.platform.log.info(
-        `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.duid}/${this.scheduleId}.`
-      );
-      const executed = await this.coordinator.enqueueScheduleWrite(
-        this.scheduleId,
-        enabled
-      );
+    // Debug: the batch logs the command itself when it sends it.
+    this.platform.log.debug(
+      `Schedule command: queueing ${enabled ? "enable" : "disable"} for schedule ${this.scheduleId} of ${this.coordinator.robotName}.`
+    );
 
-      if (!executed) {
-        return;
+    let markSent = (): void => undefined;
+    const sent = new Promise<"sent">((resolve) => {
+      markSent = () => resolve("sent");
+    });
+    let markRefused = (_error: unknown): void => undefined;
+    const refused = new Promise<{ settled: true; error: unknown }>(
+      (resolve) => {
+        markRefused = (error) => resolve({ settled: true, error });
       }
+    );
+    const outcome = this.coordinator.enqueueScheduleWrite(
+      this.scheduleId,
+      enabled,
+      { onSent: () => markSent(), onRefused: (error) => markRefused(error) }
+    );
+    // The batch reports a refusal again when it ends; by then it is handled.
+    outcome.catch(() => undefined);
 
-      if (this.disposed) {
-        return;
-      }
-
-      this.schedule.enabled = enabled;
-      this.schedule.timer[1] = enabled ? "on" : "off";
-      this.failedCommands.delete(this.scheduleId);
-      this.suppression.set(this.scheduleId, {
-        enabled,
-        timestamp: Date.now(),
-      });
-      this.updateService(enabled);
-    } catch (error) {
-      if (this.disposed) {
-        return;
-      }
-
-      this.updateService(previous);
-
-      this.failedCommands.set(this.scheduleId, {
-        enabled,
-        timestamp: Date.now(),
-      });
-
-      const message = error instanceof Error ? error.message : String(error);
-
-      this.platform.log.warn(
-        `Unable to ${enabled ? "enable" : "disable"} Roborock schedule ${this.scheduleId}: ${message}. ` +
-          `Further attempts for this same state are suppressed for ` +
-          `${RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS / 1000}s.`
+    let budgetTimer: ReturnType<typeof scheduleTimer> | undefined;
+    const budget = new Promise<"budget">((resolve) => {
+      budgetTimer = scheduleTimer(
+        () => resolve("budget"),
+        SCHEDULE_WRITE_ANSWER_BUDGET_MS
       );
-      throw this.writeFailed();
+      unrefTimer(budgetTimer);
+    });
+    const first = await Promise.race([
+      outcome.then(
+        (executed) => ({ settled: true as const, executed }),
+        (error: unknown) => ({ settled: true as const, error })
+      ),
+      refused,
+      sent,
+      budget,
+    ]);
+    if (budgetTimer) {
+      clearTimer(budgetTimer);
     }
+
+    if (typeof first === "object") {
+      // Settled within the budget: the outcome is known, so HomeKit gets it.
+      if ("error" in first) {
+        if (this.disposed) {
+          return;
+        }
+        this.writeFailedFor(previous, enabled, first.error);
+        throw this.writeFailed();
+      }
+      if (first.executed) {
+        this.writeConfirmed(enabled);
+      }
+      return;
+    }
+
+    // Accepted, or still under way: answer now with the requested state and
+    // let verification finish behind the answer. If it does not confirm, the
+    // switch is turned back and the reason logged — it is never left showing
+    // a state Roborock did not keep.
+    this.schedule.enabled = enabled;
+    void outcome.then(
+      (executed) => {
+        if (executed) {
+          this.writeConfirmed(enabled);
+        }
+      },
+      (error: unknown) => this.writeFailedFor(previous, enabled, error)
+    );
+  }
+
+  private writeConfirmed(enabled: boolean): void {
+    if (this.disposed) {
+      return;
+    }
+    this.schedule.enabled = enabled;
+    this.schedule.timer[1] = enabled ? "on" : "off";
+    this.failedCommands.delete(this.scheduleId);
+    this.suppression.set(this.scheduleId, {
+      enabled,
+      timestamp: Date.now(),
+    });
+    this.updateService(enabled);
+  }
+
+  private writeFailedFor(
+    previous: boolean,
+    enabled: boolean,
+    error: unknown
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    this.schedule.enabled = previous;
+    this.updateService(previous);
+
+    this.failedCommands.set(this.scheduleId, {
+      enabled,
+      timestamp: Date.now(),
+    });
+
+    const message = error instanceof Error ? error.message : String(error);
+
+    this.platform.log.warn(
+      `Unable to ${enabled ? "enable" : "disable"} Roborock schedule ${this.scheduleId}: ${message}. ` +
+        `The switch shows the schedule as ${previous ? "on" : "off"} again. ` +
+        `Further attempts for this same state are suppressed for ` +
+        `${RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS / 1000}s.`
+    );
   }
 
   /**

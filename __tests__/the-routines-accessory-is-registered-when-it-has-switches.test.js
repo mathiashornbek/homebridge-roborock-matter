@@ -26,6 +26,7 @@ jest.mock("../src/hap_schedule_accessory", () => {
         .fn()
         .mockReturnValue(false);
       this.setScheduleExposure = jest.fn();
+      this.onScheduleReading = jest.fn();
       this.removeRoutineServices = jest.fn();
       this.removeScheduleServices = jest.fn();
       this.attachRoutineAccessory = jest.fn((accessory, onCount) => {

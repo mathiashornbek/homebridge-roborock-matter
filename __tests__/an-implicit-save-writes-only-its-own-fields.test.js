@@ -106,6 +106,7 @@ describe("the auto-saved list matches the controls that trigger it", () => {
   // `addEventListener("change", () => autoSave())` and forgetting the list.
   const CONTROL_TO_KEY = {
     baseUrl: "baseURL",
+    serverUrl: "serverURL",
     skipDevices: "skipDevices",
     debugMode: "debugMode",
     matterChargedBatteryThreshold: "matterChargedBatteryThreshold",

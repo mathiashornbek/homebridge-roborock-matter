@@ -45,15 +45,23 @@
           "https://usiot.roborock.com",
           "https://euiot.roborock.com",
           "https://cniot.roborock.com",
+          "https://ruiot.roborock.com",
           "https://api.roborock.com"
         ],
         "enumNames": [
           "US (usiot.roborock.com)",
           "EU (euiot.roborock.com)",
           "CN (cniot.roborock.com)",
+          "RU (ruiot.roborock.com)",
           "Asia (api.roborock.com)"
         ],
         "description": "Roborock cloud region endpoint. Choose the region used by your Roborock account."
+      },
+      "serverURL": {
+        "title": "Custom Server URL",
+        "type": "string",
+        "placeholder": "https://api-roborock.example.com:555",
+        "description": "Optional. The address of a self-hosted Roborock server such as local_roborock_server (https://host or https://host:port). When set, the login goes to this server instead of the Region, using the email and PIN configured on the server as the verification code. Leave empty for Roborock's own servers."
       },
       "debugMode": {
         "title": "Debug Mode",

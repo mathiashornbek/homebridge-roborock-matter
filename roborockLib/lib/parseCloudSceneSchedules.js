@@ -180,6 +180,35 @@ function describeCron(cron) {
  */
 
 /**
+ * The trigger kind of a raw trigger entry: `type`, or `name` when `type` is
+ * absent or empty (the cloud has sent both shapes).
+ *
+ * @param {Record<string, unknown>} entry
+ * @returns {string | null}
+ */
+function triggerKind(entry) {
+  if (typeof entry.type === "string" && entry.type) return entry.type;
+  if (typeof entry.name === "string" && entry.name) return entry.name;
+  return null;
+}
+
+/**
+ * Whether a raw trigger is one a schedule switch reads AND writes: a TIMER
+ * with a cron. Reading and writing ask this one question, because a switch
+ * that reads its state from a trigger it does not write can never confirm a
+ * change.
+ *
+ * @param {unknown} raw trigger entry from the scene payload
+ * @returns {boolean}
+ */
+function isTimerTrigger(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const entry = /** @type {Record<string, unknown>} */ (raw);
+  const inner = parseNestedJson(entry.param);
+  return triggerKind(entry) === "TIMER" && typeof inner?.cron === "string";
+}
+
+/**
  * Read one trigger.
  *
  * @param {unknown} raw trigger entry from the scene payload
@@ -299,10 +328,13 @@ function parseCloudSceneSchedules(payload) {
       ? sceneParam.triggers
       : [];
 
-    const triggers = rawTriggers.map(parseTrigger).filter(
-      /** @returns {trigger is CloudSceneTrigger} */
-      (trigger) => trigger !== null && trigger.cron !== null
-    );
+    const triggers = rawTriggers
+      .filter(isTimerTrigger)
+      .map(parseTrigger)
+      .filter(
+        /** @returns {trigger is CloudSceneTrigger} */
+        (trigger) => trigger !== null && trigger.cron !== null
+      );
 
     if (triggers.length === 0) continue;
 
@@ -418,13 +450,9 @@ function buildSceneParamWithTimersEnabled(scene, enabled) {
 
   let timers = 0;
   const triggers = sceneParam.triggers.map((raw) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+    if (!isTimerTrigger(raw)) return raw;
     const trigger = /** @type {Record<string, unknown>} */ (raw);
-    const type = trigger.type ?? trigger.name;
-    if (type !== "TIMER") return trigger;
-
     const inner = parseNestedJson(trigger.param);
-    if (!inner || typeof inner.cron !== "string") return trigger;
 
     timers += 1;
     return {

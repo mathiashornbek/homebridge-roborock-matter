@@ -22,6 +22,12 @@
 
 jest.mock("../src/hap_schedule_accessory", () => {
   const instances = [];
+  // What a coordinator's readings say: the result, and how many schedule
+  // switches they leave, which is what the platform publishes from.
+  const firstReading = {
+    value: { success: true, hasSchedules: false },
+    count: 0,
+  };
 
   class FakeScheduleAccessory {
     constructor(platform, accessory, duid) {
@@ -29,10 +35,17 @@ jest.mock("../src/hap_schedule_accessory", () => {
       this.managerAccessory = accessory;
       this.duid = duid;
       this.routineCount = 0;
-      this.scheduleCount = 0;
-      this.initialize = jest.fn().mockResolvedValue({
-        success: true,
-        hasSchedules: false,
+      this.scheduleCount = firstReading.count;
+      this.onScheduleReading = jest.fn((listener) => {
+        this.scheduleListener = listener;
+      });
+      // Like the real coordinator: an applied reading reports its count.
+      this.initialize = jest.fn(async () => {
+        const result = firstReading.value;
+        if (result.success) {
+          this.scheduleListener?.(this.scheduleCount);
+        }
+        return result;
       });
       this.restoreScheduleHandlersFromAccessory = jest
         .fn()
@@ -60,11 +73,15 @@ jest.mock("../src/hap_schedule_accessory", () => {
     isHapRoutineAccessory: (accessory) =>
       accessory?.context?.extension === "routines",
     __instances: instances,
+    __firstReading: firstReading,
   };
 });
 
 const RoborockPlatform = require("../src/platform").default;
-const { __instances } = require("../src/hap_schedule_accessory");
+const {
+  __instances,
+  __firstReading,
+} = require("../src/hap_schedule_accessory");
 
 /** What Homebridge hands back from its cache on the next restart. */
 function cachedAccessory(extension, duid = "device-1") {
@@ -123,6 +140,8 @@ const unregistered = (platform) =>
 
 beforeEach(() => {
   __instances.length = 0;
+  __firstReading.value = { success: true, hasSchedules: false };
+  __firstReading.count = 0;
 });
 
 describe("unchecking the setting takes the tiles with it", () => {
@@ -159,6 +178,8 @@ describe("unchecking the setting takes the tiles with it", () => {
   test("routines off does not take the schedules with it", () => {
     const schedules = cachedAccessory("schedules");
     const routines = cachedAccessory("routines");
+    // The account still has the schedules the cached accessory shows.
+    __firstReading.count = 2;
     const platform = makePlatform({
       schedules: true,
       routines: false,
@@ -234,10 +255,6 @@ describe("checking it again puts them back", () => {
     platform.api.registerPlatformAccessories.mockClear();
     platform.platformConfig.enableHomeKitScheduleSwitches = true;
     coordinator.scheduleCount = 3;
-    coordinator.initialize.mockResolvedValue({
-      success: true,
-      hasSchedules: true,
-    });
 
     platform.syncHapSchedules([{ duid: "device-1" }]);
     await Promise.resolve();
@@ -254,17 +271,17 @@ describe("checking it again puts them back", () => {
   test("it does not register the same accessory twice", async () => {
     const cached = cachedAccessory("schedules");
     const platform = makePlatform({ routines: false, cached: [cached] });
+    // The cached accessory has switches, and the account still has them. (A
+    // first reading with no schedule in it takes the accessory out of Apple
+    // Home: a-schedule-deleted-while-homebridge-was-down-loses-its-switch.)
+    __firstReading.value = { success: true, hasSchedules: true };
+    __firstReading.count = 3;
 
     platform.syncHapSchedules([{ duid: "device-1" }]);
     await Promise.resolve();
     await Promise.resolve();
 
     const [coordinator] = __instances;
-    coordinator.scheduleCount = 3;
-    coordinator.initialize.mockResolvedValue({
-      success: true,
-      hasSchedules: true,
-    });
     platform.hapScheduleAccessories.set("device-1", coordinator);
 
     platform.api.registerPlatformAccessories.mockClear();
@@ -289,10 +306,7 @@ describe("checking it again puts them back", () => {
     const [coordinator] = __instances;
     coordinator.scheduleCount = 0;
     platform.hapScheduleAccessories.set("device-1", coordinator);
-    coordinator.initialize.mockResolvedValue({
-      success: true,
-      hasSchedules: true,
-    });
+    __firstReading.value = { success: true, hasSchedules: true };
 
     platform.api.registerPlatformAccessories.mockClear();
     platform.syncHapSchedules([{ duid: "device-1" }]);

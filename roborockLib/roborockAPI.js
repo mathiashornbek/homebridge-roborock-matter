@@ -456,6 +456,11 @@ const MATTER_CLEAN_TYPE_PREP_LABELS = new Set(["water mode", "clean type"]);
 // return room segments. Retrying lets newly named/segmented maps appear without
 // switching maps on every poll cycle.
 const SERVICE_AREA_ROOM_MAP_REFRESH_TTL_MS = 6 * 60 * 60 * 1000;
+// How long to wait before logging in again after Roborock rejected a session
+// or blocked sign-in: python-roborock's maximum back-off after an MQTT
+// authorisation or rate-limit refusal (mqtt/roborock_session.py
+// MAX_BACKOFF_INTERVAL). Every login counts against Roborock's sign-in limits.
+const AUTH_FAILURE_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 class Roborock {
   constructor(options) {
@@ -467,8 +472,9 @@ class Roborock {
     // the second is a corpse it must not restart.
     /** @type {boolean} */
     this.stopped = false;
-    /** @type {ReturnType<typeof setTimeout> | null} */
-    this.loginRetryTimer = null;
+    // Called every time a start succeeds; see setReadyListener.
+    /** @type {(() => unknown) | null} */
+    this.readyListener = null;
 
     this.config = {
       ...options,
@@ -538,17 +544,17 @@ class Roborock {
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
-    this.authState = {
-      twoFactorRequired: false,
-      statusMessage: "",
-    };
-    this.pendingAuth = null;
     this.persistBasePath = null;
     this.errorLogThrottleMs =
       typeof options.errorLogThrottleMs === "number"
         ? options.errorLogThrottleMs
         : TRANSIENT_ERROR_LOG_THROTTLE_MS;
     this.errorLogThrottle = new Map();
+    /** @type {number} ms; see roborockAuth.CLOUD_REQUEST_TIMEOUT_MS */
+    this.cloudRestTimeoutMs =
+      typeof options.cloudRestTimeoutMs === "number"
+        ? options.cloudRestTimeoutMs
+        : roborockAuth.CLOUD_REQUEST_TIMEOUT_MS;
     this.now =
       typeof options.now === "function" ? options.now : () => Date.now();
   }
@@ -1014,23 +1020,20 @@ class Roborock {
       .filter((device) => !this.shouldSkipDevice(device, ignoredSet));
   }
 
-  getManagedHomeDevices(homedata, ignoredSet = this.getIgnoredDeviceSet()) {
+  getManagedHomeDevices(homedata) {
     return this.getAllHomeDevices(homedata).filter(
       (device) => device && device.duid
     );
   }
 
-  getLocalKeyDevices(homedata, ignoredSet = this.getIgnoredDeviceSet()) {
-    return this.getManagedHomeDevices(homedata, ignoredSet).filter(
+  getLocalKeyDevices(homedata) {
+    return this.getManagedHomeDevices(homedata).filter(
       (device) => device.localKey
     );
   }
 
-  async refreshLocalKeysFromHomeData(
-    homedata,
-    ignoredSet = this.getIgnoredDeviceSet()
-  ) {
-    const localKeyDevices = this.getLocalKeyDevices(homedata, ignoredSet);
+  async refreshLocalKeysFromHomeData(homedata) {
+    const localKeyDevices = this.getLocalKeyDevices(homedata);
     const previousKeys =
       this.localKeys instanceof Map ? this.localKeys : new Map();
     const nextKeys = new Map(
@@ -1825,13 +1828,12 @@ class Roborock {
    * Bring the Roborock side up: log in (or reuse the stored session), fetch
    * the home details, start the MQTT session and the periodic health check
    * and home-data refresh, create a runtime per robot and take the first
-   * status. Called by the platform at launch, and again by the retry timers
-   * after a failed login or home-details fetch. `callback` runs once the
-   * home-details stage has been attempted, whether it succeeded or not
-   * (`isInited()` says which); a login that fails returns before that, so the
-   * callback does not run for that attempt.
+   * status. Called by the platform at launch and again by the one retry loop
+   * (scheduleStartServiceRetry) after a failure at any stage. Every start
+   * that succeeds ends in notifyReady(), so a retried start publishes the
+   * robots exactly as the first one would have.
    */
-  async startService(callback) {
+  async startService() {
     // A deliberate start clears the shutdown latch: Homebridge restarts a
     // child bridge in-process, and a stopped adapter that is started again
     // must be allowed to retry.
@@ -1868,12 +1870,29 @@ class Roborock {
 
     this.instance = clientID;
 
+    // A custom server (#43) replaces the region for the login and the account
+    // API; everything after the login follows the URLs its answer carries.
+    // An invalid one stops here: falling back to Roborock's own servers would
+    // send the account's email there.
+    this.loginServer = this.baseURL;
+    if (this.config.serverURL) {
+      try {
+        this.loginServer = roborockAuth.parseServerURL(this.config.serverURL);
+      } catch (error) {
+        this.log.error(
+          `${/** @type {any} */ (error)?.message || error} The plugin stays idle until the custom server URL is fixed in the plugin settings.`
+        );
+        return;
+      }
+    }
+
     // Initialize the login API (which is needed to get access to the real API).
     this.loginApi = roborockAuth.createLoginApi({
-      baseURL: this.baseURL,
+      baseURL: this.loginServer,
       username: this.config.username,
       clientID,
       language: this.language,
+      timeout: this.cloudRestTimeoutMs,
     });
     // api/v1/getUrlByEmail(email = ...)
 
@@ -1888,48 +1907,33 @@ class Roborock {
     } catch (error) {
       const message = error?.message || String(error);
 
-      const isCredentialError =
-        /"code":\s*(2012|2008|2018)/.test(message) ||
-        /username or password/i.test(message);
-      if (isCredentialError) {
+      // A refusal that asking again cannot change stops here with what to
+      // do about it; a sign-in block is waited out, because every attempt
+      // counts against the limit that caused it. Retrying either on the
+      // short loop would only repeat or deepen it.
+      const refusal = error?.refusal;
+      if (refusal?.later) {
         this.log.error(
-          `Roborock login rejected: ${message}. Check the email and password in the plugin settings; the plugin stays idle until the configuration is fixed.`
+          `Roborock refused the login (code ${refusal.code}): ${refusal.hint} The plugin tries again in ${AUTH_FAILURE_BACKOFF_MS / 3600000} hours.`
         );
-        this.authState.statusMessage =
-          "Login rejected - check email and password.";
+        this.armStartServiceRetry(AUTH_FAILURE_BACKOFF_MS);
+        return;
+      }
+      if (refusal || /username or password/i.test(message)) {
+        this.log.error(
+          `Roborock refused the login${refusal ? ` (code ${refusal.code})` : ""}: ${refusal ? refusal.hint : message} The plugin stays idle until that is fixed.`
+        );
         return;
       }
 
-      this._startupLoginAttempts = (this._startupLoginAttempts || 0) + 1;
-      if (this._startupLoginAttempts <= 10) {
-        const delayMs = Math.min(
-          60000 * this._startupLoginAttempts,
-          10 * 60000
-        );
-        this.log.warn(
-          `Could not reach the Roborock cloud (attempt ${this._startupLoginAttempts}/10): ${message}. Retrying in ${Math.round(delayMs / 60000)} minute(s).`
-        );
-        // The handle goes on the instance, not in a local const: shutdown
-        // clears what it can reach, and a local was unreachable by
-        // construction. The guard inside covers the case the clear cannot —
-        // a timer the event loop had already picked up when stopService ran.
-        const retryTimer = this.setTimeout(() => {
-          this.loginRetryTimer = null;
-          if (this.stopped) {
-            return;
-          }
-          this.startService(callback).catch((retryError) => {
-            this.log.error(
-              `Roborock startup retry failed unexpectedly: ${retryError?.message || retryError}`
-            );
-          });
-        }, delayMs);
-        this.loginRetryTimer = retryTimer;
-      } else {
-        this.log.error(
-          `Could not reach the Roborock cloud after ${this._startupLoginAttempts - 1} attempts: ${message}. Giving up until the next Homebridge restart.`
-        );
-      }
+      // The same loop as a failed home-details fetch: one policy, one timer
+      // that shutdown clears, and a success at the end that publishes.
+      this.scheduleStartServiceRetry(error);
+      return;
+    }
+    // Shutdown can land during any wait below; a start that carried on built
+    // a new MQTT client and intervals on an adapter that had just stopped.
+    if (this.stopped) {
       return;
     }
     if (!userdata) {
@@ -1938,24 +1942,14 @@ class Roborock {
       );
       return;
     }
-    this._startupLoginAttempts = 0;
 
-    try {
-      this.loginApi.defaults.headers.common["Authorization"] = userdata.token;
-    } catch (error) {
-      this.log.error(
-        "Failed to login. Most likely wrong token! Deleting HomeData and UserData. Try again! " +
-          error
-      );
-
-      this.deleteStateAsync("HomeData");
-      this.deleteStateAsync("UserData");
-    }
+    this.loginApi.defaults.headers.common["Authorization"] = userdata.token;
     const rriot = userdata.rriot;
 
     // Initialize the real API.
     this.api = axios.create({
       baseURL: rriot.r.a,
+      timeout: this.cloudRestTimeoutMs,
     });
     // Every request is signed over its path AND its body (see
     // lib/hawkSignature.js for the measured formula). Until 3.29.0 the body
@@ -1976,178 +1970,140 @@ class Roborock {
 
     // Get home details.
     try {
-      const homeDetail = await this.loginApi.get("api/v1/getHomeDetail");
-      if (homeDetail) {
-        const homeId = homeDetail.data.data.rrHomeId;
+      const homeId = await roborockAuth.getHomeId(this.loginApi);
+      if (this.stopped) {
+        return;
+      }
+      const homedataResult = await this.fetchHomeData(homeId);
+      if (this.stopped) {
+        return;
+      }
+      // Owned AND shared robots, room names, products and local keys, the
+      // same way the periodic refresh applies them.
+      const { localKeyDevices } = await this.applyHomeData(homedataResult);
+      const managedDevicesForDiagnostics = this.devices;
 
-        if (this.api) {
-          const homedata = await this.api.get(`v2/user/homes/${homeId}`);
-          const homedataResult = homedata.data.result;
+      const cloudOnly = this.isCloudOnlyModeEnabled();
+      if (cloudOnly) {
+        this.log.info(
+          "Roborock cloud-only mode is enabled; local LAN discovery and TCP connections will be skipped."
+        );
+      }
 
-          // Guard the persisted copy the same way updateHomeData already does.
-          // Roborock occasionally answers 200 with an envelope that carries no
-          // `result` (maintenance windows, rate limiting). Writing that through
-          // stores `{"ack":true}` over the cached device list on disk, so the
-          // next restart starts from a destroyed HomeData as well — turning a
-          // transient cloud hiccup into a persistent failure.
-          if (!homedataResult) {
-            throw new Error(
-              `The Roborock cloud returned no home data for home ${homeId}. Keeping the previously cached device list.`
+      for (const device of managedDevicesForDiagnostics) {
+        if (cloudOnly) {
+          await this.updateTransportDiagnostics(device.duid, {
+            lastTransport: "cloud",
+            localIp: null,
+          });
+        } else if (!device.localKey) {
+          await this.updateTransportDiagnostics(device.duid, {
+            lastTransport: "cloud",
+            lastTransportReason: "missing-local-key",
+          });
+        }
+
+        // Runs in BOTH directions: switching the mode off has to retract
+        // the markers it wrote, or they stay on disk for good and the
+        // device keeps reporting itself as cloud-only.
+        await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
+      }
+
+      if (this.stopped) {
+        return;
+      }
+      await this.rr_mqtt_connector.initUser(userdata);
+      await this.rr_mqtt_connector.initMQTT_Subscribe();
+      await this.rr_mqtt_connector.initMQTT_Message();
+
+      // Perform a periodic MQTT health check. Reconnect only if needed.
+      // A retried start reaches this line again; the timers of the
+      // attempt that failed after it must not keep running beside these.
+      if (this.reconnectIntervall) {
+        this.clearInterval(this.reconnectIntervall);
+      }
+      if (this.homedataInterval) {
+        this.clearInterval(this.homedataInterval);
+      }
+      this.reconnectIntervall = this.setInterval(async () => {
+        this.log.debug(`Running MQTT health check.`);
+
+        await this.rr_mqtt_connector.ensureConnected();
+      }, 3600 * 1000);
+
+      this.homedataInterval = this.setInterval(
+        this.updateHomeData.bind(this),
+        this.updateInterval * 1000,
+        homeId
+      );
+
+      // LAN discovery listens for UDP broadcasts for a fixed window, so
+      // awaiting it here used to stall startup for the full timeout with
+      // the CPU idle. Its results are only needed at the merge below, and
+      // the local keys it matches against are already loaded, so start it
+      // now and let the home-data refresh, device creation and network
+      // probes run inside that window instead.
+      const localDiscovery = this.isCloudOnlyModeEnabled()
+        ? Promise.resolve({})
+        : this.localConnector.getLocalDevices().catch((error) => {
+            this.log.debug(
+              `LAN discovery failed; continuing with cloud transport: ${error?.message || error}`
             );
-          }
-
-          await this.setStateAsync("HomeData", {
-            val: JSON.stringify(homedataResult),
-            ack: true,
+            return {};
           });
 
-          // Skip devices matching either their serial number or Roborock DUID.
-          const ignoredSet = this.getIgnoredDeviceSet();
-          // create devices and set states
-          this.products = homedataResult.products;
-          this.devices = homedataResult.devices || [];
-          this.devices = this.devices.filter(
-            (device) => !this.shouldSkipDevice(device, ignoredSet)
-          );
+      await this.createDevices();
 
-          const managedDevicesForDiagnostics = this.getManagedHomeDevices(
-            homedataResult,
-            ignoredSet
-          );
-          const localKeyDevices = await this.refreshLocalKeysFromHomeData(
-            homedataResult,
-            ignoredSet
-          );
+      // Cloud requests fail outright until the MQTT session is up, and
+      // the very first ones (the per-robot network probe, then each
+      // robot's initial poll) used to be issued a second after the
+      // broker handshake started. Wait for the real signal instead of
+      // hoping an unrelated delay covers it; a broker that never comes
+      // up releases the wait and the requests fail as they would have.
+      await this.rr_mqtt_connector.waitUntilConnected();
 
-          const cloudOnly = this.isCloudOnlyModeEnabled();
-          if (cloudOnly) {
-            this.log.info(
-              "Roborock cloud-only mode is enabled; local LAN discovery and TCP connections will be skipped."
-            );
-          }
+      // First on the wire once the session is up, because it is the one
+      // request an Apple Home tile is waiting for: until a Q7's real
+      // status lands, the tile shows the registration snapshot from the
+      // Matter store. Started here rather than at the end of
+      // createDevices() so the boot poll cannot precede the wait above.
+      this.startB01StatusLoop();
 
-          for (const device of managedDevicesForDiagnostics) {
-            if (cloudOnly) {
-              await this.updateTransportDiagnostics(device.duid, {
-                lastTransport: "cloud",
-                localIp: null,
-              });
-            } else if (!device.localKey) {
-              await this.updateTransportDiagnostics(device.duid, {
-                lastTransport: "cloud",
-                lastTransportReason: "missing-local-key",
-              });
-            }
-
-            // Runs in BOTH directions: switching the mode off has to retract
-            // the markers it wrote, or they stay on disk for good and the
-            // device keeps reporting itself as cloud-only.
-            await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
-          }
-
-          await this.rr_mqtt_connector.initUser(userdata);
-          await this.rr_mqtt_connector.initMQTT_Subscribe();
-          await this.rr_mqtt_connector.initMQTT_Message();
-
-          // store name of each room via ID
-          const rooms = homedataResult.rooms;
-          for (const room in rooms) {
-            const roomID = rooms[room].id;
-            const roomName = rooms[room].name;
-
-            this.roomIDs[roomID] = roomName;
-          }
-          this.log.debug(`RoomIDs debug: ${JSON.stringify(this.roomIDs)}`);
-
-          // Perform a periodic MQTT health check. Reconnect only if needed.
-          // A retried start reaches this line again; the timers of the
-          // attempt that failed after it must not keep running beside these.
-          if (this.reconnectIntervall) {
-            this.clearInterval(this.reconnectIntervall);
-          }
-          if (this.homedataInterval) {
-            this.clearInterval(this.homedataInterval);
-          }
-          this.reconnectIntervall = this.setInterval(async () => {
-            this.log.debug(`Running MQTT health check.`);
-
-            await this.rr_mqtt_connector.ensureConnected();
-          }, 3600 * 1000);
-
-          this.homedataInterval = this.setInterval(
-            this.updateHomeData.bind(this),
-            this.updateInterval * 1000,
-            homeId
-          );
-
-          // LAN discovery listens for UDP broadcasts for a fixed window, so
-          // awaiting it here used to stall startup for the full timeout with
-          // the CPU idle. Its results are only needed at the merge below, and
-          // the local keys it matches against are already loaded, so start it
-          // now and let the home-data refresh, device creation and network
-          // probes run inside that window instead.
-          const localDiscovery = this.isCloudOnlyModeEnabled()
-            ? Promise.resolve({})
-            : this.localConnector.getLocalDevices().catch((error) => {
-                this.log.debug(
-                  `LAN discovery failed; continuing with cloud transport: ${error?.message || error}`
-                );
-                return {};
-              });
-
-          await this.updateHomeData(homeId, homedataResult);
-
-          await this.createDevices();
-
-          // Cloud requests fail outright until the MQTT session is up, and
-          // the very first ones (the per-robot network probe, then each
-          // robot's initial poll) used to be issued a second after the
-          // broker handshake started. Wait for the real signal instead of
-          // hoping an unrelated delay covers it; a broker that never comes
-          // up releases the wait and the requests fail as they would have.
-          await this.rr_mqtt_connector.waitUntilConnected();
-
-          // First on the wire once the session is up, because it is the one
-          // request an Apple Home tile is waiting for: until a Q7's real
-          // status lands, the tile shows the registration snapshot from the
-          // Matter store. Started here rather than at the end of
-          // createDevices() so the boot poll cannot precede the wait above.
-          this.startB01StatusLoop();
-
-          // Independent, so concurrent: the network probe feeds the LAN
-          // attach that runs later in the background, and the first status
-          // feeds the tile. Neither needs the other, and serially they were
-          // two full round-trip waits where one is enough.
-          await Promise.allSettled([
-            this.getNetworkInfo(),
-            this.initializeDeviceUpdates(),
-          ]);
-
-          this.bInited = true;
-          // A success ends the retry chain and forgets the backoff, so a
-          // later outage starts from one minute again rather than ten.
-          if (this.startServiceRetryTimer) {
-            this.clearTimeout(this.startServiceRetryTimer);
-            this.startServiceRetryTimer = null;
-          }
-          this.startServiceRetryAttempts = 0;
-          this.log.info(
-            `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
-          );
-
-          // LAN attach runs to completion in the background. Everything above
-          // works over the cloud, and the transport layer already falls back
-          // to it, so holding accessory registration hostage to a fixed-length
-          // broadcast listen only delayed the Apple Home tiles.
-          void this.attachLocalTransports(localDiscovery, localKeyDevices);
-        } else {
-          this.log.warn(
-            `Roborock returned no home details, so the saved session has been cleared and the plugin will log in from scratch on the next start. If this repeats, re-enter your credentials in the plugin settings.`
-          );
-          await this.deleteStateAsync(`UserData`);
-        }
+      // Independent, so concurrent: the network probe feeds the LAN
+      // attach that runs later in the background, and the first status
+      // feeds the tile. Neither needs the other, and serially they were
+      // two full round-trip waits where one is enough.
+      await Promise.allSettled([
+        this.getNetworkInfo(),
+        this.initializeDeviceUpdates(),
+      ]);
+      if (this.stopped) {
+        return;
       }
+
+      this.bInited = true;
+      // A success ends the retry chain and forgets the backoff, so a
+      // later outage starts from one minute again rather than ten.
+      if (this.startServiceRetryTimer) {
+        this.clearTimeout(this.startServiceRetryTimer);
+        this.startServiceRetryTimer = null;
+      }
+      this.startServiceRetryAttempts = 0;
+      this.log.info(
+        `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
+      );
+      this.notifyReady();
+
+      // LAN attach runs to completion in the background. Everything above
+      // works over the cloud, and the transport layer already falls back
+      // to it, so holding accessory registration hostage to a fixed-length
+      // broadcast listen only delayed the Apple Home tiles.
+      void this.attachLocalTransports(localDiscovery, localKeyDevices);
     } catch (error) {
+      if (roborockAuth.isSessionRejected(error)) {
+        await this.handleRejectedSession(error);
+        return;
+      }
       // Not an error with a stack: this catch is reached by Roborock
       // maintenance, a rate-limited response and plain DNS failure. The stack
       // tells the user nothing and the line used to end without saying what
@@ -2166,9 +2122,42 @@ class Roborock {
       // restarted Homebridge.
       this.scheduleStartServiceRetry(error);
     }
+  }
 
-    if (callback) {
-      callback();
+  /**
+   * Room names for robots shared with this account. Their rooms belong to the
+   * owner's home, which this account's home data does not carry, so they
+   * would all read "Room <id>". `user/deviceshare/query/{duid}/rooms` has
+   * them (python-roborock's get_shared_device_rooms, which reads `roomId` as
+   * the id). Best effort: a robot whose rooms cannot be read keeps the
+   * numbered names, as before.
+   *
+   * @param {{receivedDevices?: Array<{duid?: string}>}} homedata
+   */
+  async addSharedRobotRoomNames(homedata) {
+    const shared = new Set(
+      this.normalizeArray(homedata?.receivedDevices).map((d) => d?.duid)
+    );
+    for (const device of this.getManagedHomeDevices(homedata)) {
+      if (!shared.has(device.duid) || !this.api) {
+        continue;
+      }
+      try {
+        const response = await this.api.get(
+          `user/deviceshare/query/${device.duid}/rooms`
+        );
+        const rooms = response?.data?.success ? response.data.result : [];
+        for (const room of this.normalizeArray(rooms)) {
+          const id = room?.id ?? room?.roomId;
+          if (id !== undefined && typeof room?.name === "string") {
+            this.roomIDs[id] = room.name;
+          }
+        }
+      } catch (error) {
+        this.log.debug(
+          `Could not read the room names of ${this.describeDevice(device.duid)}, which is shared with this account: ${/** @type {any} */ (error)?.message || error}`
+        );
+      }
     }
   }
 
@@ -2375,40 +2364,22 @@ class Roborock {
         return null;
       }
 
-      const signData = await this.ensureAuthSignature();
-      if (!signData) {
-        throw new Error("Failed to obtain login signature.");
-      }
-
-      const loginResult = await roborockAuth.loginByPassword(loginApi, {
+      const loginResult = await roborockAuth.signedLogin(loginApi, {
         email: this.config.username,
         password: this.config.password,
-        k: signData.k,
-        s: signData.s,
+        server: this.loginServer,
       });
 
       if (loginResult && loginResult.code === 200 && loginResult.data) {
         this.userData = loginResult.data;
-        this.pendingAuth = null;
         await this.setStateAsync("UserData", {
           val: JSON.stringify(this.userData),
           ack: true,
         });
-        this.authState.twoFactorRequired = false;
-        this.authState.statusMessage = "";
         return this.userData;
       }
 
-      if (loginResult && loginResult.code === 2031) {
-        this.authState.twoFactorRequired = true;
-        this.authState.statusMessage = "Two-factor authentication required.";
-        this.log.error(
-          "Two-factor authentication required. Use the Config UI to continue."
-        );
-        return null;
-      }
-
-      throw new Error(`Login failed: ${JSON.stringify(loginResult)}`);
+      throw roborockAuth.loginRefusedError(loginResult);
     } catch (error) {
       this.log.error(`Error in getUserData: ${error.message}`);
       // DO NOT THROW AWAY THE CACHED SESSION BECAUSE DNS WAS NOT UP YET.
@@ -2444,6 +2415,9 @@ class Roborock {
    * @param {any} error
    */
   isCredentialRejection(error) {
+    if (error?.refusal) {
+      return Boolean(error.refusal.credentials);
+    }
     const code = Number(error?.code ?? error?.status);
     if ([2012, 2008, 2018, 2010].includes(code)) {
       return true;
@@ -2463,84 +2437,6 @@ class Roborock {
 
   isValidUserData(userdata) {
     return userdata && userdata.token && userdata.rriot;
-  }
-
-  async ensureAuthSignature() {
-    if (this.pendingAuth && this.pendingAuth.k && this.pendingAuth.s) {
-      return this.pendingAuth;
-    }
-
-    if (!this.loginApi) {
-      throw new Error("Login API is not initialized.");
-    }
-
-    const s = crypto
-      .randomBytes(12)
-      .toString("base64")
-      .substring(0, 16)
-      .replace(/\+/g, "X")
-      .replace(/\//g, "Y");
-    const signData = await roborockAuth.signRequest(this.loginApi, s);
-    if (!signData || !signData.k) {
-      return null;
-    }
-
-    this.pendingAuth = { k: signData.k, s };
-    return this.pendingAuth;
-  }
-
-  async sendTwoFactorEmail() {
-    if (!this.loginApi) {
-      throw new Error("Login API is not initialized.");
-    }
-
-    try {
-      await roborockAuth.requestEmailCode(this.loginApi, this.config.username);
-    } catch (error) {
-      this.log.error(`2FA email request failed: ${error.message}`);
-      throw error;
-    }
-    this.authState.twoFactorRequired = true;
-    this.authState.statusMessage = "Verification email sent.";
-    return { ok: true };
-  }
-
-  async verifyTwoFactorCode(code) {
-    if (!this.loginApi) {
-      throw new Error("Login API is not initialized.");
-    }
-
-    const signData = await this.ensureAuthSignature();
-    if (!signData) {
-      throw new Error("Missing login signature.");
-    }
-
-    const region = roborockAuth.getRegionConfig(this.baseURL);
-    const loginResult = await roborockAuth.loginWithCode(this.loginApi, {
-      email: this.config.username,
-      code,
-      country: region.country,
-      countryCode: region.countryCode,
-      k: signData.k,
-      s: signData.s,
-    });
-
-    if (loginResult && loginResult.code === 200 && loginResult.data) {
-      this.userData = loginResult.data;
-      this.pendingAuth = null;
-      await this.setStateAsync("UserData", {
-        val: JSON.stringify(this.userData),
-        ack: true,
-      });
-      this.authState.twoFactorRequired = false;
-      this.authState.statusMessage = "Two-factor authentication completed.";
-      return this.userData;
-    }
-
-    this.log.error(`2FA verification failed: ${JSON.stringify(loginResult)}`);
-    throw new Error(
-      `2FA verification failed: ${loginResult?.msg || "Unknown error"}`
-    );
   }
 
   async getNetworkInfo() {
@@ -2563,6 +2459,13 @@ class Roborock {
   async createDevices() {
     const devices = this.devices;
     this.initializedVacuumDuids.clear();
+    // A robot no longer on the account keeps no runtime. Its intervals were
+    // cleared before this start; nothing may poll it again.
+    for (const duid of Object.keys(this.vacuums)) {
+      if (!devices.some((device) => device.duid === duid)) {
+        delete this.vacuums[duid];
+      }
+    }
 
     for (const device of devices) {
       const duid = device.duid;
@@ -2715,16 +2618,6 @@ class Roborock {
     }
 
     await Promise.allSettled(initialPolls);
-  }
-
-  async executeScene(sceneID) {
-    if (this.api) {
-      try {
-        await this.api.post(`user/scene/${sceneID.val}/execute`);
-      } catch (error) {
-        this.catchError(error.stack, "executeScene");
-      }
-    }
   }
 
   getProductAttribute(duid, attribute) {
@@ -4198,14 +4091,15 @@ class Roborock {
   }
 
   /**
-   * Try `startService` again after a failure that left nothing running.
+   * Try `startService` again after a failure that left nothing running, at
+   * the login stage or the home-details stage alike.
    *
    * Backoff doubles from 1 minute to a 10-minute ceiling and then keeps
    * going, deliberately without an attempt cap: the failure this recovers
    * from is "the network was not ready yet", and the device it runs on is
    * unattended. Giving up would mean a human has to notice. One timer at a
    * time, unref'd so it can never hold Homebridge open, and cleared on
-   * shutdown.
+   * shutdown. The retried start publishes the robots itself (notifyReady).
    *
    * @param {unknown} [error]
    */
@@ -4219,12 +4113,24 @@ class Roborock {
       600000
     );
     this.log.warn(
-      `Could not fetch your Roborock home details: ${
+      `Could not connect to your Roborock account: ${
         /** @type {any} */ (error)?.message || error
       }. This is almost always a temporary Roborock cloud or network problem. Retrying in ${Math.round(
         delay / 60000
-      )} minute(s); no robots will load until it succeeds.`
+      )} minute(s); the robots appear in Apple Home as soon as it succeeds, without a restart.`
     );
+    this.armStartServiceRetry(delay);
+  }
+
+  /**
+   * Arm the one retry timer, unless one is armed or the adapter is stopped.
+   *
+   * @param {number} delay ms
+   */
+  armStartServiceRetry(delay) {
+    if (this.startServiceRetryTimer || this.stopped) {
+      return;
+    }
     const timer = setTimeout(() => {
       this.startServiceRetryTimer = null;
       // `bInited` alone let a cleared-too-late timer restart a shut-down
@@ -4251,14 +4157,103 @@ class Roborock {
     this.startServiceRetryTimer = timer;
   }
 
+  /**
+   * Roborock no longer accepts the session (getHomeDetail code 2010).
+   *
+   * python-roborock raises RoborockInvalidCredentials for this answer and Home
+   * Assistant starts re-authentication; nothing retries with the same session.
+   * This plugin used to: every 10 minutes for good, under a "temporary
+   * problem" label, never trying the configured password because the stored
+   * session always won — and at runtime MQTT kept reconnecting every second
+   * with credentials derived from it.
+   *
+   * So the dead session is dropped everywhere it could be picked up again
+   * (memory, which also holds the copy from the plugin settings, and disk),
+   * the cloud side stops using it (the refresh, the hourly MQTT check, MQTT
+   * itself), and then:
+   * - with a password configured, one fresh login, and the start runs again
+   *   with the new session; at most once per AUTH_FAILURE_BACKOFF_MS,
+   *   python's maximum back-off after an authorisation failure, because each
+   *   login counts against Roborock's sign-in limits (9004 blocks sign-in for
+   *   7 days);
+   * - without one, one error that says what to do. Nothing in this process
+   *   could make the session good again, so nothing retries.
+   *
+   * Also the entry point for any other place that learns the session is dead.
+   *
+   * @param {unknown} error the rejection
+   */
+  async handleRejectedSession(error) {
+    if (this.stopped) {
+      return;
+    }
+    const reason = /** @type {any} */ (error)?.message || String(error);
+
+    this.userData = null;
+    await this.deleteStateAsync("UserData");
+    for (const interval of ["homedataInterval", "reconnectIntervall"]) {
+      if (this[interval]) {
+        this.clearInterval(this[interval]);
+        this[interval] = null;
+      }
+    }
+    this.rr_mqtt_connector?.disconnect?.();
+
+    if (!this.config.password) {
+      this.log.error(
+        `${reason}, so the plugin has stopped using the Roborock cloud. To continue, log in again in the plugin settings and restart the Roborock bridge.`
+      );
+      return;
+    }
+
+    const sinceLastLogin =
+      this.now() - (this.lastSessionReloginAt ?? -Infinity);
+    if (sinceLastLogin < AUTH_FAILURE_BACKOFF_MS) {
+      const waitMs = AUTH_FAILURE_BACKOFF_MS - sinceLastLogin;
+      this.log.error(
+        `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log in again in the plugin settings.`
+      );
+      this.bInited = false;
+      this.armStartServiceRetry(waitMs);
+      return;
+    }
+
+    this.lastSessionReloginAt = this.now();
+    this.log.warn(
+      `${reason}; logging in again with the password from the plugin settings.`
+    );
+    await this.restartService();
+  }
+
+  /**
+   * After a failed cloud read, ask the account API whether the session is
+   * still good, which is the question python-roborock asks to decide that a
+   * session is dead. A failed read alone does not say: the network may be
+   * down, or the IoT API may refuse for its own reasons.
+   *
+   * @param {unknown} error what the read failed with
+   * @returns {Promise<unknown>} the rejection, or null when the session is
+   *   fine or the question could not be answered
+   */
+  async findSessionRejection(error) {
+    if (roborockAuth.isSessionRejected(error)) {
+      return error;
+    }
+    if (!this.loginApi) {
+      return null;
+    }
+    try {
+      await roborockAuth.getHomeId(this.loginApi);
+      return null;
+    } catch (check) {
+      return roborockAuth.isSessionRejected(check) ? check : null;
+    }
+  }
+
   clearTimersAndIntervals() {
     if (this.startServiceRetryTimer) {
       this.clearTimeout(this.startServiceRetryTimer);
       this.startServiceRetryTimer = null;
-    }
-    if (this.loginRetryTimer) {
-      this.clearTimeout(this.loginRetryTimer);
-      this.loginRetryTimer = null;
     }
     if (this.reconnectIntervall) {
       this.clearInterval(this.reconnectIntervall);
@@ -4287,28 +4282,141 @@ class Roborock {
   }
 
   /**
-   * Refresh the home snapshot - devices, products, local keys - and let every
-   * robot's polling intervals re-check themselves against it.
+   * Read the home snapshot: `v2/user/homes/{id}`, the endpoint startup has
+   * always used. The refresh used to read v1, whose device list can differ,
+   * so comparing the two would have seen changes that were not there.
+   *
+   * Roborock occasionally answers 200 with an envelope that carries no
+   * `result` (maintenance windows, rate limiting). That is an error here, so
+   * it can never be stored over the cached device list on disk and turn a
+   * transient cloud hiccup into a persistent failure.
    *
    * @param {string | number} homeId
-   * @param {Record<string, any>} [prefetched] a home payload already fetched
-   *   by the caller. Startup fetched `v2/user/homes/{id}` seconds earlier,
-   *   built the device list from it, and then called this, which fetched
-   *   `user/homes/{id}` again before the Matter accessories could register:
-   *   2 cloud round-trips for one snapshot, back to back, on the critical
-   *   path. With the payload handed in, this consumes it. The periodic
-   *   caller passes nothing and fetches fresh, as before.
    */
-  async updateHomeData(homeId, prefetched) {
+  async fetchHomeData(homeId) {
+    const response = await this.api.get(`v2/user/homes/${homeId}`);
+    const homedata = response?.data?.result;
+    if (!homedata) {
+      throw new Error(
+        `The Roborock cloud returned no home data for home ${homeId}. Keeping the previously cached device list.`
+      );
+    }
+    return homedata;
+  }
+
+  /**
+   * Make one home snapshot the plugin's view of the account: products, the
+   * robot list (owned and shared), room names, the room labels already cached
+   * for each robot's maps, local keys, and the stored copy. Startup and the
+   * periodic refresh both apply a snapshot through here, so the refresh is no
+   * longer a partial copy of the startup that stored room names it never
+   * applied.
+   *
+   * The room labels are rewritten BEFORE the snapshot is stored, because
+   * storing it is what tells the Matter accessories to republish (their
+   * Service Area included).
+   *
+   * @param {Record<string, any>} homedata
+   * @returns {Promise<{localKeyDevices: Array<{duid: string}>, added: string[], removed: string[], renamed: string[]}>}
+   *   robot names added, removed and renamed relative to the previous list
+   */
+  async applyHomeData(homedata) {
+    const before = new Map(
+      this.normalizeArray(this.devices).map((device) => [
+        device.duid,
+        device.name,
+      ])
+    );
+
+    this.products = homedata.products;
+    this.devices = this.getManagedHomeDevices(homedata);
+    this.roomIDs = {};
+    for (const room of this.normalizeArray(homedata.rooms)) {
+      if (room && room.id !== undefined) {
+        this.roomIDs[room.id] = room.name;
+      }
+    }
+    await this.addSharedRobotRoomNames(homedata);
+    this.log.debug(`RoomIDs debug: ${JSON.stringify(this.roomIDs)}`);
+    this.relabelRoomMappings();
+
+    const localKeyDevices = await this.refreshLocalKeysFromHomeData(homedata);
+    await this.setStateAsync("HomeData", {
+      val: JSON.stringify(homedata),
+      ack: true,
+    });
+
+    const after = new Map(
+      this.devices.map((device) => [device.duid, device.name])
+    );
+    const name = (duid, names) => names.get(duid) || duid;
+    return {
+      localKeyDevices,
+      added: [...after.keys()]
+        .filter((duid) => !before.has(duid))
+        .map((duid) => name(duid, after)),
+      removed: [...before.keys()]
+        .filter((duid) => !after.has(duid))
+        .map((duid) => name(duid, before)),
+      renamed: [...after.keys()].filter(
+        (duid) => before.has(duid) && before.get(duid) !== after.get(duid)
+      ),
+    };
+  }
+
+  /**
+   * Give every cached room its current name from `roomIDs`. The cache keeps
+   * the name it was given when the robot reported the room, so a room renamed
+   * in the app kept its old name until the robot reported its rooms again.
+   */
+  relabelRoomMappings() {
+    let changed = false;
+    for (const mapping of Object.values(this.roomMappings || {})) {
+      for (const rooms of Object.values(mapping?.roomsByMap || {})) {
+        for (const room of this.normalizeArray(rooms)) {
+          const current = this.roomIDs[room?.roomId];
+          if (typeof current === "string" && current && room.name !== current) {
+            room.name = current;
+            changed = true;
+          }
+        }
+      }
+      if (mapping?.roomsByMap) {
+        mapping.rooms = this.getFlattenedRoomMappings(mapping);
+      }
+    }
+    if (changed) {
+      this.persistRoomMappings();
+    }
+  }
+
+  /**
+   * Run the whole start again on the session in hand: the same path as a
+   * retried start, so a robot added to or removed from the account, or a new
+   * session, ends with a runtime for exactly the robots on the account and a
+   * ready signal that publishes them.
+   */
+  async restartService() {
+    this.bInited = false;
+    this.clearTimersAndIntervals();
+    await this.startService();
+  }
+
+  /**
+   * The periodic refresh: read the home snapshot, apply it, and act on what
+   * changed. A renamed robot is published again (the platform's discovery
+   * updates names); a robot added or removed restarts the start sequence.
+   *
+   * @param {string | number} homeId
+   */
+  async updateHomeData(homeId) {
     if (this.stopped) {
       return;
     }
     this.log.debug(`Updating HomeData with homeId: ${homeId}`);
     if (this.api) {
       try {
-        const homedata = prefetched
-          ? prefetched
-          : (await this.api.get(`user/homes/${homeId}`)).data.result;
+        const homedata = await this.fetchHomeData(homeId);
 
         // A refresh still on the wire when Homebridge stops lands here after
         // stopService, and superviseDeviceIntervals would start the polling
@@ -4316,18 +4424,30 @@ class Roborock {
         if (this.stopped) {
           return;
         }
-        if (homedata) {
-          this.superviseDeviceIntervals();
-          await this.refreshLocalKeysFromHomeData(homedata);
-          await this.setStateAsync("HomeData", {
-            val: JSON.stringify(homedata),
-            ack: true,
-          });
-          this.log.debug(`homedata successfully updated`);
-        } else {
-          this.log.warn("homedata failed to download");
+        this.superviseDeviceIntervals();
+        const change = await this.applyHomeData(homedata);
+        this.log.debug(`homedata successfully updated`);
+
+        if (change.added.length > 0 || change.removed.length > 0) {
+          const parts = [
+            change.added.length ? `added: ${change.added.join(", ")}` : "",
+            change.removed.length
+              ? `removed: ${change.removed.join(", ")}`
+              : "",
+          ].filter(Boolean);
+          this.log.info(
+            `The robots on your Roborock account changed (${parts.join("; ")}); reconnecting so each robot on the account has a runtime and appears in Apple Home.`
+          );
+          await this.restartService();
+        } else if (change.renamed.length > 0) {
+          this.notifyReady();
         }
       } catch (error) {
+        const rejection = await this.findSessionRejection(error);
+        if (rejection && !this.stopped) {
+          await this.handleRejectedSession(rejection);
+          return;
+        }
         this.log.error(`Failed to update updateHomeData with error: ${error}`);
       }
     }
@@ -6623,6 +6743,35 @@ class Roborock {
 
   setDeviceNotify(callback) {
     this.deviceNotify = callback;
+  }
+
+  /**
+   * Register the one listener told that a start has succeeded: the first
+   * start, a retried one, and a restart after a re-login or an account
+   * change. The platform publishes the robots from it; its discovery is
+   * idempotent, so being told again only updates what is already there.
+   *
+   * @param {() => unknown} listener
+   */
+  setReadyListener(listener) {
+    this.readyListener = listener;
+  }
+
+  notifyReady() {
+    if (typeof this.readyListener !== "function") {
+      return;
+    }
+    try {
+      void Promise.resolve(this.readyListener()).catch((error) => {
+        this.log.error(
+          `Publishing the robots failed: ${error?.message || error}`
+        );
+      });
+    } catch (error) {
+      this.log.error(
+        `Publishing the robots failed: ${/** @type {any} */ (error)?.message || error}`
+      );
+    }
   }
 }
 
