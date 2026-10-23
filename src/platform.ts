@@ -951,205 +951,81 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     for (const [duid, target] of wanted) {
       let schedule = this.hapScheduleAccessories.get(duid);
 
-      if (schedule) {
-        schedule.setScheduleExposure(exposeSchedules);
-        if (exposeRoutines) {
-          this.attachRoutineAccessory(duid, target.vacuumName, schedule);
-        }
-        void schedule
-          .initialize(target.vacuumName)
-          .then((result) => {
-            if (result.success && result.hasSchedules) {
-              // #22: the switches may be sitting in an accessory the bridge
-              // does not know about — unregistered when the setting was off,
-              // or when an earlier refresh failed. Publishing is idempotent.
-              this.ensureScheduleAccessoryRegistered(
-                target.vacuumName,
-                schedule!
-              );
-              return;
-            }
-
-            if (!result.success) {
-              this.log.info(
-                `Schedule restoration attempt for ${target.vacuumName}: refresh failed; invoking restoreScheduleHandlersFromAccessory().`
-              );
-
-              const restored = schedule!.restoreScheduleHandlersFromAccessory();
-
-              this.log.info(
-                `Schedule restoration result for ${target.vacuumName}: restored=${restored}.`
-              );
-
-              if (restored) {
-                this.ensureScheduleAccessoryRegistered(
-                  target.vacuumName,
-                  schedule!
-                );
-              }
-
-              this.log.debug(
-                `Unable to refresh Roborock schedules for ${target.vacuumName}; preserving restored schedule accessories.`
-              );
-              return;
-            }
-
-            const accessory = this.accessories.find(
-              (candidate) =>
-                candidate.UUID ===
-                  this.api.hap.uuid.generate(
-                    `hap:roborock:schedules:${duid}`
-                  ) && isHapScheduleAccessory(candidate)
-            );
-
-            this.removeHapScheduleAccessory(duid, accessory);
-          })
-          .catch((error: unknown) => {
-            const restored = schedule!.restoreScheduleHandlersFromAccessory();
-
-            if (!restored) {
-              const accessory = this.accessories.find(
-                (candidate) =>
-                  candidate.UUID ===
-                    this.api.hap.uuid.generate(
-                      `hap:roborock:schedules:${duid}`
-                    ) && isHapScheduleAccessory(candidate)
-              );
-
-              this.removeHapScheduleAccessory(duid, accessory);
-            }
-
-            this.log.debug(
-              `Unable to refresh Roborock schedules for ${target.vacuumName}: ${
-                error instanceof Error ? error.message : String(error)
-              }`
-            );
-          });
-        continue;
-      }
-
-      const uuid = this.api.hap.uuid.generate(`hap:roborock:schedules:${duid}`);
-
-      let accessory = this.accessories.find(
-        (cached) => cached.UUID === uuid && isHapScheduleAccessory(cached)
-      );
-
-      const isNew = !accessory;
-
-      if (!accessory) {
-        accessory = new this.api.platformAccessory(
-          hapName(target.vacuumName, "Roborock Vacuum", "Schedules"),
-          uuid
+      if (!schedule) {
+        const uuid = this.api.hap.uuid.generate(
+          `hap:roborock:schedules:${duid}`
         );
-      }
-
-      schedule = new RoborockHapScheduleAccessory(
-        this,
-        accessory,
-        duid,
-        this.scheduleAccountCoordinator
-      );
-      schedule.setScheduleExposure(exposeSchedules);
-
-      this.hapScheduleAccessories.set(duid, schedule);
-
-      if (exposeRoutines) {
-        this.attachRoutineAccessory(duid, target.vacuumName, schedule);
-      }
-
-      void schedule
-        .initialize(target.vacuumName)
-        .then((result) => {
-          if (!result.success) {
-            this.log.info(
-              `Schedule startup restoration attempt for ${target.vacuumName}: refresh failed; invoking restoreScheduleHandlersFromAccessory().`
-            );
-
-            const restored = schedule!.restoreScheduleHandlersFromAccessory();
-
-            this.log.info(
-              `Schedule startup restoration result for ${target.vacuumName}: restored=${restored}.`
-            );
-
-            if (!restored && !this.coordinatorKeepsRoutines(schedule!)) {
-              this.hapScheduleAccessories.delete(duid);
-            }
-
-            return;
-          }
-
-          if (!result.hasSchedules) {
-            // An authoritative reading with no schedule in it: the accessory
-            // (restored from the cache with switches for schedules deleted
-            // since) leaves Apple Home, exactly as on the reuse path.
-            this.removeHapScheduleAccessory(duid, accessory);
-            return;
-          }
-
-          if (!this.accessories.includes(accessory!)) {
-            this.accessories.push(accessory!);
-          }
-
-          if (isNew) {
-            this.log.info(
-              `Adding HAP schedule accessory '${target.vacuumName} schedules'.`
-            );
-
-            this.api.registerPlatformAccessories(
-              HAP_PLUGIN_IDENTIFIER,
-              PLATFORM_NAME,
-              [accessory!]
-            );
-          }
-        })
-        .catch((error: unknown) => {
-          // A first-time offline/error response must not create a broken
-          // "Not Supported" schedule tile.
-          this.removeHapScheduleAccessory(duid, accessory);
-
-          this.log.error(
-            `Unable to initialize Roborock schedules for ${target.vacuumName}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
+        const accessory =
+          this.accessories.find(
+            (cached) => cached.UUID === uuid && isHapScheduleAccessory(cached)
+          ) ||
+          new this.api.platformAccessory(
+            hapName(target.vacuumName, "Roborock Vacuum", "Schedules"),
+            uuid
           );
-        });
+        schedule = new RoborockHapScheduleAccessory(
+          this,
+          accessory,
+          duid,
+          this.scheduleAccountCoordinator
+        );
+        this.hapScheduleAccessories.set(duid, schedule);
+      }
+
+      const coordinator = schedule;
+      coordinator.setScheduleExposure(exposeSchedules);
+      // Every reading the coordinator applies says how many schedule switches
+      // it left, and the accessory is published or withdrawn from that. One
+      // rule for the first reading and every later one: a coordinator whose
+      // first reading failed keeps reading by itself, and used to be dropped
+      // here instead, so its schedules appeared only after a restart.
+      coordinator.onScheduleReading((count) =>
+        this.publishScheduleAccessory(target.vacuumName, coordinator, count)
+      );
+      if (exposeRoutines) {
+        this.attachRoutineAccessory(duid, target.vacuumName, coordinator);
+      }
+
+      void coordinator.initialize(target.vacuumName).catch((error: unknown) => {
+        this.log.warn(
+          `Unable to read the Roborock schedules for ${target.vacuumName}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      });
     }
   }
 
   /**
-   * A coordinator whose schedule half came back empty still has work when it
-   * drives a Routines accessory, so it must stay in the map — dropping it
-   * would orphan the routine switches' handlers.
+   * Publish a robot's schedule accessory once a reading leaves it with a
+   * switch, and withdraw it when an applied reading leaves none — so an
+   * accessory never sits in the Home app as a tile with nothing on it, and a
+   * schedule list that could not be read at startup appears once it can.
    */
-  private coordinatorKeepsRoutines(
-    schedule: RoborockHapScheduleAccessory
-  ): boolean {
-    return this.shouldExposeHapRoutines() && schedule.routineCount > 0;
-  }
-
-  private removeHapScheduleAccessory(
-    duid: string,
-    accessory?: PlatformAccessory
+  private publishScheduleAccessory(
+    vacuumName: string,
+    schedule: RoborockHapScheduleAccessory,
+    count: number
   ): void {
-    const schedule = this.hapScheduleAccessories.get(duid);
-    schedule?.removeScheduleServices();
-    if (!schedule || !this.coordinatorKeepsRoutines(schedule)) {
-      this.hapScheduleAccessories.delete(duid);
-    }
-
-    if (!accessory) {
+    if (count > 0) {
+      this.ensureScheduleAccessoryRegistered(vacuumName, schedule);
       return;
     }
 
+    const accessory = schedule.scheduleAccessory;
     const index = this.accessories.indexOf(accessory);
-    if (index >= 0) {
-      this.accessories.splice(index, 1);
-      this.api.unregisterPlatformAccessories(
-        HAP_PLUGIN_IDENTIFIER,
-        PLATFORM_NAME,
-        [accessory]
-      );
+    if (index < 0) {
+      return;
     }
+    this.accessories.splice(index, 1);
+    this.log.info(
+      `Removing HAP schedule accessory '${accessory.displayName}': the account has no schedules for this robot.`
+    );
+    this.api.unregisterPlatformAccessories(
+      HAP_PLUGIN_IDENTIFIER,
+      PLATFORM_NAME,
+      [accessory]
+    );
   }
 
   /**

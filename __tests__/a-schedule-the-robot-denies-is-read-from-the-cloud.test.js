@@ -236,10 +236,20 @@ function makeCloud({
   return api;
 }
 
+// Every coordinator a test builds, so the retry read an incomplete reading
+// arms is cancelled when the test ends.
+const coordinators = [];
+afterEach(() => {
+  for (const coordinator of coordinators.splice(0)) {
+    coordinator.shutdown();
+  }
+});
+
 function makeCoordinator(cloud, { routines = false } = {}) {
   const platform = makePlatform(cloud);
   const manager = new FakeAccessory("Rocky Schedules");
   const coordinator = new RoborockHapScheduleAccessory(platform, manager, DUID);
+  coordinators.push(coordinator);
   let routineAccessory;
   const routineCounts = [];
   if (routines) {
@@ -512,11 +522,32 @@ describe("two sources on one robot", () => {
     expect(names).toEqual(["Vicky Schedule 1", "Vicky Schedule 2", "Abends"]);
   });
 
-  test("the first refresh fails as a whole when a source fails with nothing to fall back on", async () => {
+  test("a first refresh whose device-side list fails still applies the Routines, and keeps what that list had", async () => {
     const cloud = makeCloud({
       scenes: [scene({ id: 7, name: "Abends" })],
       serverTimers: new Error("cloud timeout"),
     });
+    const { manager, coordinator, platform } = makeCoordinator(cloud);
+    // A device-side switch Homebridge restored from its cache.
+    manager.addService(
+      Service.Switch,
+      "Vicky Schedule 1",
+      "roborock-schedule-1700000000000"
+    );
+
+    const result = await coordinator.initialize("Vicky");
+
+    expect(result).toEqual({ success: true, hasSchedules: true });
+    expect(scheduleSwitch(manager, "1700000000000")).toBeDefined();
+    expect(scheduleSwitch(manager, "scene:7")).toBeDefined();
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/cloud timeout.*Keeping the previous ones/)
+    );
+  });
+
+  test("the first refresh preserves everything when no source could be read", async () => {
+    const cloud = makeCloud({ serverTimers: new Error("cloud timeout") });
+    cloud.getCloudScenes.mockRejectedValue(new Error("socket hang up"));
     const { manager, coordinator, platform } = makeCoordinator(cloud);
 
     const result = await coordinator.initialize("Vicky");

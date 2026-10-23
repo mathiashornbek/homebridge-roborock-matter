@@ -544,6 +544,8 @@ export default class RoborockHapScheduleAccessory {
   // wants only the Routines still needs the scene reading, so the schedule
   // half can be switched off without losing the coordinator.
   private exposeSchedules = true;
+  private onScheduleCount: ((count: number) => void) | undefined;
+  private retryReadTimer: ReturnType<typeof scheduleTimer> | undefined;
 
   constructor(
     private readonly platform: RoborockPlatform,
@@ -728,32 +730,52 @@ export default class RoborockHapScheduleAccessory {
    * still unknown. A later successful cloud refresh remains authoritative.
    */
   restoreScheduleHandlersFromAccessory(): boolean {
+    const restored = this.schedulesFromAccessory();
+    const switchServiceCount = this.managerAccessory.services.filter(
+      (service) => service.UUID === this.platform.Service.Switch.UUID
+    ).length;
+    const scheduleSwitchServiceCount = this.managerAccessory.services.filter(
+      (service) => this.scheduleIdOf(service) !== null
+    ).length;
+
+    if (restored.length === 0) {
+      this.platform.log.debug(
+        `Schedule restoration for ${this.vacuumName}: ` +
+          `managerUUID=${this.managerAccessory.UUID}; ` +
+          `services=${this.managerAccessory.services.length}; ` +
+          `switchServices=${switchServiceCount}; ` +
+          `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
+          `restored=0; handlersReattached=false`
+      );
+      return false;
+    }
+
+    this.sync(restored);
+
+    this.platform.log.debug(
+      `Schedule restoration for ${this.vacuumName}: ` +
+        `managerUUID=${this.managerAccessory.UUID}; ` +
+        `services=${this.managerAccessory.services.length}; ` +
+        `switchServices=${switchServiceCount}; ` +
+        `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
+        `restored=${restored.length}; ` +
+        `scheduleIds=${restored.map((schedule) => schedule.id).join(",")}; ` +
+        `handlersReattached=true`
+    );
+
+    return true;
+  }
+
+  /**
+   * The schedules the accessory's Switch services stand for, as Homebridge
+   * restored them: local knowledge only, never cached as a reading.
+   */
+  private schedulesFromAccessory(): RoborockSchedule[] {
     const restored: RoborockSchedule[] = [];
     const seen = new Set<string>();
-    let switchServiceCount = 0;
-    let scheduleSwitchServiceCount = 0;
 
     for (const service of this.managerAccessory.services) {
-      if (service.UUID !== this.platform.Service.Switch.UUID) {
-        continue;
-      }
-
-      switchServiceCount++;
-
-      const subtype = service.subtype;
-      if (typeof subtype !== "string" || !subtype.startsWith(SERVICE_PREFIX)) {
-        continue;
-      }
-
-      scheduleSwitchServiceCount++;
-
-      let scheduleId: string;
-      try {
-        scheduleId = decodeURIComponent(subtype.slice(SERVICE_PREFIX.length));
-      } catch {
-        continue;
-      }
-
+      const scheduleId = this.scheduleIdOf(service);
       if (!scheduleId || seen.has(scheduleId)) {
         continue;
       }
@@ -794,36 +816,51 @@ export default class RoborockHapScheduleAccessory {
       });
     }
 
-    if (restored.length === 0) {
-      this.platform.log.debug(
-        `Schedule restoration for ${this.vacuumName}: ` +
-          `managerUUID=${this.managerAccessory.UUID}; ` +
-          `services=${this.managerAccessory.services.length}; ` +
-          `switchServices=${switchServiceCount}; ` +
-          `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
-          `restored=0; handlersReattached=false`
-      );
-      return false;
-    }
-
-    restored.sort((a, b) =>
+    return restored.sort((a, b) =>
       a.id.localeCompare(b.id, undefined, { numeric: true })
     );
+  }
 
-    this.sync(restored);
-
-    this.platform.log.debug(
-      `Schedule restoration for ${this.vacuumName}: ` +
-        `managerUUID=${this.managerAccessory.UUID}; ` +
-        `services=${this.managerAccessory.services.length}; ` +
-        `switchServices=${switchServiceCount}; ` +
-        `scheduleSwitchServices=${scheduleSwitchServiceCount}; ` +
-        `restored=${restored.length}; ` +
-        `scheduleIds=${restored.map((schedule) => schedule.id).join(",")}; ` +
-        `handlersReattached=true`
+  /** The restored switches of one source, for a source that failed. */
+  private restoredSchedulesOfSource(
+    source: ScheduleSource
+  ): RoborockSchedule[] {
+    return this.schedulesFromAccessory().filter(
+      (schedule) => (schedule.source ?? "serverTimer") === source
     );
+  }
 
-    return true;
+  /**
+   * Read again once the back-off is over, until a reading is complete. One
+   * timer at a time, unref'd, and gone with the coordinator's runtime.
+   */
+  private scheduleRetryRead(): void {
+    if (this.disposed || this.retryReadTimer) {
+      return;
+    }
+    const now = Date.now();
+    const delay = Math.max(
+      this.nextRefreshAttemptAt - now,
+      this.accountCoordinator.cooldownRemainingMs(now),
+      0
+    );
+    const timer = scheduleTimer(() => {
+      this.retryReadTimer = undefined;
+      if (!this.disposed) {
+        void this.refreshDetailed();
+      }
+    }, delay);
+    unrefTimer(timer);
+    this.retryReadTimer = timer;
+  }
+
+  /**
+   * Called after every reading that was applied, with the number of schedule
+   * switches it left. The platform publishes the schedule accessory from
+   * this — including after a retry that succeeds long after startup.
+   */
+  onScheduleReading(listener: ((count: number) => void) | undefined): void {
+    this.onScheduleCount = listener;
   }
 
   async refreshIfNeeded(): Promise<boolean> {
@@ -1015,52 +1052,71 @@ export default class RoborockHapScheduleAccessory {
       const timerSchedules = this.serverTimerSchedulesFrom(readings.timers);
       const sceneSchedules = this.cloudSceneSchedulesFrom(readings.scenes);
 
-      // A source that failed can only be papered over with its own previous
-      // good reading. Without one — the first refresh after a restart, with
-      // switches restored from the cache — applying the other source's list
-      // would remove every switch the failed source owns, so the whole
-      // refresh is preserved and backs off, exactly as it did with one source.
-      const unrecoverable =
-        (!timerSchedules.ok && this.lastServerTimerSchedules === undefined) ||
-        (!sceneSchedules.ok && this.lastCloudSceneSchedules === undefined);
+      const failures = [
+        { outcome: timerSchedules, reading: readings.timers },
+        { outcome: sceneSchedules, reading: readings.scenes },
+      ].filter(({ outcome }) => !outcome.ok);
+      const somethingRead = [
+        { outcome: timerSchedules, reading: readings.timers },
+        { outcome: sceneSchedules, reading: readings.scenes },
+      ].some(({ outcome, reading }) => outcome.ok && reading.state === "read");
 
-      if (unrecoverable) {
-        // Keep every switch and back off.
-        const throttled = [readings.timers, readings.scenes].find(
-          (reading) =>
+      if (failures.length > 0) {
+        // Back off, and keep reading after the back-off by itself: a source
+        // that failed at startup used to be read again only when Apple Home
+        // asked a switch for its state, which never happens for a switch
+        // that was never published.
+        const throttled = failures.find(
+          ({ reading }) =>
             reading.state === "failed" &&
             isDefiniteScheduleThrottle(reading.error)
         );
-        if (throttled && throttled.state === "failed") {
-          this.recordScheduleThrottle(throttled.error);
+        if (throttled && throttled.reading.state === "failed") {
+          this.recordScheduleThrottle(throttled.reading.error);
         } else {
           this.recordRefreshFailure();
         }
+        this.scheduleRetryRead();
+      }
 
-        const reasons = [timerSchedules, sceneSchedules]
-          .filter((outcome) => !outcome.ok && outcome.reason)
-          .map((outcome) => outcome.reason)
+      if (failures.length > 0 && !somethingRead) {
+        // Nothing to apply. Keep every switch, and give the ones Homebridge
+        // restored from its cache their handlers so a press works meanwhile.
+        if (this.scheduleAccessories.size === 0) {
+          this.restoreScheduleHandlersFromAccessory();
+        }
+        const reasons = failures
+          .map(({ outcome }) => outcome.reason)
+          .filter(Boolean)
           .join("; ");
         this.platform.log.warn(
-          `Unable to refresh Roborock schedules for ${this.duid}: ${reasons}. Preserving existing schedules.`
+          `Unable to refresh Roborock schedules for ${this.vacuumName || this.duid}: ${reasons}. Preserving existing schedules.`
         );
         return preserved();
       }
 
+      // Each source on its own. One that failed keeps exactly the switches of
+      // its own kind: its last good reading, or, before there was one, the
+      // switches Homebridge restored for it. The other source's reading is
+      // applied, and the Routines follow the scene reading alone. A timed-out
+      // device-side read used to veto the whole reading at startup, Routines
+      // included.
       const merged: RoborockSchedule[] = [
         ...(timerSchedules.ok
           ? timerSchedules.schedules
-          : this.lastServerTimerSchedules ?? []),
+          : this.lastServerTimerSchedules ??
+            this.restoredSchedulesOfSource("serverTimer")),
         ...(sceneSchedules.ok
           ? sceneSchedules.schedules
-          : this.lastCloudSceneSchedules ?? []),
+          : this.lastCloudSceneSchedules ??
+            this.restoredSchedulesOfSource("cloudScene")),
       ];
 
       if (timerSchedules.ok) {
         this.lastServerTimerSchedules = timerSchedules.schedules;
       } else if (timerSchedules.reason) {
         this.platform.log.warn(
-          `Unable to refresh the device-side schedules for ${this.duid}: ${timerSchedules.reason}. Keeping the previous ones.`
+          `Unable to refresh the device-side schedules for ${this.vacuumName || this.duid}: ${timerSchedules.reason}. Keeping the previous ones and trying again shortly.`
         );
       }
 
@@ -1071,7 +1127,7 @@ export default class RoborockHapScheduleAccessory {
         }
       } else if (sceneSchedules.reason) {
         this.platform.log.warn(
-          `Unable to refresh the Routines for ${this.duid}: ${sceneSchedules.reason}. Keeping the previous ones.`
+          `Unable to refresh the Routines for ${this.vacuumName || this.duid}: ${sceneSchedules.reason}. Keeping the previous ones and trying again shortly.`
         );
       }
 
@@ -1079,8 +1135,12 @@ export default class RoborockHapScheduleAccessory {
         ...schedule,
         timer: [...schedule.timer],
       }));
-      this.lastScheduleRefreshAt = Date.now();
-      this.clearRefreshFailure();
+      if (failures.length === 0) {
+        // Only a complete reading counts as fresh, so an incomplete one is
+        // read again after its back-off rather than served for five minutes.
+        this.lastScheduleRefreshAt = Date.now();
+        this.clearRefreshFailure();
+      }
 
       this.platform.log.info(
         `Schedule parser: parsed ${this.duid}; result count=${merged.length}` +
@@ -1097,6 +1157,7 @@ export default class RoborockHapScheduleAccessory {
       if (readings.scenes.state === "read") {
         this.syncRoutines(readings.scenes.value);
       }
+      this.onScheduleCount?.(this.scheduleCount);
 
       // A successful empty snapshot is authoritative information. It is
       // different from a failed/untrusted cloud response.
@@ -1114,6 +1175,7 @@ export default class RoborockHapScheduleAccessory {
       } else {
         this.recordRefreshFailure();
       }
+      this.scheduleRetryRead();
       const message = error instanceof Error ? error.message : String(error);
       this.platform.log.warn(
         `Unable to refresh Roborock schedules for ${this.duid}: ${message}. Preserving existing schedules.`
@@ -1719,6 +1781,10 @@ export default class RoborockHapScheduleAccessory {
 
   private stopRuntime(): void {
     this.disposed = true;
+    if (this.retryReadTimer) {
+      clearTimer(this.retryReadTimer);
+      this.retryReadTimer = undefined;
+    }
     this.refreshGeneration++;
     this.refreshInProgress = undefined;
     this.refreshInProgressStartedAt = 0;

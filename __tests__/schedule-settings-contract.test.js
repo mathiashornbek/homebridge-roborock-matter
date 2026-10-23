@@ -199,33 +199,16 @@ describe("HomeKit schedule settings contract", () => {
     expect(scheduleSource).not.toContain("stopPolling");
   });
 
-  test("restored schedule groups preserve accessories when initial refresh fails", () => {
+  test("the schedule accessory is published from the coordinator's readings, not from its first one", () => {
+    // A coordinator whose first reading failed keeps reading by itself; its
+    // later readings must be able to publish the accessory, so publication
+    // follows every applied reading (schedule-startup-recovery.test.js and
+    // a-timed-out-timer-read-does-not-withhold-routines.test.js pin the
+    // behaviour).
     expect(platformSource).toMatch(
-      /if \(schedule\) \{[\s\S]*?\.initialize\(target\.vacuumName\)[\s\S]*?if \(!result\.success\) \{[\s\S]*?restoreScheduleHandlersFromAccessory\(\)[\s\S]*?return;/
+      /coordinator\.onScheduleReading\(\(count\) =>\s*this\.publishScheduleAccessory\(/
     );
-  });
-
-  test("first-time schedule creation requires a successful non-empty snapshot", () => {
-    expect(platformSource).toMatch(
-      /\.initialize\(target\.vacuumName\)[\s\S]*?if \(!result\.success\) \{[\s\S]*?this\.hapScheduleAccessories\.delete\(duid\);[\s\S]*?if \(!result\.hasSchedules\) \{/
-    );
-  });
-
-  test("failed restored schedule discovery does not unregister the cached accessory", () => {
-    const start = platformSource.indexOf("if (!result.success) {");
-    const end = platformSource.indexOf(
-      "const accessory = this.accessories.find(",
-      start
-    );
-    const failureBlock = platformSource.slice(start, end);
-
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-
-    expect(failureBlock).toContain("restoreScheduleHandlersFromAccessory()");
-    expect(failureBlock).not.toContain(
-      "removeHapScheduleAccessory(duid, accessory)"
-    );
+    expect(platformSource).not.toMatch(/if \(!result\.success\) \{/);
   });
 
   test("non-empty unparsable schedule responses are treated as untrusted", () => {
@@ -236,7 +219,7 @@ describe("HomeKit schedule settings contract", () => {
       /if \(raw\.length > 0 && schedules\.length === 0\) \{[\s\S]*?parsed to zero schedules/
     );
     expect(scheduleSource).toMatch(
-      /if \(unrecoverable\) \{[\s\S]*?this\.recordRefreshFailure\(\);[\s\S]*?Preserving existing schedules/
+      /if \(failures\.length > 0\) \{[\s\S]*?this\.recordRefreshFailure\(\);[\s\S]*?Preserving existing schedules/
     );
   });
 
