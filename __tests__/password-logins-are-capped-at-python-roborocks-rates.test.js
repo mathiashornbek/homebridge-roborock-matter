@@ -64,7 +64,7 @@ describe("the limits", () => {
   });
 });
 
-describe("a login endpoint that fails all day", () => {
+describe("a login Roborock refuses all day", () => {
   let cloud;
   let api;
 
@@ -87,11 +87,13 @@ describe("a login endpoint that fails all day", () => {
     mqtt.connect.mockImplementation(() => fakeMqttClient());
     useFakeTimersAroundRealIo();
     const startedAt = Date.now();
+    // Roborock's own answer, which counts against its sign-in limits (a
+    // proxy's error page does not: a-login-outage-does-not-use-up-the-day).
     cloud.script(
       LOGIN,
       ...Array.from({ length: 200 }, () => ({
-        status: 502,
-        body: "<html><body><h1>502 Bad Gateway</h1></body></html>",
+        status: 500,
+        body: { code: 500, msg: "system busy", data: null },
       }))
     );
     api = createAdapterOnFakeCloud(cloud, { password: PASSWORD });
