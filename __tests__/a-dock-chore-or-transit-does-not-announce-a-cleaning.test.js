@@ -1,5 +1,31 @@
 "use strict";
 
+// One file for the two states that must inherit the run mode rather than
+// decide one: the dock's own chores and the robot's transit. Merged from
+// a-dock-chore-does-not-announce-a-cleaning and
+// returning-to-the-dock-does-not-start-a-cleaning, which shared a harness, a
+// source check and an identical control group.
+//
+// THE DOCK CHORES (issue #9, 3.6.2):
+// Apple Home reads RvcRunMode as the answer to "is this robot cleaning?": it
+// announces a cleaning that started when the mode becomes Cleaning, and one
+// that finished when it goes back to Idle.
+//
+// A dock chore is neither. The dock emptying the dust bin, washing the mop or
+// the robot updating its maps is housekeeping — it does not start a cleaning
+// run and it does not end one. The plugin published Cleaning for all three,
+// so a Q Revo sitting idle in its dock announced a cleaning that started and
+// finished every time the dock emptied itself (issue #9).
+//
+// The mirror image is the reason the fix is "inherit", not "always Idle": a
+// robot that empties its bin in the MIDDLE of a run must not announce that the
+// run finished and then started again either. Both directions are enumerated
+// below, for every dock chore and with the display toggle both ways — because
+// with "Extended Operational States" off the chore is rewritten to RUNNING one
+// level below, and a rule that read the controller-facing state would work
+// only for the users who happened to enable that toggle.
+//
+// TRANSIT (issue #9, the follow-up):
 // 3.6.2 stopped a dock chore from announcing a cleaning, and the reporter of
 // issue #9 confirmed in the field that it worked. Then he added one sentence:
 // "after emptying the tank, it briefly returns to the dock for a second and
@@ -46,6 +72,14 @@ const SOURCE_PATH = path.join(
 
 const RUN_MODE_IDLE = 0;
 const RUN_MODE_CLEANING = 1;
+
+// Roborock state codes for the three dock chores, with the Matter operational
+// state each one derives to.
+const DOCK_CHORES = [
+  { label: "emptying the dust bin", state: 22, operationalState: 67 },
+  { label: "washing the mop", state: 23, operationalState: 68 },
+  { label: "updating maps", state: 29, operationalState: 70 },
+];
 
 // Every Roborock state that derives to SEEKING_CHARGER. All three are transit:
 // the robot is on its way somewhere, which is never the START of a cleaning.
@@ -155,6 +189,32 @@ async function publishedRunModes({ initialStatus, frames, extended }) {
 describe("the states that inherit a run mode are named once", () => {
   const source = fs.readFileSync(SOURCE_PATH, "utf8");
 
+  test("there is exactly one list of dock chores", () => {
+    const declaration = source.match(
+      /const DOCK_ACTIVITY_STATES: ReadonlySet<number> = new Set\(\[([\s\S]*?)\]\);/
+    );
+    expect(declaration).not.toBeNull();
+
+    const listed = [...declaration[1].matchAll(/RVC_OPERATIONAL_STATE\.(\w+)/g)]
+      .map((match) => match[1])
+      .sort();
+    expect(listed).toEqual([
+      "CLEANING_MOP",
+      "EMPTYING_DUST_BIN",
+      "UPDATING_MAPS",
+    ]);
+
+    // The extended-states set advertises the same three plus SeekingCharger.
+    // It must SPREAD the list rather than repeat it: two hand-written copies
+    // of one list is how the two ends drift apart.
+    const extended = source.match(
+      /const EXTENDED_OPERATIONAL_STATES: ReadonlySet<number> = new Set\(\[([\s\S]*?)\]\);/
+    );
+    expect(extended).not.toBeNull();
+    expect(extended[1]).toContain("...DOCK_ACTIVITY_STATES");
+    expect(extended[1]).not.toContain("EMPTYING_DUST_BIN");
+  });
+
   test("the inherit list is derived from the dock chores plus seeking charger", () => {
     const declaration = source.match(
       /const RUN_MODE_INHERITED_STATES: ReadonlySet<number> = new Set\(\[([\s\S]*?)\]\);/
@@ -171,7 +231,7 @@ describe("the states that inherit a run mode are named once", () => {
   test("the run mode gates on the robot's own state, not the displayed one", () => {
     // Reading the controller-facing state here would make the rule depend on
     // the Extended Operational States toggle, which only decides how a state
-    // is DISPLAYED. That is precisely how this bug reached the field.
+    // is DISPLAYED. That is precisely how the transit bug reached the field.
     const resolver = source.slice(
       source.indexOf("private resolveRunMode(): number {")
     );
@@ -183,11 +243,12 @@ describe("the states that inherit a run mode are named once", () => {
 });
 
 describe.each(TOGGLES)("with $label", ({ extended }) => {
-  describe.each(TRANSIT_STATES)(
+  describe.each([...DOCK_CHORES, ...TRANSIT_STATES])(
     "a docked robot that reports $label",
     ({ state }) => {
       test("never announces a cleaning", async () => {
         const runModes = await publishedRunModes({
+          // Docked and charging, exactly issue #9's snapshot.
           initialStatus: { state: 8, charge_status: 1, battery: 100 },
           frames: [
             { state, charge_status: 1, battery: 100 },
@@ -200,6 +261,84 @@ describe.each(TOGGLES)("with $label", ({ extended }) => {
       });
     }
   );
+
+  describe.each(DOCK_CHORES)(
+    "a dock that starts $label while the robot is idle",
+    ({ state, operationalState }) => {
+      test("still reports the chore itself as the operational state", async () => {
+        // The fix must not cost the Extended Operational States feature its
+        // whole point: the tile still says what the dock is doing.
+        const matterUpdates = [];
+        const status = { state: 8, charge_status: 1, battery: 100 };
+        const platform = createPlatform({ status, extended, matterUpdates });
+        const accessory = {
+          UUID: "uuid-dock-chore",
+          context: { duid: "device-1" },
+        };
+        const vacuum = new RoborockMatterVacuumAccessory(
+          platform,
+          accessory,
+          { duid: "device-1" },
+          true
+        );
+        matterUpdates.length = 0;
+
+        Object.assign(status, { state, charge_status: 1 });
+        await vacuum.notifyDeviceUpdater("CloudMessage", [
+          { state, charge_status: 1, battery: 100 },
+        ]);
+
+        const published = matterUpdates
+          .filter((update) => update.cluster === "rvcOperationalState")
+          .map((update) => update.attributes.operationalState)
+          .filter((value) => value !== undefined);
+
+        expect(published).toContain(extended ? operationalState : 1);
+      });
+    }
+  );
+
+  describe.each(DOCK_CHORES)(
+    "a robot that pauses mid-run for $label",
+    ({ state }) => {
+      test("does not announce that the run finished", async () => {
+        const runModes = await publishedRunModes({
+          // Cleaning.
+          initialStatus: { state: 5, charge_status: 0, battery: 70 },
+          frames: [
+            { state, charge_status: 1, battery: 70 },
+            { state: 5, charge_status: 0, battery: 68 },
+          ],
+          extended,
+        });
+
+        expect(runModes[0]).toBe(RUN_MODE_CLEANING);
+        expect(runModes).not.toContain(RUN_MODE_IDLE);
+      });
+    }
+  );
+
+  test("a chore that follows a finished run inherits the finished run", async () => {
+    // Clean -> seek charger -> charging -> the dock empties itself. The run
+    // ended when the robot docked; the chore must not revive it.
+    const runModes = await publishedRunModes({
+      initialStatus: { state: 5, charge_status: 0, battery: 40 },
+      frames: [
+        { state: 6, charge_status: 0, battery: 38 },
+        { state: 8, charge_status: 1, battery: 38 },
+        { state: 22, charge_status: 1, battery: 39 },
+        { state: 8, charge_status: 1, battery: 40 },
+      ],
+      extended,
+    });
+
+    expect(runModes[0]).toBe(RUN_MODE_CLEANING);
+    expect(runModes[runModes.length - 1]).toBe(RUN_MODE_IDLE);
+    // Cleaning must never come back after the robot docked.
+    const firstIdle = runModes.indexOf(RUN_MODE_IDLE);
+    expect(firstIdle).toBeGreaterThan(-1);
+    expect(runModes.slice(firstIdle)).not.toContain(RUN_MODE_CLEANING);
+  });
 
   describe.each(TRANSIT_STATES)(
     "the blip that follows emptying the dust bin, reported as $label",
@@ -338,6 +477,29 @@ describe.each(TOGGLES)("with $label", ({ extended }) => {
 
   // No-regression guards: nothing that is not transit or a dock chore may stop
   // deciding its own run mode.
+
+  test.each([
+    { label: "a chore", state: 22, chargeStatus: 1 },
+    { label: "transit", state: 6, chargeStatus: 0 },
+  ])(
+    "a plugin that starts up during $label knows of no run",
+    async ({ state, chargeStatus }) => {
+      // Nothing was inherited because nothing was published yet: lastRunMode
+      // starts Idle, and claiming a cleaning on the strength of a chore or a
+      // robot merely driving somewhere would fire every start automation on
+      // restart.
+      const runModes = await publishedRunModes({
+        initialStatus: { state, charge_status: chargeStatus, battery: 60 },
+        frames: [],
+        extended,
+      });
+
+      expect(runModes).toEqual([RUN_MODE_IDLE]);
+    }
+  );
+
+  // No-regression guards: everything that neither is a dock chore nor
+  // transit must decide its run mode exactly as before.
   test.each([
     {
       label: "cleaning",
@@ -377,17 +539,4 @@ describe.each(TOGGLES)("with $label", ({ extended }) => {
       expect(runModes).toEqual([expected]);
     }
   );
-
-  test("a plugin that starts up mid-transit knows of no run", async () => {
-    // Nothing was inherited because nothing was published yet: lastRunMode
-    // starts Idle, and claiming a cleaning on the strength of a robot that is
-    // merely driving somewhere would fire every start automation on restart.
-    const runModes = await publishedRunModes({
-      initialStatus: { state: 6, charge_status: 0, battery: 60 },
-      frames: [],
-      extended,
-    });
-
-    expect(runModes).toEqual([RUN_MODE_IDLE]);
-  });
 });
