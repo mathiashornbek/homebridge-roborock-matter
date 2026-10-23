@@ -1,16 +1,68 @@
 # Changelog
 
-## 3.40.0-beta.2
+## 3.40.0
 
-**A test build of the biggest reliability round so far. The plugin now handles the local and cloud connections the way python-roborock does, and a long list of Apple Home, schedule and Q7/Q10 faults found in a full review are fixed. Feedback before 3.40.0 is very welcome.**
+**The same failures kept coming back because the plugin handled its connections differently from python-roborock, the library Home Assistant uses, in exactly the places where that library had already fixed them. A full review against it found those differences and the faults around them. This release closes them.**
 
-- **Local connection:** a ping every 10 s, an immediate reconnect after a drop, and a request whose connection dies under it is retried at once over the cloud instead of timing out. A local connection that stops answering is closed and reopened instead of leaving the robot on the cloud until a restart.
-- **Cloud connection:** a new MQTT client with its own id for every connection, python-roborock's back-off instead of a reconnect every second, and the "3 unanswered requests" restart now also fires on an account that has Q7 robots. Map lists, maps and network info always go over the cloud, and every cloud request carries the security block.
-- **The log:** one line per robot per hour says how its requests fared on the LAN and the cloud. The old "Failed to execute" line was throttled to once per 6 hours and hid most failures: on my own server an estimated 1,400 timeouts in a week showed up as 36 lines.
-- **Apple Home:** resume continues a paused room clean instead of starting a whole-home clean; the clean mode follows the robot's own water setting; a standing tank warning is no longer repeated by a restart, a quiet spell or a dust-bin emptying; a full dirty-water tank is reported as such (#26); rooms are marked cleaned only when a run really finished; the room selection survives a restart.
-- **Startup and login:** a start that succeeds on its retry publishes the robots (it used to leave every robot unpublished until a manual restart); a login Roborock no longer accepts is replaced or reported instead of retried forever; logins send the agreement version Roborock asks for; robots shared with the account work; a self-hosted local_roborock_server can be used (#43).
-- **Schedules and Routines:** a schedule switch answers Apple Home within its time limit; a timed-out timer read no longer hides the Routines; a schedule deleted while Homebridge was stopped loses its switch.
-- **Q7 and Q10:** a Q7's live room comes from the map it pushes while cleaning, faults like trapped or brush jammed reach Apple Home, 2103 at the dock is no longer a fault, and a Q10 reads its own units, rooms and resume (#19).
+### My own mistakes first
+
+- The "Failed to execute …" line was printed at most once every 6 hours per robot and error. Every weekly check read the log through it: on my own server 36 lines in a week stood for an estimated 1,400 timeouts. One line per robot per hour now says how its requests fared on the LAN and the cloud, and the warning repeats after an hour, not six.
+- 3.36.0's rule "3 cloud requests unanswered in a row → fresh MQTT session" could not fire on an account with a Q7: any Q7 reply reset the count of a classic robot that had stopped answering. My own S8 Pro Ultra's cloud path stayed dead for 2.3 days that way.
+- 3.35.0's resume fix (#28) never worked in production. The robot's `in_cleaning` was not kept from its live status, so Resume always sent a whole-home start, and a paused room clean became a whole-home clean. The tests passed because they set the value themselves.
+- I told #26 that Matter has no code for a full dirty-water tank. It has (74, since Matter 1.4.2), and Homebridge 2.4.0's matter.js accepts it.
+- A start that failed and then succeeded on its retry never published the robots. Every robot showed "No Response" until a manual restart.
+
+### The local connection
+
+- Every local connection gets python-roborock's ping every 10 s and is reconnected at once after a drop. A request whose connection dies under it, or that times out on the LAN, is sent again over the cloud straight away instead of failing. That is the `Local connect state: false` in #24.
+- A connection that stops answering is closed and reopened. It used to leave the robot on the cloud until Homebridge restarted, with the settings page still saying "Local connected".
+- Map lists, map switches, maps and network info always go over the cloud, as python-roborock sends them.
+- A timeout no longer cuts another reply in half, and a robot removed from the account no longer keeps a connection.
+
+### The cloud connection
+
+- Each MQTT connection is a new client with its own id, opened after python-roborock's back-off (10 s, ×1.5, at most 10 minutes) instead of every second with the account-wide id. Every cloud request carries the security block, as python-roborock sends it.
+- The 3-silence restart counts classic robots' cloud requests only, as python-roborock's HealthManager does.
+- A request whose connection went away under it is never counted as a robot that stopped answering.
+
+### Apple Home
+
+- Resume continues a paused room clean (`resume_segment_clean`).
+- The clean mode follows the robot's own water setting, live, not the 3-minute home-data snapshot.
+- A standing tank warning is no longer withdrawn and raised again by a Homebridge restart, by 15 minutes without a live status, or by dock chores (emptying the bin, washing or drying the mop). One notification per cleaning run remains while the tank is not dealt with, on purpose.
+- A full dirty-water tank is reported as DirtyWaterTankFull (#26). Missing is not: the dock does not tell full from not fitted.
+- Rooms are marked cleaned only when a run actually finished; a Stop marks the rest skipped. Mop washing and other busy states without a Matter name no longer end the run on the tile.
+- The room selection survives a restart. A briefly incomplete room list no longer shrinks it, and a room filed under no map no longer freezes the room list.
+- A write the Matter store refused is repaired on the next publish instead of being believed.
+
+### Startup, login and the account
+
+- A login session Roborock no longer accepts is replaced (with a password) or reported once (without one), instead of retried forever as "temporary". A transient error never counts as a refusal.
+- Logins send the agreement version and country Roborock asks for, avoiding error 3006, and are capped at python-roborock's rates. Only an attempt Roborock answered counts toward the cap.
+- Robots shared with the account get a runtime and their owner's room names. The 3-minute refresh applies renamed robots and room names, and removes a robot only after two readings in a row lack it.
+- A self-hosted [local_roborock_server](https://github.com/Python-roborock/local_roborock_server) can be used for the login (#43). Leave the setting empty and nothing changes.
+- Both cloud REST clients give up after 30 s, so a hung request cannot block a Routine or schedule switch until restart.
+- Shutdown during a start, a retry or a restart no longer leaves a client or timer behind.
+
+### Schedules and Routines
+
+- A schedule switch answers Apple Home within its time limit and confirms afterwards; a write the cloud does not confirm is switched back, with the reason in the log.
+- A timed-out timer read no longer hides the Routines, and is retried. A schedule deleted while Homebridge was stopped loses its switch. A request numbered 429 is not a rate limit.
+
+### Q7 and Q10
+
+- A Q7's live room comes from the map it pushes while cleaning, never from the saved map a request returns; that saved map's placeholder was the "placeholder instead of the robot's position" line. Its map list is fetched once per run, not every 10 s.
+- Trapped, brush-jammed and similar Q7 and Q10 faults reach Apple Home while the robot is out of its dock. 2103 at the dock is no longer a fault (python-roborock: "not an error").
+- A Q7 answer that does not say what the robot is doing, or a state the tables cannot translate, reads as unknown instead of idle. A Q7 started from Apple Home is not asked to read back its suction.
+- A Q10 reads its own units for suction, clean mode and faults, shows its rooms, continues a paused room clean, and is asked for its status once a minute (#19). A B01 model that is neither Q7 nor Q10 is no longer sent Q7 frames.
+
+### Contributions
+
+[@pponce](https://github.com/pponce)'s [#30](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/30) (correlated MQTT silence is not counted against a method) and [#42](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/42) (OS-assigned ports in the probe tests) are in this release.
+
+### Tests
+
+2,541 tests, 286 more than 3.39.0. Each fix's new tests were run against the code before the fix and fail there. Four independent reviews of the merged code ran before release, two of them against the real Homebridge 2.4.0 and matter.js 0.17.9, and the faults they found are fixed above.
 
 ## 3.39.0
 
