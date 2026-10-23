@@ -2388,15 +2388,20 @@ class Roborock {
           { retryInMs: waitMs }
         );
       }
-      this.passwordLogins = this.passwordLogins
-        .filter((at) => now - at < 24 * 60 * 60 * 1000)
-        .concat(now);
-
       const loginResult = await roborockAuth.signedLogin(loginApi, {
         email: this.config.username,
         password: this.config.password,
         server: this.loginServer,
       });
+      // Only a login Roborock answered counts toward its limits: an attempt
+      // that died on the network or on a proxy's error page never reached
+      // the server that blocks sign-ins, and counting it let a three-hour
+      // outage use up the day's budget.
+      if (typeof loginResult?.code === "number") {
+        this.passwordLogins = this.passwordLogins
+          .filter((at) => now - at < 24 * 60 * 60 * 1000)
+          .concat(now);
+      }
 
       if (loginResult && loginResult.code === 200 && loginResult.data) {
         this.userData = loginResult.data;
