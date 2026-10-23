@@ -178,6 +178,15 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     const decryptedSession = this.platformConfig.encryptedToken
       ? decryptSession(this.platformConfig.encryptedToken, storagePath)
       : null;
+    if (this.platformConfig.encryptedToken && !decryptedSession) {
+      // The key is a file in the storage folder; a moved folder or a
+      // recreated Docker volume loses it, and the login that made the token
+      // removed the password, so without this line the user only read
+      // "Login failed or requires 2FA".
+      this.log.error(
+        `The saved login could not be decrypted on this machine: its key (roborock.token.key in ${storagePath}) is missing or is not the one it was saved with. Please log in again in the plugin settings.`
+      );
+    }
 
     this.roborockAPI = new Roborock({
       username: username,
