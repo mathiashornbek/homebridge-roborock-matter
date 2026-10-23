@@ -32,6 +32,12 @@ const LOCAL_CONNECT_MIN_GAP_MS = 15000;
 // header-only PING_REQUEST every `_PING_INTERVAL`, answered within `_TIMEOUT`.
 const PING_INTERVAL_MS = 10000;
 const PING_TIMEOUT_MS = 5000;
+// A socket that leaves this many probes in a row unanswered — keep-alive pings
+// of a robot known to answer them, or requests — is closed and reconnected.
+// One is noise: a single lost frame on a healthy LAN is ordinary.
+const LOCAL_MUTE_TIMEOUT_LIMIT = 3;
+// The transport reason recorded when that happens.
+const LOCAL_MUTE_REMOTE_REASON = "local-socket-connected-but-mute";
 
 // Upper bound for a plausible local TCP frame. Everything the robot sends over
 // the LAN socket is a single Roborock message: a 19 byte header, an AES
@@ -238,6 +244,17 @@ class localConnector {
     this.lastConnectAttemptAt = new Map();
     /** Keep-alive ping counters, in python-roborock's `get_next_int` ranges. */
     this.pingCounter = 0;
+    /** Robots seen answering a keep-alive ping, whose missed pings count. */
+    this.answersPings = new Set();
+    /** Robots that have answered anything on the LAN in this process. */
+    this.everHeard = new Set();
+    /**
+     * Robots whose last socket was closed for not answering. Until a socket
+     * answers again, a new one is not used for requests, and one whose hello
+     * goes unanswered is closed — python-roborock's rule for every socket.
+     * @type {Set<string>}
+     */
+    this.requireHello = new Set();
     /**
      * The discovery pass currently listening, if any. See getLocalDevices for
      * why there can only be one.
@@ -481,7 +498,11 @@ class localConnector {
     }
 
     await this.adapter.updateTransportDiagnostics(duid, {
-      tcpConnectionState: "connected",
+      // After a socket was closed for silence, the new one is not called
+      // connected until the robot answers on it (noteHeard).
+      tcpConnectionState: this.requireHello.has(duid)
+        ? "verifying"
+        : "connected",
       isRemote: false,
       remoteReason: null,
       lastTransport: "local",
@@ -608,24 +629,46 @@ class localConnector {
       this.failInFlight(duid, client, "the robot closed the connection");
     });
 
-    client.on("close", () => {
+    // Also what dropUnanswered runs, so a socket closed for silence is
+    // reconnected even if its 'close' never comes.
+    client.retire = () => {
       this.stopKeepAlive(client);
-      this.failInFlight(duid, client, "the connection closed");
+      this.failInFlight(
+        duid,
+        client,
+        client.closeCause === "unanswered"
+          ? "the plugin closed it because the robot stopped answering"
+          : "the connection closed"
+      );
+      if (client.retired) {
+        return;
+      }
+      client.retired = true;
+      client.connected = false;
       if (this.localClients[duid] !== client) {
         return;
       }
       this.adapter.log.debug(
         `tcp client for ${duid} disconnected, attempting to reconnect...`
       );
-      this.adapter.updateTransportDiagnostics(duid, {
-        tcpConnectionState: "disconnected",
-        lastTransport: "cloud",
-        lastTransportReason: "tcp-disconnected",
-      });
+      this.adapter.updateTransportDiagnostics(
+        duid,
+        client.closeCause === "unanswered"
+          ? {
+              tcpConnectionState: "unanswered",
+              lastTransport: "cloud",
+              lastTransportReason: LOCAL_MUTE_REMOTE_REASON,
+            }
+          : {
+              tcpConnectionState: "disconnected",
+              lastTransport: "cloud",
+              lastTransportReason: "tcp-disconnected",
+            }
+      );
       this.forgetNegotiation(duid);
       this.scheduleReconnect(duid, ip, this.nextReconnectDelay(duid));
-      client.connected = false;
-    });
+    };
+    client.on("close", () => client.retire());
 
     client.on("error", (error) => {
       this.stopKeepAlive(client);
@@ -653,8 +696,21 @@ class localConnector {
           this.adapter.log.debug(
             `Local hello on connect failed for ${duid}: ${error?.message || error}`
           );
+          return null;
         })
-        .finally(() => this.startKeepAlive(duid, client));
+        .then((version) => {
+          if (
+            version === null &&
+            this.requireHello.has(duid) &&
+            !client.heard &&
+            this.localClients[duid] === client &&
+            client.connected
+          ) {
+            this.dropUnanswered(duid, client, "the hello");
+            return;
+          }
+          this.startKeepAlive(duid, client);
+        });
     }
 
     if (connectFailed) {
@@ -862,12 +918,6 @@ class localConnector {
         this.adapter.pendingRequests.get(id);
       this.adapter.clearTimeout(timeout);
       this.adapter.pendingRequests.delete(id);
-      // Proof that this socket is not mute, so any run of timeouts counted
-      // against it starts over. A refusal still proves the socket answers —
-      // it is the request that failed, not the transport.
-      if (this.adapter.noteLocalRequestSucceeded) {
-        this.adapter.noteLocalRequestSucceeded(duid);
-      }
       if (refusal && typeof reject === "function") {
         reject(
           createRefusalError(
@@ -993,6 +1043,8 @@ class localConnector {
       },
       isUp: () =>
         this.localClients[duid] === client && Boolean(this.isConnected(duid)),
+      noteUnanswered: (method) =>
+        this.noteUnanswered(duid, client, `the ${method} request`),
     };
   }
 
@@ -1024,26 +1076,111 @@ class localConnector {
     }
   }
 
+  /**
+   * Whether requests can go to this robot's socket: connected, and — after a
+   * socket was closed for silence — answering again.
+   *
+   * @param {string} duid
+   * @returns {boolean | undefined}
+   */
   isConnected(duid) {
-    if (this.localClients[duid]) {
-      return this.localClients[duid].connected;
+    const client = this.localClients[duid];
+    if (client) {
+      return (
+        client.connected && !(this.requireHello.has(duid) && !client.heard)
+      );
     }
   }
 
   /**
-   * Something arrived on this socket, so it is not dead: the reconnect
-   * back-off starts over for the next outage.
+   * Something arrived on this socket, so it is not dead: its run of
+   * unanswered probes is over, and the reconnect back-off starts over.
    *
    * @param {string} duid
    * @param {any} client
    * @returns {void}
    */
   noteHeard(duid, client) {
+    client.unanswered = 0;
     if (client.heard) {
       return;
     }
     client.heard = true;
+    this.everHeard.add(duid);
     this.reconnectAttempts.delete(duid);
+    if (this.requireHello.delete(duid) && this.localClients[duid] === client) {
+      this.adapter.log.info(
+        `${describeDevice(this.adapter, duid)} answers on the LAN again; local requests resume.`
+      );
+      void this.adapter.updateTransportDiagnostics(duid, {
+        tcpConnectionState: "connected",
+        lastTransport: "local",
+        lastTransportReason: "tcp-connected",
+      });
+    }
+  }
+
+  /**
+   * The robot left a probe unanswered on this socket while it was up: a
+   * request, or a keep-alive ping of a robot known to answer them. A run of
+   * LOCAL_MUTE_TIMEOUT_LIMIT closes the socket.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} what the probe, for the log line
+   * @returns {void}
+   */
+  noteUnanswered(duid, client, what) {
+    if (this.localClients[duid] !== client || !client?.connected) {
+      return;
+    }
+    client.unanswered = (client.unanswered || 0) + 1;
+    if (client.unanswered >= LOCAL_MUTE_TIMEOUT_LIMIT) {
+      this.dropUnanswered(duid, client, what);
+    }
+  }
+
+  /**
+   * Close a socket the robot has stopped answering on, and reconnect.
+   *
+   * A socket the robot forgot — Wi-Fi blip, AP restart, a roam — stays open
+   * on this side for as long as nothing is written to it. Until 3.39.0 such a
+   * socket marked the robot cloud-only for the life of the process while the
+   * socket itself stayed open, because only a NEW connect cleared the mark.
+   * Now the socket goes, the reconnect decides, and the new socket is used as
+   * soon as the robot answers on it.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} what the last probe that went unanswered
+   * @returns {void}
+   */
+  dropUnanswered(duid, client, what) {
+    const firstOfEpisode = !this.requireHello.has(duid);
+    this.requireHello.add(duid);
+    client.closeCause = "unanswered";
+    const line =
+      `The local connection to ${describeDevice(this.adapter, duid)} stopped answering ` +
+      `(${what} went unanswered${client.unanswered ? `, ${client.unanswered} in a row` : ""}). ` +
+      `The plugin closed it and is reconnecting; until the robot answers on the LAN ` +
+      `again, its requests use the Roborock cloud.` +
+      (this.everHeard.has(duid)
+        ? ""
+        : ` The LAN port is reachable, so this is not a blocked port — the robot is not ` +
+          `replying on it. On a segmented network, check that the reply path back to ` +
+          `Homebridge is open, not just the outbound one.`);
+    (firstOfEpisode ? this.adapter.log.warn : this.adapter.log.debug).call(
+      this.adapter.log,
+      line
+    );
+    try {
+      client.destroy?.();
+    } catch (error) {
+      this.adapter.log.debug(
+        `Closing the local socket for ${duid} failed: ${error?.message || error}`
+      );
+    }
+    client.retire?.();
   }
 
   /**
@@ -1138,6 +1275,7 @@ class localConnector {
     }
     getTimerFns(this.adapter).clearTimer(waiter.timeout);
     client.pingWaiter = null;
+    this.answersPings.add(duid);
   }
 
   /**
@@ -1149,6 +1287,11 @@ class localConnector {
     this.adapter.log.debug(
       `Keep-alive ping to ${describeDevice(this.adapter, duid)} went unanswered for ${PING_TIMEOUT_MS / 1000} seconds.`
     );
+    // A robot that has never answered a ping may just not speak it; only a
+    // robot known to answer them is judged by them.
+    if (this.answersPings.has(duid)) {
+      this.noteUnanswered(duid, client, "a keep-alive ping");
+    }
   }
 
   /**
@@ -1671,4 +1814,6 @@ module.exports = {
   buildHelloFrame,
   buildPingFrame,
   PING_INTERVAL_MS,
+  LOCAL_MUTE_TIMEOUT_LIMIT,
+  LOCAL_MUTE_REMOTE_REASON,
 };

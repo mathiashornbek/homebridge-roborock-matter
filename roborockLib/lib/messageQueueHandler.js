@@ -1012,18 +1012,14 @@ class messageQueueHandler {
       const timeout = this.adapter.setTimeout(() => {
         this.adapter.pendingRequests.delete(messageID);
         this.adapter.localConnector.clearChunkBuffer(duid);
-        // A socket that keeps reporting itself connected while every
-        // request dies of silence is not a transport worth retrying
-        // forever. Fire-and-forget: the caller is owed its rejection now,
-        // not after the bookkeeping resolves.
-        if (this.adapter.noteLocalRequestTimedOut) {
-          Promise.resolve(
-            this.adapter.noteLocalRequestTimedOut(duid, method)
-          ).catch(() => {});
-        }
         // Up means the socket this request was written on is still the
         // robot's socket and still connected.
         const transportWasUp = handle ? handle.isUp() : false;
+        // Silence on a live socket counts toward closing it (see
+        // localConnector.dropUnanswered).
+        if (transportWasUp) {
+          handle?.noteUnanswered?.(method);
+        }
         finish(
           reject,
           unansweredRequestError(

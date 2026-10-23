@@ -58,7 +58,9 @@ function describeConnectionState(device, transport, hasLocalCredentials) {
     };
   }
 
-  if (tcpState === "connected") {
+  // Not while the robot is routed through the cloud: an open socket that
+  // carries no request is not a local connection worth the name.
+  if (tcpState === "connected" && safeTransport.isRemote !== true) {
     return {
       status: "Local connected",
       health: "good",
@@ -85,6 +87,14 @@ function describeConnectionState(device, transport, hasLocalCredentials) {
       status: "Cloud control (this model)",
       health: "good",
       hint: "This model speaks only Roborock's cloud protocol, which has no LAN control surface, so the plugin never opens a local connection to it. A blank local IP, discovery state and TCP state are expected here and are not a fault.",
+    };
+  }
+
+  if (tcpState === "unanswered" || tcpState === "verifying") {
+    return {
+      status: "Local not answering",
+      health: "warn",
+      hint: "The vacuum stopped answering on its LAN connection, so the plugin closed it and keeps reconnecting. Status and commands use the Roborock cloud until the vacuum answers on the LAN again.",
     };
   }
 
