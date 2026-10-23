@@ -18,6 +18,12 @@ import { HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME } from "./settings";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const VERIFY_DELAY_MS = 3000;
+// How long a schedule switch's HomeKit write may take to answer. hap-nodejs
+// logs "slow to respond" at 3 s (Accessory.TIMEOUT_WARNING) and answers the
+// controller OPERATION_TIMED_OUT at 9 s, and the write with its verification
+// takes 4 s at the very least. So the write answers when Roborock has
+// accepted it, or at this budget, and verification finishes behind it.
+const SCHEDULE_WRITE_ANSWER_BUDGET_MS = 2500;
 const WRITE_SUPPRESSION_MS = 5000;
 // WHY FIVE MINUTES, IN THE AUTHOR'S OWN WORDS. Recorded here rather than left
 // in the pull request, because the next person to look at this number will
@@ -369,6 +375,10 @@ export class ScheduleWriteBatcher<T> {
 interface ScheduleWriteRequest {
   scheduleId: string;
   enabled: boolean;
+  /** Called once Roborock has accepted the write, before verification. */
+  onSent?: () => void;
+  /** Called at once when Roborock refuses the write; that refusal is final. */
+  onRefused?: (error: unknown) => void;
 }
 
 export interface HapScheduleContext {
@@ -1336,8 +1346,12 @@ export default class RoborockHapScheduleAccessory {
     return { ok: true, schedules, reason: undefined };
   }
 
-  enqueueScheduleWrite(scheduleId: string, enabled: boolean): Promise<boolean> {
-    return this.writeBatcher.enqueue({ scheduleId, enabled });
+  enqueueScheduleWrite(
+    scheduleId: string,
+    enabled: boolean,
+    progress: Pick<ScheduleWriteRequest, "onSent" | "onRefused"> = {}
+  ): Promise<boolean> {
+    return this.writeBatcher.enqueue({ scheduleId, enabled, ...progress });
   }
 
   private async executeScheduleWriteBatch(
@@ -1382,8 +1396,10 @@ export default class RoborockHapScheduleAccessory {
           );
         }
         primarySent.push(request);
+        request.onSent?.();
       } catch (error) {
         failures.set(request.scheduleId, error);
+        request.onRefused?.(error);
         if (isDefiniteScheduleThrottle(error)) {
           this.recordScheduleThrottle(error);
           return new Map(
@@ -2109,52 +2125,117 @@ class RoborockHapScheduleSwitchAccessory {
       throw this.writeFailed();
     }
 
-    try {
-      this.platform.log.info(
-        `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.duid}/${this.scheduleId}.`
-      );
-      const executed = await this.coordinator.enqueueScheduleWrite(
-        this.scheduleId,
-        enabled
-      );
+    this.platform.log.info(
+      `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.duid}/${this.scheduleId}.`
+    );
 
-      if (!executed) {
-        return;
+    let markSent = (): void => undefined;
+    const sent = new Promise<"sent">((resolve) => {
+      markSent = () => resolve("sent");
+    });
+    let markRefused = (_error: unknown): void => undefined;
+    const refused = new Promise<{ settled: true; error: unknown }>(
+      (resolve) => {
+        markRefused = (error) => resolve({ settled: true, error });
       }
+    );
+    const outcome = this.coordinator.enqueueScheduleWrite(
+      this.scheduleId,
+      enabled,
+      { onSent: () => markSent(), onRefused: (error) => markRefused(error) }
+    );
+    // The batch reports a refusal again when it ends; by then it is handled.
+    outcome.catch(() => undefined);
 
-      if (this.disposed) {
-        return;
-      }
-
-      this.schedule.enabled = enabled;
-      this.schedule.timer[1] = enabled ? "on" : "off";
-      this.failedCommands.delete(this.scheduleId);
-      this.suppression.set(this.scheduleId, {
-        enabled,
-        timestamp: Date.now(),
-      });
-      this.updateService(enabled);
-    } catch (error) {
-      if (this.disposed) {
-        return;
-      }
-
-      this.updateService(previous);
-
-      this.failedCommands.set(this.scheduleId, {
-        enabled,
-        timestamp: Date.now(),
-      });
-
-      const message = error instanceof Error ? error.message : String(error);
-
-      this.platform.log.warn(
-        `Unable to ${enabled ? "enable" : "disable"} Roborock schedule ${this.scheduleId}: ${message}. ` +
-          `Further attempts for this same state are suppressed for ` +
-          `${RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS / 1000}s.`
+    let budgetTimer: ReturnType<typeof scheduleTimer> | undefined;
+    const budget = new Promise<"budget">((resolve) => {
+      budgetTimer = scheduleTimer(
+        () => resolve("budget"),
+        SCHEDULE_WRITE_ANSWER_BUDGET_MS
       );
-      throw this.writeFailed();
+      unrefTimer(budgetTimer);
+    });
+    const first = await Promise.race([
+      outcome.then(
+        (executed) => ({ settled: true as const, executed }),
+        (error: unknown) => ({ settled: true as const, error })
+      ),
+      refused,
+      sent,
+      budget,
+    ]);
+    if (budgetTimer) {
+      clearTimer(budgetTimer);
     }
+
+    if (typeof first === "object") {
+      // Settled within the budget: the outcome is known, so HomeKit gets it.
+      if ("error" in first) {
+        if (this.disposed) {
+          return;
+        }
+        this.writeFailedFor(previous, enabled, first.error);
+        throw this.writeFailed();
+      }
+      if (first.executed) {
+        this.writeConfirmed(enabled);
+      }
+      return;
+    }
+
+    // Accepted, or still under way: answer now with the requested state and
+    // let verification finish behind the answer. If it does not confirm, the
+    // switch is turned back and the reason logged — it is never left showing
+    // a state Roborock did not keep.
+    this.schedule.enabled = enabled;
+    void outcome.then(
+      (executed) => {
+        if (executed) {
+          this.writeConfirmed(enabled);
+        }
+      },
+      (error: unknown) => this.writeFailedFor(previous, enabled, error)
+    );
+  }
+
+  private writeConfirmed(enabled: boolean): void {
+    if (this.disposed) {
+      return;
+    }
+    this.schedule.enabled = enabled;
+    this.schedule.timer[1] = enabled ? "on" : "off";
+    this.failedCommands.delete(this.scheduleId);
+    this.suppression.set(this.scheduleId, {
+      enabled,
+      timestamp: Date.now(),
+    });
+    this.updateService(enabled);
+  }
+
+  private writeFailedFor(
+    previous: boolean,
+    enabled: boolean,
+    error: unknown
+  ): void {
+    if (this.disposed) {
+      return;
+    }
+    this.schedule.enabled = previous;
+    this.updateService(previous);
+
+    this.failedCommands.set(this.scheduleId, {
+      enabled,
+      timestamp: Date.now(),
+    });
+
+    const message = error instanceof Error ? error.message : String(error);
+
+    this.platform.log.warn(
+      `Unable to ${enabled ? "enable" : "disable"} Roborock schedule ${this.scheduleId}: ${message}. ` +
+        `The switch shows the schedule as ${previous ? "on" : "off"} again. ` +
+        `Further attempts for this same state are suppressed for ` +
+        `${RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS / 1000}s.`
+    );
   }
 
   /**
