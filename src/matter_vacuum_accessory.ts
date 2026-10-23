@@ -975,6 +975,7 @@ export default class RoborockMatterVacuumAccessory {
   private selectedServiceAreaIds: number[] = [];
   private roomCleaningAreaConfirmed = false;
   private lastServiceAreaSummary = "";
+  private lastReportedRoomsWithoutAMap = "";
   // ONE stamp for the whole cache, deliberately. 3.35.0 tried one per field
   // and review found the cost: the tank fields arrive only with a full
   // get_status, so between status replies they expired while battery pushes
@@ -4626,7 +4627,34 @@ export default class RoborockMatterVacuumAccessory {
       });
     }
 
-    return areas;
+    // A room filed under no map (roborockLib keeps a `-1` bucket for a status
+    // that had no `map_status`) cannot sit beside rooms on a real map:
+    // matter.js refuses the whole serviceArea write ("Areas must not have a
+    // null mapId when supportedMaps is defined"), every time. It cannot be
+    // cleaned from a map selection either, so it is left out while real maps
+    // exist.
+    if (!areas.some((area) => area.mapId !== null)) {
+      return areas;
+    }
+    const withoutMap = areas.filter((area) => area.mapId === null);
+    this.reportRoomsWithoutAMap(withoutMap);
+    return withoutMap.length > 0
+      ? areas.filter((area) => area.mapId !== null)
+      : areas;
+  }
+
+  /** Say once per distinct set which rooms were left out, and why. */
+  private reportRoomsWithoutAMap(rooms: MatterServiceArea[]): void {
+    const names = rooms.map((room) => room.name).join(", ");
+    if (names === this.lastReportedRoomsWithoutAMap) {
+      return;
+    }
+    this.lastReportedRoomsWithoutAMap = names;
+    if (names) {
+      this.platform.log.info(
+        `${this.getVacuumName()}: room(s) ${names} belong to no Roborock map while other rooms do, so they are not offered in Apple Home (Matter refuses a room list that mixes the two). They come back once the robot reports them on a map.`
+      );
+    }
   }
 
   private getMatterServiceAreaMaps(
