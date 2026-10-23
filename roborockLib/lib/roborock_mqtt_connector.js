@@ -735,17 +735,44 @@ class roborock_mqtt_connector {
               // is still proof that our account key is the right one.
               noteAcceptedFrame(duid);
 
-              const iv = Buffer.alloc(16, 0);
-              const decipher = crypto.createDecipheriv(
-                "aes-128-cbc",
-                this.adapter.nonce,
-                iv
-              );
-              let decrypted = Buffer.concat([
-                decipher.update(data.payload.subarray(24)),
-                decipher.final(),
-              ]);
-              decrypted = zlib.gunzipSync(decrypted);
+              let decrypted;
+              try {
+                const decipher = crypto.createDecipheriv(
+                  "aes-128-cbc",
+                  this.adapter.nonce,
+                  Buffer.alloc(16, 0)
+                );
+                decrypted = zlib.gunzipSync(
+                  Buffer.concat([
+                    decipher.update(data.payload.subarray(24)),
+                    decipher.final(),
+                  ])
+                );
+              } catch (error) {
+                // The robot answered; what arrived could not be read. Said
+                // as such and settled now, never left to time out as a robot
+                // that did not answer.
+                const pending = this.adapter.pendingRequests.get(data2.id);
+                if (!pending) {
+                  noteDroppedFrame(duid, "undecodable");
+                  this.adapter.log.debug(
+                    `A protocol 301 frame for ${duid} with id ${data2.id} could not be decoded and no request is waiting for it: ${error?.message || error}`
+                  );
+                  return;
+                }
+                this.adapter.clearTimeout(pending.timeout);
+                this.adapter.pendingRequests.delete(data2.id);
+                this.sessionDiagnostics.noteActivity("correlated");
+                pending.reject(
+                  Object.assign(
+                    new Error(
+                      `The reply to ${pending.method || "the map request"} (cloud id ${data2.id}) from ${describeDevice(this.adapter, duid)} arrived but could not be decoded: ${error?.message || error}`
+                    ),
+                    { unansweredRequest: false }
+                  )
+                );
+                return;
+              }
 
               if (!this.adapter.pendingRequests.has(data2.id)) {
                 // The other silent drop on this path. An unsolicited map push

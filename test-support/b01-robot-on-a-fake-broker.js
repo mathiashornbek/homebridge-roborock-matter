@@ -156,6 +156,7 @@ function scMapFrames() {
 /**
  * @param {{
  *   robots: Array<{duid: string, name?: string, model: string, sn?: string,
+ *                  pv?: string,
  *                  localKey?: string, deviceStatus?: Record<string, unknown>}>,
  *   config?: Record<string, unknown>,
  * }} options
@@ -188,7 +189,7 @@ async function createB01Robots({ robots, config = {} }) {
       duid: robot.duid,
       name: robot.name ?? robot.duid,
       productId: `product-${robot.model}`,
-      pv: "B01",
+      pv: robot.pv ?? "B01",
       sn: robot.sn ?? `SN-${robot.duid}`,
       localKey: robot.localKey ?? "0123456789abcdef",
       online: true,
@@ -299,6 +300,31 @@ async function createB01Robots({ robots, config = {} }) {
     await robotSends(duid, 301, packet);
   }
 
+  /**
+   * A classic robot's protocol-301 map reply to request `id`: the 24-byte
+   * header naming this plugin's endpoint, then `body` encrypted with the
+   * plugin's nonce (AES-128-CBC, zero IV), as python-roborock's
+   * create_map_response_decoder expects it. `body` is normally gzip.
+   * @param {string} duid
+   * @param {number} id
+   * @param {Buffer} body
+   */
+  async function v1MapReply(duid, id, body) {
+    const header = Buffer.alloc(24);
+    header.write(api.rr_mqtt_connector.getEndpoint(), 0, "latin1");
+    header.writeUInt16LE(id, 16);
+    const cipher = crypto.createCipheriv(
+      "aes-128-cbc",
+      api.nonce,
+      Buffer.alloc(16, 0)
+    );
+    await robotSends(
+      duid,
+      301,
+      Buffer.concat([header, cipher.update(body), cipher.final()])
+    );
+  }
+
   /** A protocol-301 map frame carrying a Q7 SCMap. */
   async function q7MapFrame(/** @type {string} */ duid, scMap) {
     const b01 = require("../roborockLib/lib/b01Q7Adapter");
@@ -319,6 +345,7 @@ async function createB01Robots({ robots, config = {} }) {
     pushes,
     q7MapFrame,
     mapPacket,
+    v1MapReply,
     waitForSent,
   };
 }
