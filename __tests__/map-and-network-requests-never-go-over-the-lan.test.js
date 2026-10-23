@@ -65,6 +65,14 @@ test("a command that prefers the LAN does not open a socket for a cloud-only met
 
 test("everything else still prefers the LAN", async () => {
   const { api } = createRealRoborockOnFakeWire({ transport: "local" });
+  // The robot answers on the LAN, so nothing is retried over the cloud.
+  api.localConnector.sendMessage.mockImplementation(() => {
+    for (const [id, entry] of api.pendingRequests) {
+      api.clearTimeout(entry.timeout);
+      api.pendingRequests.delete(id);
+      entry.resolve([[16, "1"]]);
+    }
+  });
 
   await send(api, "get_room_mapping");
 

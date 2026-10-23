@@ -178,6 +178,13 @@ class localConnector {
     this.reportedNegotiations = new Map();
     this.reconnectTimers = new Map();
     this.connectPromises = new Map();
+    /**
+     * Requests written on a socket and not yet answered, per robot, so that
+     * the moment their socket goes they can be retried instead of waiting
+     * out a timeout on a socket already known to be closed.
+     * @type {Map<string, Set<{client: any, onLost: (cause: string) => void}>>}
+     */
+    this.inFlight = new Map();
     // Consecutive failed local connects per duid, used to back the retry delay
     // off. Reset the moment a connect succeeds.
     this.reconnectAttempts = new Map();
@@ -400,6 +407,7 @@ class localConnector {
 
     this.forgetNegotiation(duid);
     client.destroy();
+    this.failInFlight(duid, client, "the plugin reset the local connection");
     await this.adapter.updateTransportDiagnostics(duid, {
       tcpConnectionState: "disconnected",
       lastTransport: "cloud",
@@ -537,7 +545,14 @@ class localConnector {
       this.handleLocalData(duid, client, message);
     });
 
+    // Whichever of these comes first says why the socket went; every request
+    // still waiting on it is handed back at once (see writeRequest).
+    client.on("end", () => {
+      this.failInFlight(duid, client, "the robot closed the connection");
+    });
+
     client.on("close", () => {
+      this.failInFlight(duid, client, "the connection closed");
       if (this.localClients[duid] !== client) {
         return;
       }
@@ -555,6 +570,7 @@ class localConnector {
     });
 
     client.on("error", (error) => {
+      this.failInFlight(duid, client, error.code || error.message);
       this.adapter.log.debug(
         `error on tcp client for ${duid}. ${error.message}`
       );
@@ -859,6 +875,76 @@ class localConnector {
     const client = this.localClients[duid];
     if (client) {
       client.write(message);
+    }
+  }
+
+  /**
+   * Write a request frame on the robot's current socket and watch that socket
+   * for it: if the socket goes before the reply, `onLost` is called at once
+   * with why, so the request can be retried over the cloud rather than wait
+   * out its timeout on a socket already known to be closed.
+   *
+   * @param {string} duid
+   * @param {Buffer} frame
+   * @param {(cause: string) => void} onLost
+   * @returns {{release: () => void, isUp: () => boolean} | null} null when
+   *   there is no connected socket to write on
+   */
+  writeRequest(duid, frame, onLost) {
+    const client = this.localClients[duid];
+    if (!this.isConnected(duid) || client?.destroyed) {
+      return null;
+    }
+    const entry = { client, onLost };
+    let entries = this.inFlight.get(duid);
+    if (!entries) {
+      entries = new Set();
+      this.inFlight.set(duid, entries);
+    }
+    entries.add(entry);
+    try {
+      this.sendMessage(duid, frame);
+    } catch (error) {
+      entries.delete(entry);
+      this.adapter.log.debug(
+        `Could not write to the local socket for ${duid}: ${error?.message || error}`
+      );
+      return null;
+    }
+    return {
+      release: () => {
+        this.inFlight.get(duid)?.delete(entry);
+      },
+      isUp: () =>
+        this.localClients[duid] === client && Boolean(this.isConnected(duid)),
+    };
+  }
+
+  /**
+   * The socket went: hand every request still waiting on it back.
+   *
+   * @param {string} duid
+   * @param {any} client
+   * @param {string} cause
+   * @returns {void}
+   */
+  failInFlight(duid, client, cause) {
+    const entries = this.inFlight.get(duid);
+    if (!entries) {
+      return;
+    }
+    for (const entry of [...entries]) {
+      if (entry.client !== client) {
+        continue;
+      }
+      entries.delete(entry);
+      try {
+        entry.onLost(cause);
+      } catch (error) {
+        this.adapter.log.debug(
+          `Handing back a request lost with the local socket for ${duid} failed: ${error?.message || error}`
+        );
+      }
     }
   }
 

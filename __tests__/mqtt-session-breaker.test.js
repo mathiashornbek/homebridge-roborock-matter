@@ -228,7 +228,10 @@ test("local failures still count even while cloud correlation exists", async () 
   await establishSilence();
   govern();
   adapter.localConnector.isConnected.mockReturnValue(true);
-  const error = await timeout("robot-a", "get_consumable");
+  // The LAN timeout is retried once over the cloud, which is silent too.
+  const request = await startRequest("robot-a", "get_consumable");
+  await jest.advanceTimersByTimeAsync(20_000);
+  const error = await request.result;
   expect(error.message).toContain("Local request");
   expect(snapshot().correlatedSilenceObserved).toBe(true);
   expect(isUnansweredRequest(error)).toBe(true);
