@@ -1020,23 +1020,20 @@ class Roborock {
       .filter((device) => !this.shouldSkipDevice(device, ignoredSet));
   }
 
-  getManagedHomeDevices(homedata, ignoredSet = this.getIgnoredDeviceSet()) {
+  getManagedHomeDevices(homedata) {
     return this.getAllHomeDevices(homedata).filter(
       (device) => device && device.duid
     );
   }
 
-  getLocalKeyDevices(homedata, ignoredSet = this.getIgnoredDeviceSet()) {
-    return this.getManagedHomeDevices(homedata, ignoredSet).filter(
+  getLocalKeyDevices(homedata) {
+    return this.getManagedHomeDevices(homedata).filter(
       (device) => device.localKey
     );
   }
 
-  async refreshLocalKeysFromHomeData(
-    homedata,
-    ignoredSet = this.getIgnoredDeviceSet()
-  ) {
-    const localKeyDevices = this.getLocalKeyDevices(homedata, ignoredSet);
+  async refreshLocalKeysFromHomeData(homedata) {
+    const localKeyDevices = this.getLocalKeyDevices(homedata);
     const previousKeys =
       this.localKeys instanceof Map ? this.localKeys : new Map();
     const nextKeys = new Map(
