@@ -192,6 +192,14 @@ async function startFakeRoborockCloud(options = {}) {
     const queue = scripted.get(pathname);
     if (queue && queue.length > 0) {
       const next = queue.shift();
+      if (next.delayMs) {
+        // Answer normally, later: a slow server.
+        setTimeout(
+          () => answer(req, res, body, pathname, parsed, form),
+          next.delayMs
+        );
+        return;
+      }
       if (next.hang || next.destroy) {
         activity.inFlight -= 1;
       }
@@ -206,6 +214,11 @@ async function startFakeRoborockCloud(options = {}) {
       return send(res, next.status ?? 200, next.body);
     }
 
+    return answer(req, res, body, pathname, parsed, form);
+  }
+
+  /** The server's own answer to one request. */
+  function answer(req, res, body, pathname, parsed, form) {
     if (req.method === "POST" && pathname === "/api/v1/getUrlByEmail") {
       return send(res, 200, {
         code: 200,
@@ -358,7 +371,7 @@ async function startFakeRoborockCloud(options = {}) {
     config,
     /** Requests to one path, in order. */
     requestsTo: (pathname) => requests.filter((r) => r.path === pathname),
-    /** Queue one-shot answers for a path: `{status, body}`, `{hang}` or `{destroy}`. */
+    /** Queue one-shot answers for a path: `{status, body}`, `{delayMs}`, `{hang}` or `{destroy}`. */
     script(pathname, ...answers) {
       scripted.set(pathname, [...(scripted.get(pathname) || []), ...answers]);
     },

@@ -1940,6 +1940,11 @@ class Roborock {
       this.scheduleStartServiceRetry(error);
       return;
     }
+    // Shutdown can land during any wait below; a start that carried on built
+    // a new MQTT client and intervals on an adapter that had just stopped.
+    if (this.stopped) {
+      return;
+    }
     if (!userdata) {
       this.log.error(
         "Login failed or requires 2FA. Please complete authentication in the Config UI."
@@ -1985,9 +1990,15 @@ class Roborock {
     // Get home details.
     try {
       const homeId = await roborockAuth.getHomeId(this.loginApi);
+      if (this.stopped) {
+        return;
+      }
       if (homeId) {
         if (this.api) {
           const homedataResult = await this.fetchHomeData(homeId);
+          if (this.stopped) {
+            return;
+          }
           // Owned AND shared robots, room names, products and local keys, the
           // same way the periodic refresh applies them.
           const { localKeyDevices } = await this.applyHomeData(homedataResult);
@@ -2019,6 +2030,9 @@ class Roborock {
             await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
           }
 
+          if (this.stopped) {
+            return;
+          }
           await this.rr_mqtt_connector.initUser(userdata);
           await this.rr_mqtt_connector.initMQTT_Subscribe();
           await this.rr_mqtt_connector.initMQTT_Message();
@@ -2084,6 +2098,9 @@ class Roborock {
             this.getNetworkInfo(),
             this.initializeDeviceUpdates(),
           ]);
+          if (this.stopped) {
+            return;
+          }
 
           this.bInited = true;
           // A success ends the retry chain and forgets the backoff, so a
