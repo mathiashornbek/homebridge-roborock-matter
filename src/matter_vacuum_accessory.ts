@@ -5491,15 +5491,16 @@ export default class RoborockMatterVacuumAccessory {
     if (dps) {
       const status: Record<string, unknown> = {};
 
-      // 120 is error_code. A B01/Q7 robot that hits a fault mid-run pushes a
-      // frame carrying only this field, and until 3.13.0 it was dropped here —
-      // the one transport on which a fault is most likely to arrive alone.
+      // 120 is error_code. A robot that hits a fault mid-run can push a frame
+      // carrying only this field, and until 3.13.0 it was dropped here — the
+      // one transport on which a fault is most likely to arrive alone.
       if (Object.prototype.hasOwnProperty.call(dps, "120")) {
         status.error_code = dps["120"];
       }
       if (Object.prototype.hasOwnProperty.call(dps, "121")) {
-        // B01 pushes arrive here already in v1 numbering: the library
-        // translates them in the robot's own dialect before they are emitted.
+        // Raw datapoints come from v1 robots only. A B01 robot's pushes never
+        // reach this path: the library reads them in its own dialect and hands
+        // them on as a v1-shaped status (onB01DatapointPush).
         status.state = dps["121"];
       }
       if (Object.prototype.hasOwnProperty.call(dps, "122")) {
