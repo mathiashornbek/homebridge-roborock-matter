@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.40.0-beta.1
+
+**A test build of the biggest reliability round so far. The plugin now handles the local and cloud connections the way python-roborock does, and a long list of Apple Home, schedule and Q7/Q10 faults found in a full review are fixed. Feedback before 3.40.0 is very welcome.**
+
+- **Local connection:** a ping every 10 s, an immediate reconnect after a drop, and a request whose connection dies under it is retried at once over the cloud instead of timing out. A local connection that stops answering is closed and reopened instead of leaving the robot on the cloud until a restart.
+- **Cloud connection:** a new MQTT client with its own id for every connection, python-roborock's back-off instead of a reconnect every second, and the "3 unanswered requests" restart now also fires on an account that has Q7 robots. Map lists, maps and network info always go over the cloud, and every cloud request carries the security block.
+- **The log:** one line per robot per hour says how its requests fared on the LAN and the cloud. The old "Failed to execute" line was throttled to once per 6 hours and hid most failures: on my own server an estimated 1,400 timeouts in a week showed up as 36 lines.
+- **Apple Home:** resume continues a paused room clean instead of starting a whole-home clean; the clean mode follows the robot's own water setting; a standing tank warning is no longer repeated by a restart, a quiet spell or a dust-bin emptying; a full dirty-water tank is reported as such (#26); rooms are marked cleaned only when a run really finished; the room selection survives a restart.
+- **Startup and login:** a start that succeeds on its retry publishes the robots (it used to leave every robot unpublished until a manual restart); a login Roborock no longer accepts is replaced or reported instead of retried forever; logins send the agreement version Roborock asks for; robots shared with the account work; a self-hosted local_roborock_server can be used (#43).
+- **Schedules and Routines:** a schedule switch answers Apple Home within its time limit; a timed-out timer read no longer hides the Routines; a schedule deleted while Homebridge was stopped loses its switch.
+- **Q7 and Q10:** a Q7's live room comes from the map it pushes while cleaning, faults like trapped or brush jammed reach Apple Home, 2103 at the dock is no longer a fault, and a Q10 reads its own units, rooms and resume (#19).
+
 ## 3.39.0
 
 **Cloud requests now go out the way python-roborock sends them, and my own S8 Pro Ultra answered the map request again after weeks of silence. Selecting every room in Apple Home no longer shows the rooms of the last run, a refused schedule write no longer looks like it succeeded, and HomeKit stops warning about names like "Q5 Max+".**
