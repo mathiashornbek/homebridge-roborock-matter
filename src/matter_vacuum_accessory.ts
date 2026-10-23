@@ -160,7 +160,6 @@ interface RoborockApi {
     options?: RoborockCommandOptions
   ): Promise<void>;
   supportsSegmentResume?(duid: string): boolean;
-  normalizePushedState?(duid: string, rawState: unknown): unknown;
   isB01Device?(duid: string): boolean;
   describeB01Fault?(
     duid: string,
@@ -5412,12 +5411,9 @@ export default class RoborockMatterVacuumAccessory {
         status.error_code = dps["120"];
       }
       if (Object.prototype.hasOwnProperty.call(dps, "121")) {
-        // A Q10 pushes its own state numbering here (#33); see
-        // normalizePushedState in roborockAPI.js.
-        status.state =
-          typeof this.api.normalizePushedState === "function"
-            ? this.api.normalizePushedState(this.getDuid(), dps["121"])
-            : dps["121"];
+        // B01 pushes arrive here already in v1 numbering: the library
+        // translates them in the robot's own dialect before they are emitted.
+        status.state = dps["121"];
       }
       if (Object.prototype.hasOwnProperty.call(dps, "122")) {
         status.battery = dps["122"];
