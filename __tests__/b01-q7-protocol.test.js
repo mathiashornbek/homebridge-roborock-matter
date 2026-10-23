@@ -1361,15 +1361,18 @@ describe("Service Area cleaning progress (the 'Forbereder' fix)", () => {
     );
   }
 
-  test("room-clean start marks the first area operating and names it current", () => {
+  test("room-clean start marks every requested area operating and names none current", () => {
+    // Which requested room the robot is in is not known until live tracking
+    // says so; naming the first one stuck for a whole run on robots without
+    // live rooms (#24).
     const vacuum = createRoomVacuum();
     vacuum.beginServiceAreaProgress([10, 11]);
 
     const cluster = vacuum.buildServiceAreaCluster();
-    expect(cluster.currentArea).toBe(10);
+    expect(cluster.currentArea).toBeNull();
     expect(cluster.progress).toEqual([
       { areaId: 10, status: 1 }, // operating
-      { areaId: 11, status: 0 }, // pending
+      { areaId: 11, status: 1 }, // operating
     ]);
   });
 
@@ -1531,7 +1534,8 @@ describe("A run the plugin did not start is still a run", () => {
 
     const cluster = vacuum.buildServiceAreaCluster();
     expect(cluster.progress).toEqual([{ areaId: 11, status: 1 }]);
-    expect(cluster.currentArea).toBe(11);
+    // Not named before the robot reports cleaning there (getCurrentServiceArea).
+    expect(cluster.currentArea).toBeNull();
   });
 });
 
@@ -1553,6 +1557,8 @@ describe("Service Area progress persistence across restarts", () => {
       false
     );
     first.beginServiceAreaProgress([10]);
+    first.serviceAreaCurrentArea = 10; // live tracking resolved the room
+    first.persistServiceAreaProgress();
     expect(context.serviceAreaProgressState).toEqual({
       currentArea: 10,
       progress: [{ areaId: 10, status: 1 }],

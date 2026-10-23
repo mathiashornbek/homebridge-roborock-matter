@@ -3971,18 +3971,18 @@ export default class RoborockMatterVacuumAccessory {
       this.clearServiceAreaProgress();
       return;
     }
-    // We know which rooms were requested; until live map-position tracking
-    // reports which one the robot is actually inside, the first requested
-    // area is shown as operating and the rest as pending.
+    // We know which rooms were requested, not which one the robot is in.
+    // Naming the first one as current and Operating said so for the whole run
+    // on a robot without live rooms (#24: "the progress indicator on Kitchen"
+    // while the S8 cleaned elsewhere). So, as for a full clean: every
+    // requested room Operating, none current, until live map-position
+    // tracking resolves one (see beginFullCleanServiceAreaProgress).
     this.resetLiveRoomVisits();
     this.serviceAreaStopRequested = false;
-    this.serviceAreaCurrentArea = areaIds[0];
-    this.serviceAreaProgress = areaIds.map((areaId, index) => ({
+    this.serviceAreaCurrentArea = null;
+    this.serviceAreaProgress = areaIds.map((areaId) => ({
       areaId,
-      status:
-        index === 0
-          ? SERVICE_AREA_PROGRESS.OPERATING
-          : SERVICE_AREA_PROGRESS.PENDING,
+      status: SERVICE_AREA_PROGRESS.OPERATING,
     }));
     this.persistServiceAreaProgress();
   }

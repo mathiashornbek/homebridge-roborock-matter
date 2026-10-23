@@ -622,15 +622,16 @@ describe("applyLiveServiceAreaRoom (Matter accessory)", () => {
     expect(progressById(instance)).toEqual({ [kitchen]: 3, [living]: 3 });
   });
 
-  test("room clean: the initial first-room guess falls back to pending, not completed", () => {
+  test("room clean: rooms not yet seen fall back to pending, not completed", () => {
     const harness = createAccessory();
     const { instance, areaBySegment } = harness;
     const kitchen = areaBySegment.get(42);
     const living = areaBySegment.get(7);
 
-    // Matter room clean of both rooms: the kitchen is only a GUESS.
+    // Matter room clean of both rooms: neither is named until it is seen.
     instance.beginServiceAreaProgress([kitchen, living]);
-    expect(progressById(instance)).toEqual({ [kitchen]: 1, [living]: 0 });
+    expect(progressById(instance)).toEqual({ [kitchen]: 1, [living]: 1 });
+    expect(instance.serviceAreaCurrentArea).toBeNull();
 
     // First live detection says the robot actually started in the living room.
     setLiveRoom(harness, 7, "Stue");
