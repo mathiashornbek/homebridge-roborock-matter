@@ -45,12 +45,14 @@
           "https://usiot.roborock.com",
           "https://euiot.roborock.com",
           "https://cniot.roborock.com",
+          "https://ruiot.roborock.com",
           "https://api.roborock.com"
         ],
         "enumNames": [
           "US (usiot.roborock.com)",
           "EU (euiot.roborock.com)",
           "CN (cniot.roborock.com)",
+          "RU (ruiot.roborock.com)",
           "Asia (api.roborock.com)"
         ],
         "description": "Roborock cloud region endpoint. Choose the region used by your Roborock account."

@@ -185,9 +185,7 @@ async function loadConfig() {
     if (config.email) {
       elements.email.value = config.email;
     }
-    elements.baseUrl.value = normalizeBaseUrl(
-      config.baseURL || "https://usiot.roborock.com"
-    );
+    selectRegion(config.baseURL || "https://usiot.roborock.com");
     if (config.skipDevices) {
       elements.skipDevices.value = config.skipDevices;
     }
@@ -1687,6 +1685,27 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/**
+ * Show the saved region in the Region select, adding it as an option when
+ * the list does not have it.
+ *
+ * Setting a select's value to one no option has selects nothing, and the
+ * select then reads "". The page did that for every region it did not list,
+ * and the next automatic save — debug mode, the email, a device row — wrote
+ * baseURL "" into config.json, which the plugin reads as US.
+ */
+function selectRegion(url) {
+  const value = normalizeBaseUrl(url);
+  const select = elements.baseUrl;
+  if (!Array.from(select.options).some((option) => option.value === value)) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = `${value.replace(/^https?:\/\//, "")} (saved in config.json)`;
+    select.appendChild(option);
+  }
+  select.value = value;
 }
 
 function normalizeBaseUrl(value) {
