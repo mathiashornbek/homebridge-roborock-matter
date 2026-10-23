@@ -175,7 +175,9 @@ class RoborockUiServer {
       failureLogLabel: "2FA verification failed:",
       failureFallbackMessage: "Verification failed.",
       performLogin: async (loginApi, nonce, k) => {
-        const region = roborockAuth.getRegionConfig(
+        const region = await roborockAuth.getLoginRegion(
+          loginApi,
+          email,
           payload.baseURL || "usiot.roborock.com"
         );
         return roborockAuth.loginWithCode(loginApi, {
@@ -211,13 +213,20 @@ class RoborockUiServer {
       failureLogLabel: "Login failed:",
       failureFallbackMessage: "Login failed. Check your credentials.",
       checkTwoFactorRequired: true,
-      performLogin: (loginApi, nonce, k) =>
-        roborockAuth.loginByPassword(loginApi, {
+      performLogin: async (loginApi, nonce, k) => {
+        const region = await roborockAuth.getLoginRegion(
+          loginApi,
+          email,
+          payload.baseURL || "usiot.roborock.com"
+        );
+        return roborockAuth.loginByPassword(loginApi, {
           email,
           password,
+          country: region.country,
           k,
           s: nonce,
-        }),
+        });
+      },
     });
   }
 
@@ -284,7 +293,13 @@ class RoborockUiServer {
     }
 
     console.error(failureLogLabel, loginResult);
-    return { ok: false, message: loginResult?.msg || failureFallbackMessage };
+    // Roborock's own text ("user agreement not accepted") does not say what
+    // to do; the known refusals do.
+    const refusal = roborockAuth.describeLoginRefusal(loginResult);
+    return {
+      ok: false,
+      message: refusal?.hint || loginResult?.msg || failureFallbackMessage,
+    };
   }
 
   private async logout() {

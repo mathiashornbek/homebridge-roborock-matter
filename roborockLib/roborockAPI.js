@@ -456,10 +456,11 @@ const MATTER_CLEAN_TYPE_PREP_LABELS = new Set(["water mode", "clean type"]);
 // return room segments. Retrying lets newly named/segmented maps appear without
 // switching maps on every poll cycle.
 const SERVICE_AREA_ROOM_MAP_REFRESH_TTL_MS = 6 * 60 * 60 * 1000;
-// The shortest gap between two automatic password logins after Roborock has
-// rejected a session: python-roborock's maximum MQTT back-off after an
-// authorisation failure (mqtt/roborock_session.py MAX_BACKOFF_INTERVAL).
-const SESSION_RELOGIN_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// How long to wait before logging in again after Roborock rejected a session
+// or blocked sign-in: python-roborock's maximum back-off after an MQTT
+// authorisation or rate-limit refusal (mqtt/roborock_session.py
+// MAX_BACKOFF_INTERVAL). Every login counts against Roborock's sign-in limits.
+const AUTH_FAILURE_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 class Roborock {
   constructor(options) {
@@ -547,7 +548,6 @@ class Roborock {
       twoFactorRequired: false,
       statusMessage: "",
     };
-    this.pendingAuth = null;
     this.persistBasePath = null;
     this.errorLogThrottleMs =
       typeof options.errorLogThrottleMs === "number"
@@ -1892,12 +1892,21 @@ class Roborock {
     } catch (error) {
       const message = error?.message || String(error);
 
-      const isCredentialError =
-        /"code":\s*(2012|2008|2018)/.test(message) ||
-        /username or password/i.test(message);
-      if (isCredentialError) {
+      // A refusal that asking again cannot change stops here with what to
+      // do about it; a sign-in block is waited out, because every attempt
+      // counts against the limit that caused it. Retrying either on the
+      // short loop would only repeat or deepen it.
+      const refusal = error?.refusal;
+      if (refusal?.later) {
         this.log.error(
-          `Roborock login rejected: ${message}. Check the email and password in the plugin settings; the plugin stays idle until the configuration is fixed.`
+          `Roborock refused the login (code ${refusal.code}): ${refusal.hint} The plugin tries again in ${AUTH_FAILURE_BACKOFF_MS / 3600000} hours.`
+        );
+        this.armStartServiceRetry(AUTH_FAILURE_BACKOFF_MS);
+        return;
+      }
+      if (refusal || /username or password/i.test(message)) {
+        this.log.error(
+          `Roborock refused the login${refusal ? ` (code ${refusal.code})` : ""}: ${refusal ? refusal.hint : message} The plugin stays idle until that is fixed.`
         );
         this.authState.statusMessage =
           "Login rejected - check email and password.";
@@ -2350,21 +2359,26 @@ class Roborock {
         return null;
       }
 
-      const signData = await this.ensureAuthSignature();
+      const signData = await this.createLoginSignature();
       if (!signData) {
         throw new Error("Failed to obtain login signature.");
       }
 
+      const region = await roborockAuth.getLoginRegion(
+        loginApi,
+        this.config.username,
+        this.baseURL
+      );
       const loginResult = await roborockAuth.loginByPassword(loginApi, {
         email: this.config.username,
         password: this.config.password,
+        country: region.country,
         k: signData.k,
         s: signData.s,
       });
 
       if (loginResult && loginResult.code === 200 && loginResult.data) {
         this.userData = loginResult.data;
-        this.pendingAuth = null;
         await this.setStateAsync("UserData", {
           val: JSON.stringify(this.userData),
           ack: true,
@@ -2374,16 +2388,7 @@ class Roborock {
         return this.userData;
       }
 
-      if (loginResult && loginResult.code === 2031) {
-        this.authState.twoFactorRequired = true;
-        this.authState.statusMessage = "Two-factor authentication required.";
-        this.log.error(
-          "Two-factor authentication required. Use the Config UI to continue."
-        );
-        return null;
-      }
-
-      throw new Error(`Login failed: ${JSON.stringify(loginResult)}`);
+      throw roborockAuth.loginRefusedError(loginResult);
     } catch (error) {
       this.log.error(`Error in getUserData: ${error.message}`);
       // DO NOT THROW AWAY THE CACHED SESSION BECAUSE DNS WAS NOT UP YET.
@@ -2419,6 +2424,9 @@ class Roborock {
    * @param {any} error
    */
   isCredentialRejection(error) {
+    if (error?.refusal) {
+      return Boolean(error.refusal.credentials);
+    }
     const code = Number(error?.code ?? error?.status);
     if ([2012, 2008, 2018, 2010].includes(code)) {
       return true;
@@ -2440,11 +2448,12 @@ class Roborock {
     return userdata && userdata.token && userdata.rriot;
   }
 
-  async ensureAuthSignature() {
-    if (this.pendingAuth && this.pendingAuth.k && this.pendingAuth.s) {
-      return this.pendingAuth;
-    }
-
+  /**
+   * A fresh `api/v3/key/sign` signature for ONE login attempt, as
+   * python-roborock signs every login. A failed attempt used to leave its
+   * signature cached, so every retry sent the same one.
+   */
+  async createLoginSignature() {
     if (!this.loginApi) {
       throw new Error("Login API is not initialized.");
     }
@@ -2460,8 +2469,7 @@ class Roborock {
       return null;
     }
 
-    this.pendingAuth = { k: signData.k, s };
-    return this.pendingAuth;
+    return { k: signData.k, s };
   }
 
   async sendTwoFactorEmail() {
@@ -2485,7 +2493,7 @@ class Roborock {
       throw new Error("Login API is not initialized.");
     }
 
-    const signData = await this.ensureAuthSignature();
+    const signData = await this.createLoginSignature();
     if (!signData) {
       throw new Error("Missing login signature.");
     }
@@ -2502,7 +2510,6 @@ class Roborock {
 
     if (loginResult && loginResult.code === 200 && loginResult.data) {
       this.userData = loginResult.data;
-      this.pendingAuth = null;
       await this.setStateAsync("UserData", {
         val: JSON.stringify(this.userData),
         ack: true,
@@ -4254,7 +4261,7 @@ class Roborock {
    * the cloud side stops using it (the refresh, the hourly MQTT check, MQTT
    * itself), and then:
    * - with a password configured, one fresh login, and the start runs again
-   *   with the new session; at most once per SESSION_RELOGIN_MIN_INTERVAL_MS,
+   *   with the new session; at most once per AUTH_FAILURE_BACKOFF_MS,
    *   python's maximum back-off after an authorisation failure, because each
    *   login counts against Roborock's sign-in limits (9004 blocks sign-in for
    *   7 days);
@@ -4290,8 +4297,8 @@ class Roborock {
 
     const sinceLastLogin =
       this.now() - (this.lastSessionReloginAt ?? -Infinity);
-    if (sinceLastLogin < SESSION_RELOGIN_MIN_INTERVAL_MS) {
-      const waitMs = SESSION_RELOGIN_MIN_INTERVAL_MS - sinceLastLogin;
+    if (sinceLastLogin < AUTH_FAILURE_BACKOFF_MS) {
+      const waitMs = AUTH_FAILURE_BACKOFF_MS - sinceLastLogin;
       this.log.error(
         `${reason}, ${Math.round(sinceLastLogin / 60000)} minute(s) after the plugin last logged in with your password. It logs in again in ${Math.ceil(waitMs / 3600000)} hour(s); if this keeps happening, log in again in the plugin settings.`
       );

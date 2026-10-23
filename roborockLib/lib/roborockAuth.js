@@ -3,6 +3,8 @@
 const crypto = require("crypto");
 const axios = require("axios");
 
+const API_V1_URL_BY_EMAIL = "api/v1/getUrlByEmail";
+const API_V3_AGREEMENT = "api/v3/app/agreement/latest";
 const API_V3_SIGN = "api/v3/key/sign";
 const API_V4_LOGIN_CODE = "api/v4/auth/email/login/code";
 const API_V4_LOGIN_PASSWORD = "api/v4/auth/email/login/pwd";
@@ -43,6 +45,9 @@ function getRegionConfig(baseURL) {
   }
   if (labels.includes("cniot")) {
     return { country: "CN", countryCode: "86" };
+  }
+  if (labels.includes("ruiot")) {
+    return { country: "RU", countryCode: "7" };
   }
   if (hostname === "api.roborock.com") {
     return { country: "SG", countryCode: "65" };
@@ -145,6 +150,152 @@ async function signRequest(loginApi, s) {
   return res.data && res.data.data ? res.data.data : null;
 }
 
+/**
+ * The account's country and phone country code, as python-roborock's
+ * `_get_iot_login_info` reads them from `api/v1/getUrlByEmail` on the server
+ * the login goes to. Guessing them from the host name made every EU account
+ * German. Falls back to that guess when the server does not know the account
+ * or does not answer, so this lookup can never be what stops a login.
+ *
+ * @param {import("axios").AxiosInstance} loginApi
+ * @param {string} email
+ * @param {string | undefined} baseURL
+ * @returns {Promise<{country: string, countryCode: string}>}
+ */
+async function getLoginRegion(loginApi, email, baseURL) {
+  const guess = getRegionConfig(baseURL);
+  try {
+    const query = new URLSearchParams({ email, needtwostepauth: "false" });
+    const res = await loginApi.post(`${API_V1_URL_BY_EMAIL}?${query}`);
+    const data = res?.data?.code === 200 ? res.data.data : null;
+    if (data && (data.country || data.countrycode)) {
+      return {
+        country: String(data.country || guess.country),
+        countryCode: String(data.countrycode || guess.countryCode),
+      };
+    }
+  } catch {
+    // The guess below.
+  }
+  return guess;
+}
+
+/**
+ * The user-agreement version the server currently wants for this country.
+ *
+ * A login that sends an older one is refused with 3006 "user agreement
+ * version is not up-to-date" — what the hard-coded 14.0 started doing in
+ * September 2026 (python-roborock PR #960: euiot wants 15.1, ruiot 15.0,
+ * usiot 16.0 for US accounts). Looked up per login, as python-roborock
+ * 7.8.2+ does, with 14.0 kept only for a lookup that fails.
+ *
+ * @param {import("axios").AxiosInstance} loginApi
+ * @param {string} country two-letter code
+ * @returns {Promise<{majorVersion: number, minorVersion: number}>}
+ */
+async function getAgreementVersion(loginApi, country) {
+  try {
+    const res = await loginApi.get(API_V3_AGREEMENT, { params: { country } });
+    const data = res?.data?.code === 200 ? res.data.data : null;
+    if (
+      Number.isInteger(data?.majorVersion) &&
+      Number.isInteger(data?.minorVersion)
+    ) {
+      return {
+        majorVersion: data.majorVersion,
+        minorVersion: data.minorVersion,
+      };
+    }
+  } catch {
+    // The fallback below.
+  }
+  return { majorVersion: 14, minorVersion: 0 };
+}
+
+/**
+ * Login refusals that asking again cannot change, and what the user can do
+ * about each. Codes from python-roborock 7.13.0 (`web_api.py`) and the field
+ * reports collected for issue #43. `later` marks a block that lifts by
+ * itself: it is waited out, never retried on the short loop, because every
+ * attempt counts against the limit that caused it.
+ *
+ * @type {Record<number, {hint: string, later?: true, credentials?: true}>}
+ */
+const LOGIN_REFUSALS = {
+  2003: {
+    hint: "Roborock does not accept the email address as written. Check it in the plugin settings.",
+    credentials: true,
+  },
+  2008: {
+    hint: "Roborock has no account with this email address on the selected region's server. Check the email and the Region in the plugin settings.",
+    credentials: true,
+  },
+  2010: {
+    hint: "Roborock rejected the email or password. Check them in the plugin settings.",
+    credentials: true,
+  },
+  2012: {
+    hint: "Roborock rejected the email or password. Check them in the plugin settings.",
+    credentials: true,
+  },
+  2018: {
+    hint: "The verification code is wrong or has expired. Request a new one in the plugin settings.",
+    credentials: true,
+  },
+  2031: {
+    hint: "Roborock requires an emailed verification code for this account. Log in with the code in the plugin settings.",
+  },
+  3006: {
+    hint: "Roborock asks for the user agreement to be accepted again: in the Roborock app, revoke and accept the user agreement (Profile, About, User Agreement), then log in again. A Mi Home account cannot be used here.",
+  },
+  3009: {
+    hint: "Accept the user agreement in the Roborock app first, then log in again.",
+  },
+  3039: {
+    hint: "This account does not exist on the selected region's server. Choose the region the account was created in, in the plugin settings.",
+    credentials: true,
+  },
+  9002: {
+    hint: "Too many verification codes were requested. Wait before requesting another one.",
+    later: true,
+  },
+  9004: {
+    hint: "Roborock has blocked sign-in for this account for a while after too many attempts.",
+    later: true,
+  },
+};
+
+/**
+ * The refusal behind a login answer, or null when the answer is not one of
+ * the known refusals.
+ *
+ * @param {{code?: unknown, msg?: unknown} | null | undefined} envelope
+ */
+function describeLoginRefusal(envelope) {
+  const refusal = LOGIN_REFUSALS[Number(envelope?.code)];
+  return refusal
+    ? { code: Number(envelope?.code), msg: envelope?.msg, ...refusal }
+    : null;
+}
+
+/**
+ * An Error for a refused login that keeps Roborock's answer in its message
+ * and the classification on `refusal`.
+ *
+ * @param {Record<string, unknown> | null | undefined} envelope
+ */
+function loginRefusedError(envelope) {
+  const error = /** @type {Error & {code?: number, refusal?: any}} */ (
+    new Error(`Login failed: ${JSON.stringify(envelope)}`)
+  );
+  const refusal = describeLoginRefusal(envelope);
+  if (refusal) {
+    error.code = refusal.code;
+    error.refusal = refusal;
+  }
+  return error;
+}
+
 async function requestEmailCode(loginApi, email) {
   const params = new URLSearchParams();
   params.append("type", "login");
@@ -178,13 +329,14 @@ async function loginWithCode(
     "x-mercy-ks": s,
   };
 
+  const agreement = await getAgreementVersion(loginApi, country);
   const params = new URLSearchParams({
     country,
     countryCode,
     email,
     code,
-    majorVersion: "14",
-    minorVersion: "0",
+    majorVersion: String(agreement.majorVersion),
+    minorVersion: String(agreement.minorVersion),
   });
 
   try {
@@ -200,17 +352,18 @@ async function loginWithCode(
   }
 }
 
-async function loginByPassword(loginApi, { email, password, k, s }) {
+async function loginByPassword(loginApi, { email, password, country, k, s }) {
   const headers = {
     "x-mercy-k": k,
     "x-mercy-ks": s,
   };
 
+  const agreement = await getAgreementVersion(loginApi, country);
   const params = new URLSearchParams({
     email,
     password: encryptPassword(password, k),
-    majorVersion: "14",
-    minorVersion: "0",
+    majorVersion: String(agreement.majorVersion),
+    minorVersion: String(agreement.minorVersion),
   });
 
   try {
@@ -231,7 +384,11 @@ module.exports = {
   getHomeId,
   isSessionRejected,
   createLoginApi,
+  describeLoginRefusal,
+  getAgreementVersion,
+  getLoginRegion,
   getRegionConfig,
+  loginRefusedError,
   signRequest,
   requestEmailCode,
   loginWithCode,
