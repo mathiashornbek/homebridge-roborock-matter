@@ -6132,11 +6132,19 @@ class Roborock {
       return true;
     }
 
-    if (parsed.rooms.length > 0) {
-      void this.noteB01MapRooms(duid, parsed.rooms);
+    // Rooms come from the saved map. A live frame is for the position: what
+    // it lists is not known to be every room, by name, so it names rooms
+    // only for a robot whose saved rooms are not known yet, and it never
+    // postpones the saved-map read that replaces them.
+    const live = parsed.mapType === b01Q7Adapter.B01_LIVE_MAP_TYPE;
+    if (
+      parsed.rooms.length > 0 &&
+      (!live || this.getB01RoomCache(duid).length === 0)
+    ) {
+      void this.noteB01MapRooms(duid, parsed.rooms, { live });
     }
 
-    if (parsed.mapType === b01Q7Adapter.B01_LIVE_MAP_TYPE) {
+    if (live) {
       if (pending) {
         pending.liveFrames += 1;
       }
@@ -6176,18 +6184,21 @@ class Roborock {
 
   /**
    * Keep the room-name cache in step with the rooms a map frame carries, and
-   * postpone the scheduled room refresh. Written only on change: the cache is
-   * persisted, and live frames arrive every few seconds while cleaning.
+   * for a saved map postpone the scheduled room refresh. Written only on
+   * change: the cache is persisted.
    * @param {string} duid
    * @param {Array<{roomId: number, roomName: string}>} rooms
-   * @param {{announce?: boolean}} [options] log a changed list, as a room
-   *   refresh does (the only source of a Q10's rooms)
+   * @param {{announce?: boolean, live?: boolean}} [options] `announce`: log
+   *   a changed list, as a room refresh does (the only source of a Q10's
+   *   rooms); `live`: from a Q7 live frame, which settles no room refresh
    */
   async noteB01MapRooms(duid, rooms, options = {}) {
-    if (!this._b01RoomRefreshAt) {
-      this._b01RoomRefreshAt = new Map();
+    if (!options.live) {
+      if (!this._b01RoomRefreshAt) {
+        this._b01RoomRefreshAt = new Map();
+      }
+      this._b01RoomRefreshAt.set(duid, Date.now());
     }
-    this._b01RoomRefreshAt.set(duid, Date.now());
     if (JSON.stringify(this.getB01RoomCache(duid)) === JSON.stringify(rooms)) {
       return;
     }
