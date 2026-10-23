@@ -106,6 +106,12 @@
         "type": "boolean",
         "default": true
       },
+      "enableSmartPlanCleanMode": {
+        "title": "Enable SmartPlan Cleaning Mode",
+        "description": "Adds SmartPlan, the Roborock app's mode where the robot picks suction, water and mop route for each room, to the Matter cleaning mode list. Off by default. Only for robots that offer SmartPlan in the Roborock app (classic robots with water control; not the Q7 series). Apple Home names modes from their Matter tags, not their labels, so it appears in the Vacuum & Mop menu as \"Automatic\", and plain Vacuum + Mop is tagged Day so it shows as \"Day\" instead of a second \"Automatic\". Matter fixes the mode list when the robot is paired, so remove and re-pair the robot after changing this. BEFORE TURNING THIS OFF, select Vacuum, Mop or Vacuum + Mop in Apple Home, for the same reason as the suction levels. Requires Matter Cleaning Mode Selection.",
+        "type": "boolean",
+        "default": false
+      },
       "enableMatterExtendedOperationalStates": {
         "title": "Enable Matter Dock & Returning Status",
         "description": "The extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. On by default. Matter fixes an accessory's capabilities at commissioning, so a robot paired before 3.12.0 needs one remove-and-re-pair in Apple Home before these appear. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no operational state of its own in the Matter robot vacuum specification, so it is not reported here.",
