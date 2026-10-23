@@ -550,22 +550,22 @@ const OPERATIONAL_STATES_THAT_CARRY_A_FAULT: ReadonlySet<number> = new Set([
  * 0 is `NoError` and has to be published too: an error attribute that is only
  * ever written when something is wrong never clears.
  *
- * WHY THIS LIST STOPS AT 71.
+ * THE CODES ABOVE 71.
  *
- * The enum continues: the specification adds LowBattery (72),
- * CannotReachTargetArea (73), DirtyWaterTankFull (74), DirtyWaterTankMissing
- * (75), WheelsJammed (76), BrushJammed (77) and NavigationSensorObscured (78).
- * Several of those name a Roborock fault exactly, and mapping to them would
- * read better than the generic codes used below.
+ * The enum continues: LowBattery (72), CannotReachTargetArea (73),
+ * DirtyWaterTankFull (74), DirtyWaterTankMissing (75), WheelsJammed (76),
+ * BrushJammed (77) and NavigationSensorObscured (78). They came with RVC
+ * Operational State cluster revision 3 in Matter 1.4.2 — the revision that
+ * also added the dock states 0x43-0x46 this plugin publishes and Apple Home
+ * draws — and matter.js 0.17.9, the build Homebridge 2.4.0 ships, defines and
+ * accepts all of them (@matter/types rvc-operational-state ErrorState, enforced
+ * by its ValueValidator). Whether Apple Home renders them is unmeasured.
  *
- * They are all Matter 1.5. Everything from 0 to 71 has been in the cluster
- * since 1.2. Nothing here establishes which revision Apple implements, and
- * this file already carries one measurement of what Apple does with a value
- * it does not recognise: a manufacturer-range id in `operationalStateList`
- * leaves the tile in "Connecting" forever. A fault that renders as nothing
- * would only cost the message; a fault that wedges the accessory costs the
- * robot. Until somebody looks at a tile with 76 on it, the 1.2 set is what
- * gets published, and the accurate 1.5 name goes in the log line instead.
+ * DirtyWaterTankFull is published, because nothing else can say it (#26). The
+ * robot faults keep their ≤71 codes with the closer name in the log line,
+ * until somebody looks at a tile with 76 on it. DirtyWaterTankMissing is not
+ * published: no Roborock signal tells a missing dirty tank from a full one
+ * (see isDirtyWaterTankFull).
  */
 const RVC_OPERATIONAL_ERROR = {
   NO_ERROR: 0,
@@ -579,6 +579,7 @@ const RVC_OPERATIONAL_ERROR = {
   WATER_TANK_MISSING: 69,
   WATER_TANK_LID_OPEN: 70,
   MOP_CLEANING_PAD_MISSING: 71,
+  DIRTY_WATER_TANK_FULL: 74,
 } as const;
 
 /**
@@ -629,6 +630,7 @@ const RVC_OPERATIONAL_ERROR_NAMES: Readonly<Record<number, string>> = {
   [RVC_OPERATIONAL_ERROR.WATER_TANK_MISSING]: "Water tank missing",
   [RVC_OPERATIONAL_ERROR.WATER_TANK_LID_OPEN]: "Water tank lid open",
   [RVC_OPERATIONAL_ERROR.MOP_CLEANING_PAD_MISSING]: "Mop pad missing",
+  [RVC_OPERATIONAL_ERROR.DIRTY_WATER_TANK_FULL]: "Dirty water tank full",
 };
 
 /**
@@ -644,7 +646,7 @@ const RVC_OPERATIONAL_ERROR_NAMES: Readonly<Record<number, string>> = {
  * `roborock` is the plugin's own text and is logged, not published — the
  * `ErrorStateLabel`/`ErrorStateDetails` fields that could carry it are
  * unmeasured on Apple Home and this attribute has a history of being brittle.
- * `spec` names the Matter 1.5 code that would be more accurate than the id
+ * `spec` names the Matter 1.4.2 code (cluster revision 3) that would be more accurate than the id
  * actually sent, and is logged for the same reason: so the next person can see
  * what the mapping gave up and why.
  */
@@ -1327,7 +1329,10 @@ export default class RoborockMatterVacuumAccessory {
   /**
    * The dock's dirty-water tank is full (or missing). `dock_error_status` 39
    * says it on the docks that use it; the `dss` word says it on the ones that
-   * carry it, separately from the clean tank.
+   * carry it, separately from the clean tank. Neither tells full from
+   * missing: python-roborock names the `dss` value 1 `full_not_installed` and
+   * dock code 39 `waste_water_tank_full`, "check tank placement or empty as
+   * required". So it goes to Matter as DirtyWaterTankFull either way.
    */
   private isDirtyWaterTankFull(): boolean | null {
     const dockError = this.getNumberStatus("dock_error_status");
@@ -1378,6 +1383,18 @@ export default class RoborockMatterVacuumAccessory {
         text: "Clean water tank empty",
       };
     }
+    // Second, and for the same reasons as the clean tank: the dock cannot wash
+    // a mop with nowhere to put the water, and a vacuum-only run does not
+    // need it. 68 wins when both are flagged — one fault at a time, and 68
+    // is the one measured rendering on a tile.
+    const dirtyTankFull = this.isDirtyWaterTankFull();
+    if (dirtyTankFull === true && !this.isVacuumOnlyModeChosen()) {
+      return {
+        id: RVC_OPERATIONAL_ERROR.DIRTY_WATER_TANK_FULL,
+        text: "full, or not fitted: the dock does not tell them apart",
+      };
+    }
+    const tankKnown = tankEmpty !== null || dirtyTankFull !== null;
 
     const errorCode = this.getNumberStatus("error_code");
     const speaksV1 = this.getNumberStatus("matter_clean_type") === null;
@@ -1391,7 +1408,7 @@ export default class RoborockMatterVacuumAccessory {
       // tank through `dock_error_status` and `dss`, which is what the tank
       // fault above is built from. Known, so not reported as unmapped — #22
       // was asked to report all three pulses — and not a second fault.
-      return tankEmpty !== null
+      return tankKnown
         ? { id: RVC_OPERATIONAL_ERROR.NO_ERROR, text: "" }
         : null;
     }
@@ -1444,7 +1461,7 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
 
-    if (tankEmpty !== null || errorCode === 0) {
+    if (tankKnown || errorCode === 0) {
       // At least one source affirmatively says it is fine and neither says
       // otherwise. Requiring both to be known would mean a robot that never
       // reports `error_code` could never clear a tank warning after a refill,

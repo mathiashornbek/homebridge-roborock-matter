@@ -23,6 +23,10 @@
  *
  * Reactors modelled, all from @matter/node 0.17.9 src/behaviors:
  *
+ *  behavior/state/validation/ValueValidator.ts:152-172 and
+ *  @matter/types clusters/rvc-operational-state.d.ts:512-610
+ *           operationalError.errorStateId must be a member of the RVC
+ *           ErrorStateEnum: 0-3 and 64-78 (DirtyWaterTankFull is 74).
  *  rvc-operational-state/RvcOperationalStateServer.ts
  *   :72-77  operationalState must be in operationalStateList, else throw.
  *   :78-84  leaving Error while an error stands clears operationalError.
@@ -62,6 +66,11 @@
 const ERROR = 3;
 const NO_ERROR = 0;
 
+// RvcOperationalState.ErrorState in @matter/types 0.17.9.
+const RVC_ERROR_STATE_IDS = new Set([
+  0, 1, 2, 3, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+]);
+
 function isDeepEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -97,6 +106,13 @@ const PRE_COMMIT = {
       ) {
         throw new ValidationError(
           `Current phase ${newValue} is out of bounds for phase list of length ${state.phaseList.length}`
+        );
+      }
+    },
+    operationalError(state, newValue) {
+      if (!RVC_ERROR_STATE_IDS.has(newValue?.errorStateId)) {
+        throw new ValidationError(
+          `operationalError.errorStateId: Value ${newValue?.errorStateId} is not defined in enum`
         );
       }
     },
