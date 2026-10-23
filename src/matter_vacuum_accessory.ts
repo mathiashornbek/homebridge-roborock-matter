@@ -428,20 +428,30 @@ const OPERATIONAL_STATE_CLUSTER = "rvcOperationalState";
 const RESYNC_OPERATIONAL_STATE_EVERY_FORCED_WRITES = 10;
 
 /**
- * Roborock states that mean the robot is busy, but that getRoborockOperational
- * State() has no arm for (python-roborock `RoborockStateCode`): 25 washing the
- * mop, 28 in a call, 30 egg attack, 32 patrol, 33/34 attaching/detaching the
- * mop, 6301-6310 the mopping states. Not at rest, so never beside a fault.
+ * Roborock states that say the robot is busy with something Matter has no
+ * operational state for (python-roborock `RoborockStateCode`): 28 in a call,
+ * 30 egg attack, 32 patrol, 33/34 attaching/detaching the mop. They keep the
+ * operational state the robot was last in (getRoborockOperationalState), the
+ * way a dock chore keeps the run mode: DSimeone's a144 reports 33 with
+ * `in_cleaning: 3` in the middle of a room clean (#22), and at an idle dock
+ * after one. Not at rest either way, so never beside a fault.
  */
-function isRoborockBusyStateWithoutAName(state: number): boolean {
+function isRoborockStateWithoutAMatterName(state: number): boolean {
   return (
-    state === 25 ||
-    state === 28 ||
-    state === 30 ||
-    state === 32 ||
-    state === 33 ||
-    state === 34 ||
-    (state >= 6301 && state <= 6310)
+    state === 28 || state === 30 || state === 32 || state === 33 || state === 34
+  );
+}
+
+/** python-roborock's mopping states: 6301-6309 on the floor, 6310 heading home to wash. */
+const ROBOROCK_MOPPING_STATE_FIRST = 6301;
+const ROBOROCK_MOPPING_STATE_LAST_ON_THE_FLOOR = 6309;
+const ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER = 6310;
+
+function isRoborockMoppingOnTheFloor(state: number | null): boolean {
+  return (
+    state !== null &&
+    state >= ROBOROCK_MOPPING_STATE_FIRST &&
+    state <= ROBOROCK_MOPPING_STATE_LAST_ON_THE_FLOOR
   );
 }
 
@@ -1003,6 +1013,10 @@ export default class RoborockMatterVacuumAccessory {
   // resolveRunMode(). Idle is the honest starting point: a plugin that boots
   // while the dock is emptying knows of no run in progress.
   private lastRunMode = RUN_MODE_IDLE;
+  // The operational state the robot last reported through a state that has a
+  // Matter name. A state without one (isRoborockStateWithoutAMatterName) keeps
+  // it. Null until a live frame has said, so the default arm decides.
+  private lastNamedRoborockOperationalState: number | null = null;
   // The run mode as it went out to Matter, optimistic overlay included. The
   // read-only "Cleaning" state sensor answers from this so it and the Apple
   // Home tile always say the same thing. Null until the first publish.
@@ -2919,6 +2933,12 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     this.rememberLiveStatusFrame(status);
+    if (state !== null && !isRoborockStateWithoutAMatterName(state)) {
+      this.lastNamedRoborockOperationalState = this.getRoborockOperationalState(
+        state,
+        this.getNumberStatus("charge_status")
+      );
+    }
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -3770,13 +3790,11 @@ export default class RoborockMatterVacuumAccessory {
    */
   private canCarryAFault(publishedState: number): boolean {
     const rawState = this.getNumberStatus("state");
-    // A state this plugin does not name falls through to Charging or Stopped
-    // in getRoborockOperationalState(), and both of those may carry a fault.
-    // Several of those states are a run in progress — DSimeone's a144 reports
-    // 33 "attaching the mop" with `in_cleaning: 3` mid room clean — so a
-    // mop swap during a run raised the tank fault and the Error with it,
-    // once per swap (found in review).
-    if (rawState !== null && isRoborockBusyStateWithoutAName(rawState)) {
+    // A state Matter has no name for keeps the operational state the robot was
+    // last in, which may be Charging — and a robot attaching its mop mid-run
+    // (DSimeone's a144, 33 with `in_cleaning: 3`) is not at rest. Raising the
+    // tank fault there put the tile in Error once per swap (found in review).
+    if (rawState !== null && isRoborockStateWithoutAMatterName(rawState)) {
       return false;
     }
     const robotState = this.getRoborockOperationalState(
@@ -5125,12 +5143,28 @@ export default class RoborockMatterVacuumAccessory {
       case 22: // Emptying dust container
         return RVC_OPERATIONAL_STATE.EMPTYING_DUST_BIN;
       case 23: // Washing the mop
+      case 25: // Washing the mop (python-roborock washing_the_mop_2)
         return RVC_OPERATIONAL_STATE.CLEANING_MOP;
       case 29: // Mapping
         return RVC_OPERATIONAL_STATE.UPDATING_MAPS;
       case 100: // Fully Charged
         return RVC_OPERATIONAL_STATE.DOCKED;
+      case ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER:
+        return RVC_OPERATIONAL_STATE.SEEKING_CHARGER;
       default:
+        if (isRoborockMoppingOnTheFloor(state)) {
+          return RVC_OPERATIONAL_STATE.RUNNING;
+        }
+        // Before the default arm on purpose: Charging or Stopped is what made
+        // a mop swap mid-run read as a finished run (see
+        // isRoborockStateWithoutAMatterName).
+        if (
+          state !== null &&
+          isRoborockStateWithoutAMatterName(state) &&
+          this.lastNamedRoborockOperationalState !== null
+        ) {
+          return this.lastNamedRoborockOperationalState;
+        }
         if (chargeStatus !== null && chargeStatus !== 0) {
           return RVC_OPERATIONAL_STATE.CHARGING;
         }
@@ -5762,7 +5796,7 @@ export default class RoborockMatterVacuumAccessory {
       case 29: // Mapping
         return true;
       default:
-        return false;
+        return isRoborockMoppingOnTheFloor(state);
     }
   }
 

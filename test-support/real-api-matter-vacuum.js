@@ -56,6 +56,7 @@ const CODE_TO_SCHEMA_ID = Object.fromEntries(
  *   model?: string,
  *   homeData?: Record<string, number>,
  *   platformConfig?: Record<string, unknown>,
+ *   rooms?: Array<{segmentId: number, name: string}>,
  * }} [options]
  */
 async function createRealApiVacuum({
@@ -69,6 +70,7 @@ async function createRealApiVacuum({
     charge_status: 1,
   },
   platformConfig = {},
+  rooms = [],
 } = {}) {
   const log = {
     debug: jest.fn(),
@@ -105,6 +107,17 @@ async function createRealApiVacuum({
     }),
     ack: true,
   });
+
+  if (rooms.length > 0) {
+    // The shape roborockAPI.js keeps after get_room_mapping, on map 0.
+    api.roomMappings[DUID] = {
+      currentMapId: 0,
+      maps: [{ mapId: 0, name: "Home" }],
+      roomsByMap: {
+        0: rooms.map((room) => ({ ...room, mapId: 0 })),
+      },
+    };
+  }
 
   /** @type {string[]} */
   const commands = [];
