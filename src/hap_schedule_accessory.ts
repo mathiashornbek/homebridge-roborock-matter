@@ -125,6 +125,18 @@ export function scheduleFailureBackoffMs(
   return Math.round(baseDelay * jitterFactor);
 }
 
+/**
+ * Whether a failure is the cloud saying "slow down", which pauses the whole
+ * account's schedule and Routine traffic for an hour.
+ *
+ * A status field of 429 (on the error or its HTTP response) or a phrase that
+ * says so. Never a bare "429" in free text: the plugin's own timeout messages
+ * carry request ids and message counts, and request 429 or "429 cloud
+ * message(s) since startup" is no rate limit.
+ */
+const SCHEDULE_THROTTLE_PHRASE =
+  /too many requests|rate[ -]?limit(?:ed|ing)?|request limit|frequency limit|throttl(?:ed|ing)/i;
+
 export function isDefiniteScheduleThrottle(error: unknown): boolean {
   const candidates: unknown[] = [error];
   const visited = new Set<unknown>();
@@ -134,14 +146,8 @@ export function isDefiniteScheduleThrottle(error: unknown): boolean {
     if (candidate == null || visited.has(candidate)) continue;
     visited.add(candidate);
 
-    if (typeof candidate === "number" && candidate === 429) return true;
-
     if (typeof candidate === "string") {
-      if (
-        /\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?|request limit|frequency limit|throttl(?:ed|ing)/i.test(
-          candidate
-        )
-      ) {
+      if (SCHEDULE_THROTTLE_PHRASE.test(candidate)) {
         return true;
       }
       continue;
@@ -149,14 +155,14 @@ export function isDefiniteScheduleThrottle(error: unknown): boolean {
 
     if (typeof candidate !== "object") continue;
     const record = candidate as Record<string, unknown>;
-    candidates.push(
-      record.status,
-      record.statusCode,
-      record.code,
-      record.message,
-      record.cause,
-      record.response
-    );
+    if (
+      [record.status, record.statusCode, record.code].some(
+        (field) => String(field) === "429"
+      )
+    ) {
+      return true;
+    }
+    candidates.push(record.message, record.cause, record.response);
   }
 
   return false;
