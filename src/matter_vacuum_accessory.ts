@@ -4183,22 +4183,12 @@ export default class RoborockMatterVacuumAccessory {
       }
       return;
     }
-    // A run is settled once. With nothing operating or pending it already
-    // was — on an earlier poll, or before a restart — and settling it again
-    // as an ordinary end turned the rooms a stop had Skipped into Completed.
-    if (
-      !this.serviceAreaProgress.some(
-        (entry) =>
-          entry.status === SERVICE_AREA_PROGRESS.OPERATING ||
-          entry.status === SERVICE_AREA_PROGRESS.PENDING
-      )
-    ) {
-      return;
-    }
     const unfinished = this.serviceAreaStopRequested
       ? SERVICE_AREA_PROGRESS.SKIPPED
       : SERVICE_AREA_PROGRESS.COMPLETED;
-    // A room already settled keeps its answer: Skipped was not cleaned.
+    // A room already settled keeps its answer: Skipped was not cleaned. So
+    // settling a settled list again — the next poll after a stop, or the
+    // first status after a restart — changes nothing.
     this.serviceAreaProgress = this.serviceAreaProgress.map((entry) => ({
       areaId: entry.areaId,
       status:
