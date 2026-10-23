@@ -181,6 +181,7 @@ interface RoborockApi {
     options?: RoborockStatusRefreshOptions
   ): Promise<void>;
   getTransportDiagnostics?(): Record<string, unknown> | null | undefined;
+  getLastKnownLiveStatus?(duid: string): unknown;
 }
 
 const RUN_MODE_IDLE = 0;
@@ -1104,8 +1105,27 @@ export default class RoborockMatterVacuumAccessory {
     isRegistered = false
   ) {
     this.registered = isRegistered;
+    this.seedFromLastKnownLiveStatus(device.duid);
     this.updateMetadata(device);
     this.restoreServiceAreaProgress();
+  }
+
+  /**
+   * Start from the status the robot has already reported, if there is one.
+   *
+   * Homebridge 2.4.0 registers an external accessory with the clusters built
+   * here as the endpoint's initial state and restores nothing over them (its
+   * cache is loaded after registration). Built from HomeData alone they said
+   * nothing about the tanks, so a standing tank fault was raised again on the
+   * first live status after every restart — one more notification (#26). The
+   * first `get_status` is waited for before discovery, so it is usually known
+   * by now; remembered without publishing, the defaults below carry it.
+   */
+  private seedFromLastKnownLiveStatus(duid: string): void {
+    const status = this.asRecord(this.api.getLastKnownLiveStatus?.(duid));
+    if (status) {
+      this.rememberStatusFrame(status);
+    }
   }
 
   private get api(): RoborockApi {
@@ -1855,7 +1875,7 @@ export default class RoborockMatterVacuumAccessory {
       this.accessory.context = {};
     }
     this.accessory.context.duid = duid;
-    this.accessory.clusters = this.buildClusters();
+    this.accessory.clusters = this.asRegistrationDefaults(this.buildClusters());
     this.accessory.handlers = this.buildHandlers();
     this.accessory.getState = async (cluster, attribute) => {
       const clusterState = this.buildCluster(cluster);
@@ -2855,13 +2875,7 @@ export default class RoborockMatterVacuumAccessory {
       this.roomCleaningAreaConfirmed = false;
     }
 
-    this.rememberLiveStatusFrame(status);
-    if (state !== null && !isRoborockStateWithoutAMatterName(state)) {
-      this.lastNamedRoborockOperationalState = this.getRoborockOperationalState(
-        state,
-        this.getNumberStatus("charge_status")
-      );
-    }
+    this.rememberStatusFrame(status);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -5170,6 +5184,47 @@ export default class RoborockMatterVacuumAccessory {
       default:
         return false;
     }
+  }
+
+  /** Take in one status frame from the robot: its fields and its state. */
+  private rememberStatusFrame(status: Record<string, unknown>): void {
+    this.rememberLiveStatusFrame(status);
+    const state = this.getNumberFromValue(status.state);
+    if (state !== null && !isRoborockStateWithoutAMatterName(state)) {
+      this.lastNamedRoborockOperationalState = this.getRoborockOperationalState(
+        state,
+        this.getNumberStatus("charge_status")
+      );
+    }
+  }
+
+  /**
+   * The clusters as matter.js holds them once written: a fault forces the
+   * Error state (RvcOperationalStateServer#handleOperationalError). An
+   * endpoint registered with this as its initial state starts there — and
+   * matter.js emits no OperationalError event for an initial value.
+   */
+  private asRegistrationDefaults(
+    clusters: MatterClusterState
+  ): MatterClusterState {
+    const cluster = clusters.rvcOperationalState;
+    const errorStateId = (
+      cluster?.operationalError as { errorStateId?: unknown } | undefined
+    )?.errorStateId;
+    if (
+      !cluster ||
+      typeof errorStateId !== "number" ||
+      errorStateId === RVC_OPERATIONAL_ERROR.NO_ERROR
+    ) {
+      return clusters;
+    }
+    return {
+      ...clusters,
+      rvcOperationalState: {
+        ...cluster,
+        operationalState: RVC_OPERATIONAL_STATE.ERROR,
+      },
+    };
   }
 
   /**

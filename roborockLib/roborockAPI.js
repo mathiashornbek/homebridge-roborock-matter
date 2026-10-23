@@ -5441,15 +5441,20 @@ class Roborock {
    * newly usable accessory start from the robot's real status instead of the
    * pairing-day snapshot.
    *
-   * Only the cloud-only B01 dialect keeps such a store; classic robots stream
-   * their status over MQTT and have no equivalent gap, so this answers `null`
-   * for them and callers must treat that as "nothing known", never as a value.
+   * A classic robot has the same gap: startup waits for its first
+   * `get_status` before the accessories register, and that reply was dropped
+   * the same way. Its last reply is kept by its vacuum. `null` means nothing
+   * is known, never a value.
    *
    * @param {string} duid
    * @returns {Record<string, unknown> | null}
    */
   getLastKnownLiveStatus(duid) {
-    return this._b01StatusState?.get(duid)?.lastV1Status || null;
+    return (
+      this._b01StatusState?.get(duid)?.lastV1Status ||
+      this.vacuums[duid]?.lastStatusReply?.get(duid) ||
+      null
+    );
   }
 
   /**
