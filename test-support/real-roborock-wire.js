@@ -49,6 +49,8 @@ function createRealRoborockOnFakeWire({
   api.message.buildRoborockMessage = jest.fn(async () => Buffer.from("frame"));
 
   api.rr_mqtt_connector.isConnected = jest.fn(() => true);
+  // This wire fixture models an already subscribed transport, not a handshake.
+  api.rr_mqtt_connector.waitUntilReady = jest.fn(async () => 0);
   api.rr_mqtt_connector.sendMessage = jest.fn();
   api.localConnector.isConnected = jest.fn(() => transport === "local");
   api.localConnector.sendMessage = jest.fn();

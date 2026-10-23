@@ -302,6 +302,10 @@ async function createLanRig({
   api.localDevices = { [duid]: host };
   api.rr_mqtt_connector.isConnected = jest.fn(() => true);
   api.rr_mqtt_connector.sendMessage = jest.fn();
+  // This rig stubs the entire cloud exchange; it has no MQTT client or
+  // subscription. Real readiness and reconnects are covered by the MQTT rigs.
+  api.rr_mqtt_connector.waitUntilReady = undefined;
+  api.rr_mqtt_connector.isReady = () => api.rr_mqtt_connector.isConnected();
   const robot = new FakeRobot(api, duid, host);
 
   /** The requests published over MQTT, decoded. */

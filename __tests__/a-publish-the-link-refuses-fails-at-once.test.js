@@ -32,6 +32,9 @@ test("the real connector hands mqtt.js's refusal to the caller", async () => {
     rriot: { k: "k", u: "u", s: "s", r: { m: "mqtt://127.0.0.1:1" } },
   });
   try {
+    // Model the race: readiness was acknowledged just before the socket died.
+    const generation = connector.sessionDiagnostics.onConnect();
+    connector.sessionDiagnostics.onSubscribe(generation, null, [{ qos: 1 }]);
     const refused = jest.fn();
     connector.sendMessage(DUID, Buffer.from("frame"), refused);
     expect(refused).toHaveBeenCalledWith(
