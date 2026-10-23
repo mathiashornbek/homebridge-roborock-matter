@@ -28,7 +28,7 @@ jest.mock("mqtt", () => ({
       }),
       emit: (event, ...args) =>
         (handlers.get(event) || []).forEach((handler) => handler(...args)),
-      subscribe: jest.fn(),
+      subscribe: jest.fn((topic, callback) => callback(null, [{ qos: 0 }])),
       publish: jest.fn(),
       end: jest.fn(),
       endAsync: jest.fn(async () => {}),

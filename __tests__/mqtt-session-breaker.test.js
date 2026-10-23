@@ -344,6 +344,8 @@ test.each(["robot-a", "robot-b"])(
   "baseline recovery and breaker classification coexist when the third silence is from %s",
   async (thirdRobot) => {
     adapter.cloudSessionHealth = { consecutiveSilences: 0, lastRestartAt: 0 };
+    adapter.restartCloudSession =
+      Roborock.prototype.restartCloudSession.bind(adapter);
     adapter.noteCloudSilence =
       Roborock.prototype.noteCloudSilence.bind(adapter);
     adapter.noteCloudReply = Roborock.prototype.noteCloudReply.bind(adapter);
