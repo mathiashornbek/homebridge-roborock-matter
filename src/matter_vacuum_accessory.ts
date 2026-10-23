@@ -203,6 +203,12 @@ const LIVE_STATUS_STALENESS_MS = 15 * 60 * 1000;
 // remembered — and Roborock sends sparse frames as a matter of course. That
 // is the same bug 3.12.1 fixed one layer up, and the gate test caught the
 // second attempt at it.
+//
+// This list only decides WHETHER a frame is a status. What is remembered from
+// an accepted frame is every numeric field it carries (rememberLiveStatusFrame),
+// so a field read later can no longer be missing from a hand-written list.
+// `water_box_mode` is here because the robot pushes it alone (dps 124) when the
+// water level is changed in the Roborock app.
 const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "state",
   "charge_status",
@@ -210,6 +216,7 @@ const MEANINGFUL_LIVE_STATUS_FIELDS = [
   "clean_area",
   "clean_time",
   "fan_power",
+  "water_box_mode",
   "matter_clean_type",
   "dock_error_status",
   "water_shortage_status",
@@ -2870,18 +2877,8 @@ export default class RoborockMatterVacuumAccessory {
 
     const state = this.getNumberFromValue(status.state);
     const chargeStatus = this.getNumberFromValue(status.charge_status);
-    const battery = this.getNumberFromValue(status.battery);
     const cleanArea = this.getNumberFromValue(status.clean_area);
     const cleanTime = this.getNumberFromValue(status.clean_time);
-    const fanPower = this.getNumberFromValue(status.fan_power);
-    const matterCleanType = this.getNumberFromValue(status.matter_clean_type);
-    const dockErrorStatus = this.getNumberFromValue(status.dock_error_status);
-    const waterShortageStatus = this.getNumberFromValue(
-      status.water_shortage_status
-    );
-    const errorCode = this.getNumberFromValue(status.error_code);
-    const dryStatus = this.getNumberFromValue(status.dry_status);
-    const dockStationStatus = this.getNumberFromValue(status.dss);
 
     // Fan power and clean type count as meaningful updates too. A suction or
     // mop-mode change made in the Roborock app (or chosen by SmartPlan) pushes
@@ -2893,26 +2890,9 @@ export default class RoborockMatterVacuumAccessory {
     //
     // Derived from MEANINGFUL_LIVE_STATUS_FIELDS rather than spelled out, so
     // this check and extractStatusUpdate's gate always name the same fields.
-    const meaningfulValues: Record<
-      (typeof MEANINGFUL_LIVE_STATUS_FIELDS)[number],
-      number | null
-    > = {
-      state,
-      charge_status: chargeStatus,
-      battery,
-      clean_area: cleanArea,
-      clean_time: cleanTime,
-      fan_power: fanPower,
-      matter_clean_type: matterCleanType,
-      dock_error_status: dockErrorStatus,
-      water_shortage_status: waterShortageStatus,
-      dss: dockStationStatus,
-      error_code: errorCode,
-      dry_status: dryStatus,
-    };
     if (
       MEANINGFUL_LIVE_STATUS_FIELDS.every(
-        (field) => meaningfulValues[field] === null
+        (field) => this.getNumberFromValue(status[field]) === null
       )
     ) {
       return;
@@ -2935,49 +2915,7 @@ export default class RoborockMatterVacuumAccessory {
       this.roomCleaningAreaConfirmed = false;
     }
 
-    this.rememberLiveStatus("state", state);
-    this.rememberLiveStatus("charge_status", chargeStatus);
-    this.rememberLiveStatus("battery", battery);
-    this.rememberLiveStatus("clean_area", cleanArea);
-    this.rememberLiveStatus("clean_time", cleanTime);
-    // Fan power and clean type drive the live RvcCleanMode derivation, so
-    // cleans (re)configured outside Apple Home surface within one update.
-    this.rememberLiveStatus("fan_power", fanPower);
-    this.rememberLiveStatus("matter_clean_type", matterCleanType);
-    // The tank fields, and this is why they have to be here.
-    //
-    // getNumberStatus reads the live cache first and the HomeData snapshot
-    // second. These 2 fields are not in the snapshot, so if the live cache
-    // does not remember them there is nowhere left to read them from and
-    // isWaterTankEmpty() answers null forever. That is exactly what happened:
-    // 3.10.0 shipped the Water Tank Empty sensor, 3.12.0 shipped the Matter
-    // fault, both were correct, and neither could ever fire on a real robot
-    // while the Roborock app showed "Out of water" on the same dock.
-    //
-    // The unit tests did not catch it because they stub
-    // getVacuumDeviceStatus, so they proved the logic and nothing about the
-    // plumbing.
-    this.rememberLiveStatus("dock_error_status", dockErrorStatus);
-    this.rememberLiveStatus("water_shortage_status", waterShortageStatus);
-    // The dock's packed status word: one 2-bit field per tank. See
-    // getDockTankField().
-    this.rememberLiveStatus("dss", dockStationStatus);
-    // Which kind of dock it is decides whether `dss` has tanks at all.
-    this.rememberLiveStatus(
-      "dock_type",
-      this.getNumberFromValue(status.dock_type)
-    );
-    // Same reasoning for the robot's own fault: a robot that gets stuck
-    // mid-run announces it in a live frame, and the HomeData snapshot behind
-    // it can be minutes old. Remembering it here is what makes a fault reach
-    // the tile while the robot is still stuck rather than after the next
-    // cloud refresh.
-    this.rememberLiveStatus("error_code", errorCode);
-    // Drying is a dock job, so it arrives while the robot itself is idle and
-    // the frames are at their sparsest. Without the cache a single frame
-    // carrying only `dry_status` would light the phase and the next heartbeat
-    // would put it out again.
-    this.rememberLiveStatus("dry_status", dryStatus);
+    this.rememberLiveStatusFrame(status);
 
     if (
       (state ?? previousState) === ROOM_CLEAN_STATE &&
@@ -3448,9 +3386,7 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
 
-    const waterBoxMode =
-      this.getNumberStatus("water_box_custom_mode") ??
-      this.getNumberStatus("water_box_mode");
+    const waterBoxMode = this.getWaterBoxModeStatus();
     if (waterBoxMode === null) {
       return null;
     }
@@ -3782,10 +3718,16 @@ export default class RoborockMatterVacuumAccessory {
     return this.lastVacuumFanPower ?? ROBOROCK_FAN_POWER_BALANCED;
   }
 
+  /**
+   * The water level, from the robot's own `get_status` (`water_box_mode`, also
+   * pushed alone as dps 124) — the field python-roborock reads. A product
+   * schema's `water_box_custom_mode` exists only in the HomeData snapshot, so
+   * it answers only when the robot has never said.
+   */
   private getWaterBoxModeStatus(): number | null {
     return (
-      this.getNumberStatus("water_box_custom_mode") ??
-      this.getNumberStatus("water_box_mode")
+      this.getNumberStatus("water_box_mode") ??
+      this.getNumberStatus("water_box_custom_mode")
     );
   }
 
@@ -5268,9 +5210,27 @@ export default class RoborockMatterVacuumAccessory {
     }
   }
 
-  private rememberLiveStatus(property: string, value: number | null): void {
-    if (value !== null) {
-      this.liveStatus.set(property, value);
+  /**
+   * Remember every numeric field of a live status frame, under its own name.
+   *
+   * Not a list of the fields somebody thought to read. A hand-written list is
+   * what dropped the tank fields (3.10–3.12: the sensor and the fault could
+   * never fire), `in_cleaning` (#28: Resume always restarted a paused room
+   * clean as a whole-home run) and `water_box_mode` (#8: the clean mode
+   * followed the 180-second HomeData snapshot instead of the robot). HomeData
+   * is keyed by schema id and carries none of those, so a field the frame
+   * carried and this method dropped had nowhere else to come from.
+   */
+  private rememberLiveStatusFrame(status: Record<string, unknown>): void {
+    let remembered = false;
+    for (const [field, raw] of Object.entries(status)) {
+      const value = this.getNumberFromValue(raw);
+      if (value !== null) {
+        this.liveStatus.set(field, value);
+        remembered = true;
+      }
+    }
+    if (remembered) {
       this.liveStatusUpdatedAt = Date.now();
     }
   }
