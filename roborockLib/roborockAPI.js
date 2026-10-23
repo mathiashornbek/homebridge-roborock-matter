@@ -6627,13 +6627,15 @@ class Roborock {
       device.pv === b01Q7Adapter.B01_PROTOCOL_VERSION &&
       device.deviceStatus
     ) {
-      const rawStatus = device.deviceStatus[propertyID];
+      const rawStatus =
+        device.deviceStatus[propertyID] ?? device.deviceStatus[property];
       const translated = this.isB01Q10Device(duid)
         ? b01Q10Adapter.translateQ10StatusToV1State(rawStatus)
         : b01Q7Adapter.translateQ7WorkStatusToV1State(rawStatus);
-      if (translated !== null) {
-        return translated;
-      }
+      // An untranslatable value is unknown. Falling through to the raw number
+      // handed the Matter side a B01 code to read as a v1 state ("state 26"
+      // on a Q7, pi-roborock.log 21 Oct 2026).
+      return translated !== null ? translated : "";
     }
 
     if (device.deviceStatus) {
