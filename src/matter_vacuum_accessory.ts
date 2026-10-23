@@ -1338,12 +1338,14 @@ export default class RoborockMatterVacuumAccessory {
    * One 2-bit tank field out of the dock's `dss` word (python-roborock
    * `v1_containers.py`: clean water at bit 2, dirty water at 4, cleaning fluid
    * at 10). 1 means the tank needs attention — empty, full or not fitted,
-   * depending on the tank — and any other non-zero value means it is fine.
+   * depending on the tank — and any other value means it is fine, 0 included:
+   * python-roborock reads a 0 clean- or dirty-water field as "okay". Reading
+   * it as "not said" let a lingering `water_shortage_status` call a dock that
+   * said "fine" empty (#26's "still empty after refilling").
    *
-   * Null when there is no word, the word is 0 (a dock that reports none of
-   * this), or the field itself is 0 (python-roborock reads that as
-   * "not supported" for the fluid field; here it means "not said" for all
-   * three, so the older signals still decide).
+   * Null when there is no word or the word is 0 (a dock that reports none of
+   * this), and for a cleaning-fluid field of 0, which python-roborock reads as
+   * "not supported" — so the older signals still decide.
    */
   private getDockTankField(shift: number): number | null {
     const dss = this.getNumberStatus("dss");
@@ -1360,7 +1362,7 @@ export default class RoborockMatterVacuumAccessory {
       return null;
     }
     const value = (dss >> shift) & 3;
-    return value === 0 ? null : value;
+    return value === 0 && shift === DSS_CLEANING_FLUID_SHIFT ? null : value;
   }
 
   /**
