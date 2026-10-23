@@ -2409,8 +2409,9 @@ class Roborock {
    * @param {any} error
    */
   isCredentialRejection(error) {
-    if (error?.refusal) {
-      return Boolean(error.refusal.credentials);
+    // A login answer (loginRefusedError): only a known credential refusal.
+    if (error?.refusal !== undefined) {
+      return Boolean(error.refusal?.credentials);
     }
     const code = Number(error?.code ?? error?.status);
     if ([2012, 2008, 2018, 2010].includes(code)) {

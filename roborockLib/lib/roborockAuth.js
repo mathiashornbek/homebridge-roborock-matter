@@ -397,11 +397,31 @@ function loginRefusedError(envelope) {
     new Error(`Login failed: ${JSON.stringify(envelope)}`)
   );
   const refusal = describeLoginRefusal(envelope);
+  // Null for an answer that is not a known refusal: Roborock answered, but
+  // nothing says the credentials are wrong.
+  error.refusal = refusal;
   if (refusal) {
     error.code = refusal.code;
-    error.refusal = refusal;
   }
   return error;
+}
+
+/**
+ * The body of a failed login request when it is Roborock's own answer: an
+ * envelope with a numeric `code` (a refused login comes as HTTP 401 or 412
+ * with one). Anything else, a proxy's 502 page or an empty body, says
+ * nothing about the credentials and is left to fail as the transport error
+ * it is; it used to be read as a refused login, which deletes the cached
+ * session and home data.
+ *
+ * @param {any} error an axios error
+ * @returns {Record<string, any> | null}
+ */
+function roborockAnswer(error) {
+  const data = error?.response?.data;
+  return data && typeof data === "object" && typeof data.code === "number"
+    ? data
+    : null;
 }
 
 async function requestEmailCode(loginApi, email) {
@@ -453,8 +473,9 @@ async function loginWithCode(
     });
     return res.data;
   } catch (error) {
-    if (error.response && error.response.data) {
-      return error.response.data;
+    const answer = roborockAnswer(error);
+    if (answer) {
+      return answer;
     }
     throw error;
   }
@@ -480,8 +501,9 @@ async function loginByPassword(loginApi, { email, password, country, k, s }) {
     });
     return res.data;
   } catch (error) {
-    if (error.response && error.response.data) {
-      return error.response.data;
+    const answer = roborockAnswer(error);
+    if (answer) {
+      return answer;
     }
     throw error;
   }
