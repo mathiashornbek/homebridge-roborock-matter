@@ -648,6 +648,7 @@ class localConnector {
       if (this.localClients[duid] !== client) {
         return;
       }
+      this.adapter.noteTransportOutcome?.(duid, "local", "socketClosed");
       this.adapter.log.debug(
         `tcp client for ${duid} disconnected, attempting to reconnect...`
       );

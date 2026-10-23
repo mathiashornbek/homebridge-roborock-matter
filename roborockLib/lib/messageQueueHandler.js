@@ -305,6 +305,8 @@ function errorText(error) {
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(duid: string, method: string) => void} [noteRequestAnswered]
+ * @property {(duid: string, transport: "local" | "cloud", outcome: import("./transportTally").Outcome) => void} [noteTransportOutcome]
+ *   For the hourly per-robot transport summary.
  * @property {() => void} [noteCloudReply] A V1 cloud request was answered
  *   (not refused).
  * @property {() => boolean} [noteCloudSilence] A V1 cloud request timed out
@@ -761,6 +763,7 @@ class messageQueueHandler {
         this.adapter.log.debug(
           `Retrying ${method} (id ${context.messageID}) for ${duid} over the cloud: ${errorText(localError)}`
         );
+        this.adapter.noteTransportOutcome?.(duid, "local", "retried");
         const payload = await this.adapter.message.buildPayload(
           duid,
           101,
@@ -905,6 +908,7 @@ class messageQueueHandler {
         if (transportWasUp && feedsCloudHealth) {
           this.adapter.noteCloudSilence?.();
         }
+        this.adapter.noteTransportOutcome?.(duid, "cloud", "timeout");
         reject(error);
       }, requestTimeout);
 
@@ -927,6 +931,7 @@ class messageQueueHandler {
           if (feedsCloudHealth) {
             this.adapter.noteCloudReply?.();
           }
+          this.adapter.noteTransportOutcome?.(duid, "cloud", "ok");
           resolve(value);
         },
         // A refusal is an answer too. The reply handlers (cloud 102, local
@@ -940,6 +945,7 @@ class messageQueueHandler {
         // an API error before it reaches `on_success`.
         reject: (error) => {
           this.adapter.noteRequestAnswered?.(duid, method);
+          this.adapter.noteTransportOutcome?.(duid, "cloud", "ok");
           reject(error);
         },
         abandon: reject,
@@ -964,6 +970,7 @@ class messageQueueHandler {
         }
         this.adapter.clearTimeout(pending.timeout);
         this.adapter.pendingRequests.delete(messageID);
+        this.adapter.noteTransportOutcome?.(duid, "cloud", "notSent");
         reject(
           refusal(
             "cloud unavailable",
@@ -1024,6 +1031,7 @@ class messageQueueHandler {
         if (transportWasUp) {
           handle?.noteUnanswered?.(method);
         }
+        this.adapter.noteTransportOutcome?.(duid, "local", "timeout");
         finish(
           reject,
           unansweredRequestError(
@@ -1040,10 +1048,12 @@ class messageQueueHandler {
           sessionDiagnostics?.noteActivity("local");
           sessionDiagnostics?.emit();
           this.adapter.noteRequestAnswered?.(duid, method);
+          this.adapter.noteTransportOutcome?.(duid, "local", "ok");
           finish(resolve, value);
         },
         reject: (error) => {
           this.adapter.noteRequestAnswered?.(duid, method);
+          this.adapter.noteTransportOutcome?.(duid, "local", "ok");
           finish(reject, error);
         },
         abandon: (error) => finish(reject, error),
@@ -1062,6 +1072,7 @@ class messageQueueHandler {
         }
         this.adapter.clearTimeout(timeout);
         this.adapter.pendingRequests.delete(messageID);
+        this.adapter.noteTransportOutcome?.(duid, "local", "lost");
         finish(
           reject,
           Object.assign(

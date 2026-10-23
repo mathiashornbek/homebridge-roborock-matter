@@ -34,6 +34,7 @@ const b01Q7Adapter = require("./lib/b01Q7Adapter");
 const b01Q10Adapter = require("./lib/b01Q10Adapter");
 const { describeDroppedFrames } = require("./lib/roborock_mqtt_connector");
 const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
+const { TransportTally } = require("./lib/transportTally");
 const { LateReplyTracker } = require("./lib/lateReplies");
 
 // v1 states in which the robot is actively doing something and state
@@ -423,7 +424,9 @@ const SIMPLE_VACUUM_COMMANDS = new Set([
   "load_multi_map",
 ]);
 
-const TRANSIENT_ERROR_LOG_THROTTLE_MS = 6 * 60 * 60 * 1000;
+// One warning per robot per kind per hour, the first of that hour; the hourly
+// transport summary (lib/transportTally.js) counts the rest.
+const TRANSIENT_ERROR_LOG_THROTTLE_MS = 60 * 60 * 1000;
 // python-roborock mqtt/health_manager.py: TIMEOUT_THRESHOLD, RESTART_COOLDOWN.
 const CLOUD_SILENCES_BEFORE_SESSION_RESTART = 3;
 const CLOUD_SESSION_RESTART_COOLDOWN_MS = 30 * 60 * 1000;
@@ -520,6 +523,11 @@ class Roborock {
     // Consecutive unanswered cloud requests while MQTT says it is connected.
     // See noteCloudSilence().
     this.cloudSessionHealth = { consecutiveSilences: 0, lastRestartAt: 0 };
+    // How each robot's requests fared per transport, logged hourly when
+    // anything failed. See noteTransportOutcome().
+    this.transportTally = new TransportTally(this.log, (duid) =>
+      this.describeDevice(duid)
+    );
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
@@ -3443,6 +3451,18 @@ class Roborock {
   }
 
   /**
+   * One request outcome on one transport, for the hourly summary.
+   *
+   * @param {string} duid
+   * @param {"local" | "cloud"} transport
+   * @param {import("./lib/transportTally").Outcome} outcome
+   * @returns {void}
+   */
+  noteTransportOutcome(duid, transport, outcome) {
+    this.transportTally.note(duid, transport, outcome);
+  }
+
+  /**
    * The message layer saw a reply. Called for EVERY request, including
    * `get_status` and every command — the register ignores any pair no
    * skipping caller has claimed with `govern()`, so those can never be closed.
@@ -4529,7 +4549,7 @@ class Roborock {
         suppressedAttributes: {},
       });
 
-      const throttleNote = ` Future transient ${kind} warnings for this robot will be logged at most once every ${this.formatThrottleDuration(this.errorLogThrottleMs)}.`;
+      const throttleNote = ` Future transient ${kind} warnings for this robot will be logged at most once every ${this.formatThrottleDuration(this.errorLogThrottleMs)}; an hourly line counts every request per transport.`;
       const summaryNote =
         suppressedCount > 0
           ? ` ${suppressedCount} similar warning(s) across ${this.formatSuppressedAttributes(suppressedAttributes)} were suppressed.`
