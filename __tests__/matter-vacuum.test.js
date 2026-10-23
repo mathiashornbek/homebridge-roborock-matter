@@ -517,31 +517,6 @@ describe("Matter startup state updates", () => {
       matterUpdates.some((update) => update.cluster === "serviceArea")
     ).toBe(false);
   });
-
-  test("retries state refresh when Homebridge endpoint is still initializing", async () => {
-    jest.useFakeTimers();
-    const matterUpdates = [];
-    const updateAccessoryState = jest
-      .fn()
-      .mockRejectedValueOnce(new Error("uuid-1 is still initializing"))
-      .mockImplementation(async (uuid, cluster, attributes) => {
-        matterUpdates.push({ uuid, cluster, attributes });
-      });
-    const platform = createPlatform({ updateAccessoryState });
-    const { vacuum } = createAccessory(platform, true);
-
-    await vacuum.updateMatterStateFromRoborock();
-
-    expect(platform.log.debug).toHaveBeenCalledWith(
-      expect.stringContaining("endpoint is still initializing")
-    );
-    expect(matterUpdates.length).toBeGreaterThan(0);
-
-    await jest.advanceTimersByTimeAsync(1000);
-    await jest.advanceTimersByTimeAsync(0);
-
-    expect(updateAccessoryState.mock.calls.length).toBeGreaterThan(3);
-  });
 });
 
 describe("Matter identify", () => {

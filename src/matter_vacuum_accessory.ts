@@ -877,12 +877,6 @@ const MATTER_RETURN_TO_DOCK_STATUS_REFRESH_DELAYS_MS = [
   2000, 15000, 30000, 60000, 90000, 120000, 150000, 180000,
 ] as const;
 const MATTER_RETURN_TO_DOCK_RETRY_DELAY_MS = 7000;
-// Slow hosts (Raspberry Pi class hardware, busy child-bridge restarts) can
-// keep the Homebridge Matter endpoint initializing well past 14 seconds, so
-// back off further before giving up and waiting for the next live update.
-const MATTER_INITIALIZATION_RETRY_DELAYS_MS = [
-  1000, 3000, 10000, 30000, 60000,
-] as const;
 const ROOM_CLEAN_STATE = 18;
 const PAUSED_STATE = 10;
 // Low-frequency safety net. Every publish is a full coherent snapshot and
@@ -1047,8 +1041,6 @@ export default class RoborockMatterVacuumAccessory {
   private lastVacuumFanPower: number | null = null;
   private lastWaterBoxMode: number | null = null;
   private readonly reportedUnmappedErrorCodes = new Set<number>();
-  private matterInitializationRetryAttempt = 0;
-  private matterInitializationRetryPending = false;
   private returnToDockRetryPending = false;
   private matterStateHeartbeatTimer: ReturnType<typeof nodeSetTimeout> | null =
     null;
@@ -2667,65 +2659,53 @@ export default class RoborockMatterVacuumAccessory {
     // no plugin-side change tracking is needed; tracking published values here
     // previously allowed racing publishers to desynchronize the plugin from the
     // Matter store, leaving Apple Home stuck on stale state ("Updating...").
-    // Per-cluster fault isolation: one misbehaving cluster (bad attribute
-    // shape, transient matter.js error) must never block the others — a
-    // frozen battery reading because the operational-state publish failed is
-    // exactly the failure mode this prevents. Only a TOTAL failure is
-    // rethrown, preserving the initialization-retry semantics below.
+    //
+    // What can fail here. Homebridge 2.x's `updateAccessoryState` validates,
+    // emits and returns; the store write runs later in a setImmediate and a
+    // refusal is only logged by Homebridge ("Failed to update state for
+    // accessory …", StateManager.js). The error that reaches this await is the
+    // synchronous assertMatterReady refusal (Homebridge not launched / Matter
+    // not enabled), so "the endpoint is still initializing" cannot arrive here.
+    // Each cluster is still written on its own, so one that throws can never
+    // block the others — a frozen battery reading because the operational
+    // state failed is the failure this isolation exists for.
     const clusterEntries = Object.entries(partialClusters);
     const publishTask = this.matterPublishChain.then(async () => {
       const failures: unknown[] = [];
-      await Promise.all(
-        clusterEntries.map(async ([cluster, attributes]) => {
-          try {
-            if (cluster === OPERATIONAL_STATE_CLUSTER) {
-              await this.writeOperationalStateCluster(matter, attributes, {
-                force: options.force === true,
-              });
-            } else {
-              await matter.updateAccessoryState(
-                this.accessory.UUID,
-                cluster,
-                attributes
-              );
-            }
-            this.lastPublishedClusterJson.set(
+      for (const [cluster, attributes] of clusterEntries) {
+        try {
+          if (cluster === OPERATIONAL_STATE_CLUSTER) {
+            await this.writeOperationalStateCluster(matter, attributes, {
+              force: options.force === true,
+            });
+          } else {
+            await matter.updateAccessoryState(
+              this.accessory.UUID,
               cluster,
-              JSON.stringify(attributes)
-            );
-          } catch (error) {
-            // Drop the record so the cluster is retried on the next snapshot
-            // even if its payload is unchanged.
-            this.lastPublishedClusterJson.delete(cluster);
-            if (cluster === OPERATIONAL_STATE_CLUSTER) {
-              // A half-written cluster leaves the store in a state nothing
-              // here can describe, so forget both and let the next snapshot
-              // re-assert them.
-              this.publishedOperationalState = undefined;
-              this.publishedOperationalError = undefined;
-              this.forcedWritesSinceOperationalState = 0;
-            }
-
-            failures.push(error);
-            this.platform.log.debug(
-              `Matter publish for cluster ${cluster} on ${this.accessory.UUID} failed: ${error instanceof Error ? error.message : String(error)}`
+              attributes
             );
           }
-        })
-      );
-      if (failures.length > 0) {
-        if (failures.length === clusterEntries.length) {
-          throw failures[0];
+          this.lastPublishedClusterJson.set(
+            cluster,
+            JSON.stringify(attributes)
+          );
+        } catch (error) {
+          // Drop the record so the cluster is retried on the next snapshot
+          // even if its payload is unchanged.
+          this.lastPublishedClusterJson.delete(cluster);
+          if (cluster === OPERATIONAL_STATE_CLUSTER) {
+            this.publishedOperationalState = undefined;
+            this.publishedOperationalError = undefined;
+            this.forcedWritesSinceOperationalState = 0;
+          }
+          failures.push(error);
+          this.platform.log.debug(
+            `Matter publish (${reason}) of cluster ${cluster} for ${this.getVacuumName()} failed: ${this.getErrorMessage(error)}`
+          );
         }
-        // Partial failure: the surviving clusters have landed (that is the
-        // isolation), but an initializing endpoint should still get its
-        // retry so the failed cluster receives its value too.
-        const initFailure = failures.find((failure) =>
-          this.isMatterInitializingError(failure)
-        );
-        if (initFailure) {
-          this.scheduleMatterInitializationRetry(reason, initFailure);
-        }
+      }
+      if (failures.length === clusterEntries.length) {
+        throw failures[0];
       }
     });
     this.matterPublishChain = publishTask.then(
@@ -2733,19 +2713,8 @@ export default class RoborockMatterVacuumAccessory {
       () => undefined
     );
 
-    try {
-      await publishTask;
-      this.matterInitializationRetryAttempt = 0;
-      this.matterInitializationRetryPending = false;
-      return true;
-    } catch (error) {
-      if (this.isMatterInitializingError(error)) {
-        this.scheduleMatterInitializationRetry(reason, error);
-        return false;
-      }
-
-      throw error;
-    }
+    await publishTask;
+    return true;
   }
 
   /**
@@ -5832,44 +5801,6 @@ export default class RoborockMatterVacuumAccessory {
     // Also match the upstream phrasing used by getServerTimers and
     // updateServerTimer ("Vacuum <duid> is not initialized.").
     return /is not initialized/i.test(this.getErrorMessage(error));
-  }
-
-  private isMatterInitializingError(error: unknown): boolean {
-    return /\bis still initializing\b/i.test(this.getErrorMessage(error));
-  }
-
-  private scheduleMatterInitializationRetry(
-    reason: string,
-    error: unknown
-  ): void {
-    if (this.matterInitializationRetryPending) {
-      return;
-    }
-
-    const delayMs =
-      MATTER_INITIALIZATION_RETRY_DELAYS_MS[
-        this.matterInitializationRetryAttempt
-      ];
-    if (delayMs === undefined) {
-      this.platform.log.debug(
-        `Matter state update after ${reason} for ${this.getVacuumName()} is still waiting on Homebridge endpoint initialization; suppressing additional startup retries. Last error: ${this.getErrorMessage(error)}`
-      );
-      return;
-    }
-
-    this.matterInitializationRetryAttempt += 1;
-    this.matterInitializationRetryPending = true;
-    this.platform.log.debug(
-      `Matter state update after ${reason} for ${this.getVacuumName()} was delayed because Homebridge says the endpoint is still initializing; retrying in ${delayMs} ms.`
-    );
-
-    const retryTimer = scheduleTimer(() => {
-      this.matterInitializationRetryPending = false;
-      this.scheduleMatterStateRefresh(
-        `endpoint initialization retry (${reason})`
-      );
-    }, delayMs);
-    unrefTimer(retryTimer);
   }
 
   private logMatterCommandDuration(
