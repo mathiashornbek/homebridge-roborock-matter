@@ -444,9 +444,8 @@ function decodeMapPayload(rawPayload, mapKey) {
 }
 
 /**
- * Shared minimal protobuf wire readers for the SCMap RobotMap payload.
- * Reference schema: b01_scmap.proto (fields 5-11/13-22 documented in the
- * wider CRL-200S family schema used by ioBroker.roborock).
+ * Shared minimal protobuf wire reader for the SCMap RobotMap payload.
+ * Reference schema: python-roborock map/proto/b01_scmap.proto.
  */
 
 /** @param {Buffer} buf @param {number} pos */
@@ -465,6 +464,46 @@ function readVarint(buf, pos) {
   throw new Error("Malformed varint in SCMap payload");
 }
 
+/**
+ * Walk one protobuf message and hand every field to `visit` with its number,
+ * wire type and value: a number for varint (0), double (1) and float (5), the
+ * bytes for a length-delimited field (2). Fields nobody reads cost nothing but
+ * the walk, so every message reader below is just a `visit`.
+ *
+ * @param {Buffer} buf
+ * @param {(field: number, wireType: number, value: any) => void} visit
+ */
+function forEachField(buf, visit) {
+  let pos = 0;
+  while (pos < buf.length) {
+    const tag = readVarint(buf, pos);
+    pos = tag.pos;
+    const field = Math.floor(tag.value / 8);
+    const wireType = tag.value % 8;
+    let value;
+    let end;
+    if (wireType === 0) {
+      const varint = readVarint(buf, pos);
+      value = varint.value;
+      end = varint.pos;
+    } else if (wireType === 2) {
+      const length = readVarint(buf, pos);
+      end = length.pos + length.value;
+      value = buf.subarray(length.pos, end);
+    } else if (wireType === 1 || wireType === 5) {
+      end = pos + (wireType === 1 ? 8 : 4);
+      if (end > buf.length) {
+        throw new Error("Truncated fixed-width field in SCMap payload");
+      }
+      value = wireType === 1 ? buf.readDoubleLE(pos) : buf.readFloatLE(pos);
+    } else {
+      throw new Error(`Unsupported protobuf wire type ${wireType}`);
+    }
+    visit(field, wireType, value);
+    pos = end;
+  }
+}
+
 // Bounds for the raw field survey below. They exist to keep a diagnostic
 // from becoming a liability: the survey is pointed at fields whose schema is
 // unknown, so it must not be able to produce an unbounded log line, walk the
@@ -473,100 +512,44 @@ const RAW_SURVEY_MAX_SCALARS = 48;
 const RAW_SURVEY_MAX_SUBMESSAGE_BYTES = 16384;
 const RAW_SURVEY_MAX_DEPTH = 2;
 
-/** @param {Buffer} buf @param {number} pos @param {number} wireType */
-function skipField(buf, pos, wireType) {
-  switch (wireType) {
-    case 0:
-      return readVarint(buf, pos).pos;
-    case 1:
-      return pos + 8;
-    case 2: {
-      const len = readVarint(buf, pos);
-      return len.pos + len.value;
-    }
-    case 5:
-      return pos + 4;
-    default:
-      throw new Error(`Unsupported protobuf wire type ${wireType}`);
-  }
+/**
+ * RoomDataInfo: roomId (1, varint) and roomName (2, string).
+ * @param {Buffer} buf
+ */
+function parseRoom(buf) {
+  /** @type {{roomId: number, roomName: string}} */
+  const room = { roomId: -1, roomName: "" };
+  forEachField(buf, (field, wireType, value) => {
+    if (field === 1 && wireType === 0) room.roomId = value;
+    else if (field === 2 && wireType === 2)
+      room.roomName = value.toString("utf8");
+  });
+  return room;
 }
 
 /**
- * Minimal protobuf wire reader extracting rooms from SCMap RobotMap bytes.
- * Only RobotMap field 12 (repeated RoomDataInfo) is decoded, and inside it
- * only roomId (field 1, varint) and roomName (field 2, string); every other
- * field is skipped by wire type. Reference schema: b01_scmap.proto.
+ * The rooms (RobotMap field 12, RoomDataInfo) of an SCMap payload.
  * @param {Buffer} buffer
  * @returns {Array<{roomId: number, roomName: string}>}
  */
 function parseRoomsFromScMap(buffer) {
-  /** @type {Array<{roomId: number, roomName: string}>} */
-  const rooms = [];
-
-  /** @param {Buffer} buf */
-  function parseRoom(buf) {
-    /** @type {{roomId: number, roomName: string}} */
-    const room = { roomId: -1, roomName: "" };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-
-      if (fieldNumber === 1 && wireType === 0) {
-        const value = readVarint(buf, pos);
-        room.roomId = value.value;
-        pos = value.pos;
-      } else if (fieldNumber === 2 && wireType === 2) {
-        const len = readVarint(buf, pos);
-        room.roomName = buf
-          .subarray(len.pos, len.pos + len.value)
-          .toString("utf8");
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
-    return room;
-  }
-
-  let pos = 0;
-  while (pos < buffer.length) {
-    const tag = readVarint(buffer, pos);
-    pos = tag.pos;
-    const fieldNumber = Math.floor(tag.value / 8);
-    const wireType = tag.value % 8;
-
-    if (fieldNumber === 12 && wireType === 2) {
-      const len = readVarint(buffer, pos);
-      const room = parseRoom(buffer.subarray(len.pos, len.pos + len.value));
-      if (room.roomId >= 0) {
-        rooms.push(room);
-      }
-      pos = len.pos + len.value;
-    } else {
-      pos = skipField(buffer, pos, wireType);
-    }
-  }
-
-  return rooms;
+  return parseScMapLiveState(buffer).rooms;
 }
 
 /**
  * Parse the SCMap RobotMap fields needed to derive the robot's live room:
  * map head (field 3: grid geometry), current pose (field 8: world-coordinate
  * robot position in meters) and room outline chains (field 14: per-room
- * boundary contours in grid-cell coordinates). Room names come from field 12
- * via the same reader as parseRoomsFromScMap. Every other field is skipped.
+ * boundary contours in grid-cell coordinates), plus the room names (field
+ * 12). Every other field is skipped.
  *
- * Wire reference (proto2, CRL-200S family / ioBroker.roborock schema):
- * - MapHeadInfo:            sizeX=1 varint, sizeY=2 varint, minX=4 float,
+ * Wire reference (python-roborock b01_scmap.proto):
+ * - MapHeadInfo:            sizeX=2 varint, sizeY=3 varint, minX=4 float,
  *                           minY=5 float, resolution=8 float
  * - DeviceCurrentPoseInfo:  poseId=1 varint, update=2 varint,
  *                           x=3 float, y=4 float, phi=5 float
- * - DeviceRoomChainDataInfo: roomId=1 varint,
- *                            points=2 repeated {x=1 varint, y=2 varint}
+ * - RoomOutlineInfo:        roomId=1 varint,
+ *                           points=2 repeated {x=1 varint, y=2 varint}
  * @param {Buffer} buffer
  * @returns {{
  *   head: {sizeX: number, sizeY: number, minX: number, minY: number, resolution: number} | null,
@@ -590,48 +573,32 @@ function parseScMapLiveState(buffer) {
   // minutes of active cleaning. That is a constant, not a position, so the
   // number being read as the robot's position is not the robot's position.
   //
-  // The schema above is not obviously wrong, which is what makes guessing
-  // another field number a bad move: it would be the third guess in a row on
-  // this code path. Two candidates fit the evidence and the survey separates
-  // them without a second release. DeviceCurrentPoseInfo carries an `update`
-  // varint, so field 8 may simply be marked stale on this firmware — a
-  // float-only dump would not have shown it. And field 6 is a pose *trail*,
-  // whose last point is by construction where the robot is now — which needs
-  // one level of nesting to see. So the survey records varints as well as
-  // floats, and descends one level: repeated paths overwrite, which leaves
+  // The survey records every scalar of the small top-level fields, varints as
+  // well as floats, one level deep: repeated paths overwrite, which leaves
   // the last point of a trail sitting in the log under a stable key.
   /** @type {Array<{field: number, count: number, bytes: number}>} */
   const surveyFields = [];
   /** @type {Record<string, number>} */
   const surveyScalars = {};
   let surveyTruncated = false;
-  /** @type {Array<{roomId: number, roomChainPoints?: unknown}>} */
+  /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */
   const roomChains = [];
+  /** @type {Array<{roomId: number, roomName: string}>} */
+  const rooms = [];
 
   /** @param {Buffer} buf */
   function parseMapHead(buf) {
     const parsed = { sizeX: 0, sizeY: 0, minX: 0, minY: 0, resolution: 0.05 };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
+    forEachField(buf, (field, wireType, value) => {
       if (wireType === 0) {
-        const value = readVarint(buf, pos);
-        pos = value.pos;
-        if (fieldNumber === 2) parsed.sizeX = value.value;
-        else if (fieldNumber === 3) parsed.sizeY = value.value;
+        if (field === 2) parsed.sizeX = value;
+        else if (field === 3) parsed.sizeY = value;
       } else if (wireType === 5) {
-        const value = buf.readFloatLE(pos);
-        pos += 4;
-        if (fieldNumber === 4) parsed.minX = value;
-        else if (fieldNumber === 5) parsed.minY = value;
-        else if (fieldNumber === 8 && value > 0) parsed.resolution = value;
-      } else {
-        pos = skipField(buf, pos, wireType);
+        if (field === 4) parsed.minX = value;
+        else if (field === 5) parsed.minY = value;
+        else if (field === 8 && value > 0) parsed.resolution = value;
       }
-    }
+    });
     return parsed;
   }
 
@@ -639,33 +606,41 @@ function parseScMapLiveState(buffer) {
   function parseCurrentPose(buf) {
     /** @type {{x: number | null, y: number | null}} */
     const parsed = { x: null, y: null };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (wireType === 5) {
-        const value = buf.readFloatLE(pos);
-        pos += 4;
-        if (fieldNumber === 3) parsed.x = value;
-        else if (fieldNumber === 4) parsed.y = value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
+    forEachField(buf, (field, wireType, value) => {
+      if (wireType !== 5) return;
+      if (field === 3) parsed.x = value;
+      else if (field === 4) parsed.y = value;
+    });
     return parsed.x !== null && parsed.y !== null
       ? { x: parsed.x, y: parsed.y }
       : null;
   }
 
+  /** @param {Buffer} buf */
+  function parseChainPoint(buf) {
+    const point = { x: 0, y: 0 };
+    forEachField(buf, (field, wireType, value) => {
+      if (wireType !== 0) return;
+      if (field === 1) point.x = value;
+      else if (field === 2) point.y = value;
+    });
+    return point;
+  }
+
+  /** @param {Buffer} buf */
+  function parseRoomChain(buf) {
+    /** @type {{roomId: number, points: Array<{x: number, y: number}>}} */
+    const chain = { roomId: -1, points: [] };
+    forEachField(buf, (field, wireType, value) => {
+      if (field === 1 && wireType === 0) chain.roomId = value;
+      else if (field === 2 && wireType === 2)
+        chain.points.push(parseChainPoint(value));
+    });
+    return chain;
+  }
+
   /**
    * Record that a top-level field was seen, and how many bytes it carried.
-   *
-   * The sizes matter as much as the values: a submessage that grows between
-   * two consecutive log lines while the robot is driving is a trail of where
-   * it has been, and the field that does that is the one worth reading.
-   *
    * @param {number} field
    * @param {number} bytes
    */
@@ -700,49 +675,24 @@ function parseScMapLiveState(buffer) {
 
   /**
    * Walk a submessage recording every scalar it contains, keyed by dotted
-   * field path, to a bounded depth.
-   *
-   * Diagnostic only, and defensive by necessity: it is pointed at fields
-   * whose schema is unknown, so bytes that are not protobuf at all will
-   * reach it. A throw here would take live-room tracking down with it, so
-   * the caller swallows the error and keeps whatever was collected.
+   * field path, to a bounded depth. Diagnostic only: bytes that are not
+   * protobuf at all will reach it, so the caller swallows a throw.
    *
    * @param {Buffer} buf
    * @param {string} prefix
    * @param {number} depth
    */
   function surveyMessage(buf, prefix, depth) {
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      const path = `${prefix}.${fieldNumber}`;
-      if (wireType === 0) {
-        const value = readVarint(buf, pos);
-        pos = value.pos;
-        noteScalar(path, value.value);
-      } else if (wireType === 5) {
-        noteScalar(path, buf.readFloatLE(pos));
-        pos += 4;
-      } else if (wireType === 1) {
-        noteScalar(path, buf.readDoubleLE(pos));
-        pos += 8;
-      } else if (wireType === 2) {
-        const len = readVarint(buf, pos);
-        if (depth > 1 && len.value > 0) {
-          surveyMessage(
-            buf.subarray(len.pos, len.pos + len.value),
-            path,
-            depth - 1
-          );
+    forEachField(buf, (field, wireType, value) => {
+      const path = `${prefix}.${field}`;
+      if (wireType === 2) {
+        if (depth > 1 && value.length > 0) {
+          surveyMessage(value, path, depth - 1);
         }
-        pos = len.pos + len.value;
       } else {
-        pos = skipField(buf, pos, wireType);
+        noteScalar(path, value);
       }
-    }
+    });
   }
 
   /**
@@ -762,132 +712,32 @@ function parseScMapLiveState(buffer) {
     }
   }
 
-  /** @param {Buffer} buf */
-  function parseChainPoint(buf) {
-    const point = { x: 0, y: 0 };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (wireType === 0) {
-        const value = readVarint(buf, pos);
-        pos = value.pos;
-        if (fieldNumber === 1) point.x = value.value;
-        else if (fieldNumber === 2) point.y = value.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
-    return point;
-  }
-
-  /** @param {Buffer} buf */
-  function parseRoomChain(buf) {
-    /** @type {{roomId: number, points: Array<{x: number, y: number}>}} */
-    const chain = { roomId: -1, points: [] };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (fieldNumber === 1 && wireType === 0) {
-        const value = readVarint(buf, pos);
-        chain.roomId = value.value;
-        pos = value.pos;
-      } else if (fieldNumber === 2 && wireType === 2) {
-        const len = readVarint(buf, pos);
-        chain.points.push(
-          parseChainPoint(buf.subarray(len.pos, len.pos + len.value))
-        );
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
-    return chain;
-  }
-
-  /** @param {Buffer} buf */
-  function parseRoomEntry(buf) {
-    const room = { roomId: -1, roomName: "" };
-    let pos = 0;
-    while (pos < buf.length) {
-      const tag = readVarint(buf, pos);
-      pos = tag.pos;
-      const fieldNumber = Math.floor(tag.value / 8);
-      const wireType = tag.value % 8;
-      if (fieldNumber === 1 && wireType === 0) {
-        const value = readVarint(buf, pos);
-        room.roomId = value.value;
-        pos = value.pos;
-      } else if (fieldNumber === 2 && wireType === 2) {
-        const len = readVarint(buf, pos);
-        room.roomName = buf
-          .subarray(len.pos, len.pos + len.value)
-          .toString("utf8");
-        pos = len.pos + len.value;
-      } else {
-        pos = skipField(buf, pos, wireType);
-      }
-    }
-    return room;
-  }
-
-  /** @type {Array<{roomId: number, roomName: string}>} */
-  const rooms = [];
-
-  // Single pass over the RobotMap wire format: head, pose, rooms and room
-  // chains are all collected in one walk instead of delegating rooms to a
-  // second parseRoomsFromScMap scan. Measured honestly: the win is
-  // negligible (~0.05 ms either way — skipField jumps the large grid field
-  // via its length prefix without touching bytes); this is kept for the
-  // simpler single-walk structure, not for speed.
-  let pos = 0;
-  while (pos < buffer.length) {
-    const tag = readVarint(buffer, pos);
-    pos = tag.pos;
-    const fieldNumber = Math.floor(tag.value / 8);
-    const wireType = tag.value % 8;
-
-    if (wireType === 2) {
-      const len = readVarint(buffer, pos);
-      const body = buffer.subarray(len.pos, len.pos + len.value);
-      noteField(fieldNumber, len.value);
-      surveyTopLevelSubmessage(body, fieldNumber);
-      if (fieldNumber === 3) {
-        head = parseMapHead(body);
-      } else if (fieldNumber === 8) {
-        pose = parseCurrentPose(body);
-      } else if (fieldNumber === 12) {
-        const room = parseRoomEntry(body);
-        if (room.roomId >= 0) {
-          rooms.push(room);
-        }
-      } else if (fieldNumber === 14) {
-        const chain = parseRoomChain(body);
-        if (chain.roomId >= 0 && chain.points.length >= 3) {
-          roomChains.push(chain);
-        }
-      }
-      pos = len.pos + len.value;
-    } else {
+  forEachField(buffer, (field, wireType, value) => {
+    if (wireType !== 2) {
       // A position could just as easily be a bare float or varint on the
-      // RobotMap itself; the loop above only ever looked at submessages, so
-      // such a field would never have been seen at all.
-      noteField(fieldNumber, 0);
-      if (wireType === 0) {
-        noteScalar(String(fieldNumber), readVarint(buffer, pos).value);
-      } else if (wireType === 5) {
-        noteScalar(String(fieldNumber), buffer.readFloatLE(pos));
-      } else if (wireType === 1) {
-        noteScalar(String(fieldNumber), buffer.readDoubleLE(pos));
-      }
-      pos = skipField(buffer, pos, wireType);
+      // RobotMap itself, so top-level scalars are surveyed too.
+      noteField(field, 0);
+      noteScalar(String(field), value);
+      return;
     }
-  }
+    noteField(field, value.length);
+    surveyTopLevelSubmessage(value, field);
+    if (field === 3) {
+      head = parseMapHead(value);
+    } else if (field === 8) {
+      pose = parseCurrentPose(value);
+    } else if (field === 12) {
+      const room = parseRoom(value);
+      if (room.roomId >= 0) {
+        rooms.push(room);
+      }
+    } else if (field === 14) {
+      const chain = parseRoomChain(value);
+      if (chain.roomId >= 0 && chain.points.length >= 3) {
+        roomChains.push(chain);
+      }
+    }
+  });
 
   return {
     head,
@@ -898,10 +748,7 @@ function parseScMapLiveState(buffer) {
       truncated: surveyTruncated,
     },
     rooms,
-    roomChains:
-      /** @type {Array<{roomId: number, points: Array<{x: number, y: number}>}>} */ (
-        roomChains
-      ),
+    roomChains,
   };
 }
 
