@@ -29,7 +29,6 @@ type MatterAccessory = {
   context: Record<string, unknown>;
   clusters?: Record<string, Record<string, unknown>>;
   handlers?: Record<string, Record<string, unknown>>;
-  getState?: (cluster: string, attribute: string) => Promise<unknown>;
 };
 
 type MatterClusterState = Record<string, Record<string, unknown>>;
@@ -1896,10 +1895,6 @@ export default class RoborockMatterVacuumAccessory {
     this.accessory.context.duid = duid;
     this.accessory.clusters = this.asRegistrationDefaults(this.buildClusters());
     this.accessory.handlers = this.buildHandlers();
-    this.accessory.getState = async (cluster, attribute) => {
-      const clusterState = this.buildCluster(cluster);
-      return clusterState ? clusterState[attribute] : undefined;
-    };
   }
 
   async notifyDeviceUpdater(id: string, data: unknown): Promise<void> {
@@ -3008,46 +3003,6 @@ export default class RoborockMatterVacuumAccessory {
 
     const { operationalError: _withheld, ...rest } = cluster;
     return { ...clusters, rvcOperationalState: rest };
-  }
-
-  private buildCluster(cluster: string): Record<string, unknown> | undefined {
-    let clusterState: Record<string, unknown> | undefined;
-
-    switch (cluster) {
-      case "rvcRunMode":
-        clusterState = this.buildRunModeCluster();
-        break;
-      case "rvcCleanMode":
-        clusterState = this.isCleanModeEnabled()
-          ? this.buildCleanModeCluster()
-          : undefined;
-        break;
-      case "rvcOperationalState":
-        clusterState = this.buildOperationalStateCluster();
-        break;
-      case "powerSource":
-        clusterState = this.isPowerSourceEnabled()
-          ? this.buildPowerSourceCluster()
-          : undefined;
-        break;
-      case "serviceArea":
-        clusterState =
-          this.isServiceAreaEnabled() && this.hasServiceAreasToExpose()
-            ? this.buildServiceAreaCluster()
-            : undefined;
-        break;
-      default:
-        return undefined;
-    }
-
-    if (!clusterState) {
-      return undefined;
-    }
-
-    const optimisticCluster = this.getActiveOptimisticState()?.[cluster];
-    return optimisticCluster
-      ? { ...clusterState, ...optimisticCluster }
-      : clusterState;
   }
 
   private buildRunModeCluster(): Record<string, unknown> {

@@ -98,6 +98,17 @@ function createPlatform({
   };
 }
 
+/**
+ * The value a publish would carry for one attribute — the snapshot the
+ * accessory builds, read without writing it. (Homebridge never reads an
+ * accessory's `getState`; the tests used it as this probe, so the probe lives
+ * here now.)
+ */
+function attachSnapshotReader(accessory, vacuum) {
+  accessory.getState = async (cluster, attribute) =>
+    vacuum.buildClusters()[cluster]?.[attribute];
+}
+
 function createAccessory(platform, isRegistered = false) {
   const accessory = { UUID: "uuid-1", context: { duid: "device-1" } };
   const vacuum = new RoborockMatterVacuumAccessory(
@@ -106,6 +117,7 @@ function createAccessory(platform, isRegistered = false) {
     { duid: "device-1" },
     isRegistered
   );
+  attachSnapshotReader(accessory, vacuum);
   return { accessory, vacuum };
 }
 
@@ -199,7 +211,7 @@ describe("Matter clean mode capabilities", () => {
   });
 });
 
-describe("Matter getState", () => {
+describe("the published snapshot", () => {
   test("returns a value for the requested cluster only", async () => {
     const platform = createPlatform({
       capabilities: { canVacuum: true, canMop: true },
@@ -484,41 +496,6 @@ describe("Matter startup state updates", () => {
     expect(matterUpdates.some((update) => update.cluster === "identify")).toBe(
       false
     );
-  });
-
-  test("serves HomeKit reads from cache without triggering publishes", async () => {
-    jest.useFakeTimers();
-    const matterUpdates = [];
-    const platform = createPlatform({
-      enableMatterCleanMode: false,
-      enableMatterPowerSource: false,
-      enableMatterServiceArea: false,
-      matterUpdates,
-      status: { state: 8, battery: 100, charge_status: 1 },
-    });
-    const { accessory } = createAccessory(platform, true);
-
-    // Docked at 100% reads as Docked since Charging/Docked began defaulting
-    // on. What is being pinned is that the read is served from cache.
-    expect(
-      await accessory.getState("rvcOperationalState", "operationalState")
-    ).toBe(RVC_OPERATIONAL_STATE_DOCKED);
-    expect(await accessory.getState("rvcRunMode", "currentMode")).toBe(
-      RUN_MODE_IDLE
-    );
-
-    await jest.advanceTimersByTimeAsync(0);
-
-    expect(matterUpdates).toEqual([]);
-    expect(matterUpdates.some((update) => update.cluster === "identify")).toBe(
-      false
-    );
-
-    matterUpdates.length = 0;
-    await accessory.getState("rvcRunMode", "currentMode");
-    await jest.advanceTimersByTimeAsync(0);
-
-    expect(matterUpdates).toEqual([]);
   });
 
   test("uses full room mapping refreshes when service area is disabled", async () => {
