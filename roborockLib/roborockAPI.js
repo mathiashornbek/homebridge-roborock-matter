@@ -3398,7 +3398,9 @@ class Roborock {
   }
 
   /**
-   * Any reply came back over the cloud: the session delivers.
+   * A V1 request was answered over the cloud: python-roborock's
+   * `HealthManager.on_success`. B01 replies and refusals do not get here, so
+   * a Q7 answering every 15 seconds cannot hide a V1 robot's silence.
    *
    * @returns {void}
    */
@@ -3407,7 +3409,7 @@ class Roborock {
   }
 
   /**
-   * A cloud request timed out while MQTT reported itself connected.
+   * A V1 cloud request timed out while MQTT reported itself connected.
    *
    * python-roborock's HealthManager exists for exactly this — "the MQTT
    * connection appears to be alive but no messages are being received" — and

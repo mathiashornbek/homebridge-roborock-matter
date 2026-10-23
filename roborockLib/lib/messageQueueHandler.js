@@ -238,8 +238,9 @@ function unansweredRequestError(
  * @property {(duid: string) => Promise<boolean>} [ensureLocalConnection]
  * @property {(duid: string, method?: string) => Promise<void>} [noteLocalRequestTimedOut]
  * @property {(duid: string, method: string) => void} [noteRequestAnswered]
- * @property {() => void} [noteCloudReply] Any reply over the cloud.
- * @property {() => boolean} [noteCloudSilence] A cloud request timed out
+ * @property {() => void} [noteCloudReply] A V1 cloud request was answered
+ *   (not refused).
+ * @property {() => boolean} [noteCloudSilence] A V1 cloud request timed out
  *   while MQTT reported itself connected.
  * @property {(duid: string, method: string, error: unknown) => void} [noteRequestUnanswered]
  * @property {import("./lateReplies").LateReplyTracker} [lateReplies] Remembers
@@ -607,6 +608,10 @@ class messageQueueHandler {
           const sessionRequest = useCloudConnection
             ? sessionDiagnostics?.captureRequest()
             : undefined;
+          // The requests python-roborock's HealthManager hears about: V1
+          // RPCs over MQTT, and nothing from the B01 channels.
+          const feedsCloudHealth =
+            useCloudConnection && !b01Q7Adapter.isB01Protocol(version);
           const timeout = this.adapter.setTimeout(() => {
             this.adapter.pendingRequests.delete(messageID);
             this.adapter.localConnector.clearChunkBuffer(duid);
@@ -641,23 +646,11 @@ class messageQueueHandler {
               );
               this.adapter.noteRequestUnanswered?.(duid, method, error);
               this.adapter.lateReplies?.noteTimedOut(messageID, duid, method);
-              // A link that says it is up and delivers NOTHING from this
-              // robot while the request waits is the stale session
-              // python-roborock restarts. A frame that did arrive — a
-              // get_map_v1 acknowledgement whose map never follows, a status
-              // push — means the session delivers, so it is not counted
-              // (found in review). B01 is left out: a Q10 command is
-              // fire-and-forget by design.
-              const deliveredMeanwhile =
-                receiptsAtSend !== null &&
-                typeof this.adapter.getCloudMessageReceiptCount ===
-                  "function" &&
-                this.adapter.getCloudMessageReceiptCount(duid) > receiptsAtSend;
-              if (
-                transportWasUp &&
-                !deliveredMeanwhile &&
-                !b01Q7Adapter.isB01Protocol(version)
-              ) {
+              // python-roborock's HealthManager counts every V1 MQTT timeout,
+              // whatever else the robot's frames did meanwhile (its map
+              // decoder ignores the 102 acknowledgement too). B01 never feeds
+              // it, in either direction.
+              if (transportWasUp && feedsCloudHealth) {
                 this.adapter.noteCloudSilence?.();
               }
               reject(error);
@@ -705,7 +698,7 @@ class messageQueueHandler {
                 sessionDiagnostics?.emit();
               }
               this.adapter.noteRequestAnswered?.(duid, method);
-              if (useCloudConnection) {
+              if (feedsCloudHealth) {
                 this.adapter.noteCloudReply?.();
               }
               resolve(value);
@@ -717,11 +710,10 @@ class messageQueueHandler {
             // was the bare reject, so a robot that kept saying "no" neither
             // counted nor reset: five silences, one refusal, one silence, and
             // the method was given up on although the robot had just replied.
+            // Not a cloud-health success: python-roborock's `_send_rpc`
+            // raises an API error before it reaches `on_success`.
             reject: (error) => {
               this.adapter.noteRequestAnswered?.(duid, method);
-              if (useCloudConnection) {
-                this.adapter.noteCloudReply?.();
-              }
               reject(error);
             },
             abandon: reject,
