@@ -544,10 +544,6 @@ class Roborock {
     this.baseURL = options.baseURL || "usiot.roborock.com";
 
     this.userData = options.userData || null;
-    this.authState = {
-      twoFactorRequired: false,
-      statusMessage: "",
-    };
     this.persistBasePath = null;
     this.errorLogThrottleMs =
       typeof options.errorLogThrottleMs === "number"
@@ -1930,8 +1926,6 @@ class Roborock {
         this.log.error(
           `Roborock refused the login${refusal ? ` (code ${refusal.code})` : ""}: ${refusal ? refusal.hint : message} The plugin stays idle until that is fixed.`
         );
-        this.authState.statusMessage =
-          "Login rejected - check email and password.";
         return;
       }
 
@@ -2416,8 +2410,6 @@ class Roborock {
           val: JSON.stringify(this.userData),
           ack: true,
         });
-        this.authState.twoFactorRequired = false;
-        this.authState.statusMessage = "";
         return this.userData;
       }
 
@@ -2503,59 +2495,6 @@ class Roborock {
     }
 
     return { k: signData.k, s };
-  }
-
-  async sendTwoFactorEmail() {
-    if (!this.loginApi) {
-      throw new Error("Login API is not initialized.");
-    }
-
-    try {
-      await roborockAuth.requestEmailCode(this.loginApi, this.config.username);
-    } catch (error) {
-      this.log.error(`2FA email request failed: ${error.message}`);
-      throw error;
-    }
-    this.authState.twoFactorRequired = true;
-    this.authState.statusMessage = "Verification email sent.";
-    return { ok: true };
-  }
-
-  async verifyTwoFactorCode(code) {
-    if (!this.loginApi) {
-      throw new Error("Login API is not initialized.");
-    }
-
-    const signData = await this.createLoginSignature();
-    if (!signData) {
-      throw new Error("Missing login signature.");
-    }
-
-    const region = roborockAuth.getRegionConfig(this.baseURL);
-    const loginResult = await roborockAuth.loginWithCode(this.loginApi, {
-      email: this.config.username,
-      code,
-      country: region.country,
-      countryCode: region.countryCode,
-      k: signData.k,
-      s: signData.s,
-    });
-
-    if (loginResult && loginResult.code === 200 && loginResult.data) {
-      this.userData = loginResult.data;
-      await this.setStateAsync("UserData", {
-        val: JSON.stringify(this.userData),
-        ack: true,
-      });
-      this.authState.twoFactorRequired = false;
-      this.authState.statusMessage = "Two-factor authentication completed.";
-      return this.userData;
-    }
-
-    this.log.error(`2FA verification failed: ${JSON.stringify(loginResult)}`);
-    throw new Error(
-      `2FA verification failed: ${loginResult?.msg || "Unknown error"}`
-    );
   }
 
   async getNetworkInfo() {
@@ -2737,16 +2676,6 @@ class Roborock {
     }
 
     await Promise.allSettled(initialPolls);
-  }
-
-  async executeScene(sceneID) {
-    if (this.api) {
-      try {
-        await this.api.post(`user/scene/${sceneID.val}/execute`);
-      } catch (error) {
-        this.catchError(error.stack, "executeScene");
-      }
-    }
   }
 
   getProductAttribute(duid, attribute) {
