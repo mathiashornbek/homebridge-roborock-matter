@@ -4298,7 +4298,9 @@ class Roborock {
 
     this.products = homedata.products;
     this.devices = this.getManagedHomeDevices(homedata);
-    this.roomIDs = {};
+    // Merged into, never emptied: a reading without rooms used to make the
+    // robot's next room report name every room "Room <id>" in Apple Home
+    // until a reading with rooms came. A room's id keeps its last name.
     for (const room of this.normalizeArray(homedata.rooms)) {
       if (room && room.id !== undefined) {
         this.roomIDs[room.id] = room.name;
