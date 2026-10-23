@@ -214,6 +214,14 @@ class FakeRobot {
 
   /** Send an RPC reply frame on `socket`. */
   async reply(socket, id, result, error = undefined) {
+    const bytes = await this.replyBytes(id, result, error);
+    if (!socket.destroyed) {
+      socket.emit("data", bytes);
+    }
+  }
+
+  /** An RPC reply frame, length prefix included, as the robot sends it. */
+  async replyBytes(id, result, error = undefined) {
     const timestamp = Math.floor(Date.now() / 1000);
     const payload = JSON.stringify({
       dps: {
@@ -231,9 +239,7 @@ class FakeRobot {
     );
     const prefix = Buffer.alloc(4);
     prefix.writeUInt32BE(frame.length, 0);
-    if (!socket.destroyed) {
-      socket.emit("data", Buffer.concat([prefix, frame]));
-    }
+    return Buffer.concat([prefix, frame]);
   }
 
   /** The robot ends the connection (a FIN): 'end', then 'close'. */

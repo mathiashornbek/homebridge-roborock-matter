@@ -188,7 +188,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
  * @typedef {Object} LocalConnector
  * @property {(duid: string) => boolean} isConnected
  * @property {(duid: string, message: Buffer) => void} sendMessage
- * @property {(duid: string) => void} clearChunkBuffer
+ * @property {(duid: string) => void} [clearChunkBuffer]
  * @property {(duid: string, frame: Buffer, onLost: (cause: string) => void) => LocalRequestHandle | null} [writeRequest]
  * @property {(duid: string) => Promise<void>} [awaitLocalNegotiation]
  * @property {(duid: string) => string | undefined} [getNegotiatedVersion]
@@ -864,7 +864,6 @@ class messageQueueHandler {
         /** @type {any} */ (localError)?.transportWasUp === true;
       const timeout = this.adapter.setTimeout(() => {
         this.adapter.pendingRequests.delete(messageID);
-        this.adapter.localConnector.clearChunkBuffer(duid);
         // The link state READ NOW, not the copy taken before the send. A
         // link that died mid-flight is the entire case the give-up
         // register's transport exclusion exists for, and both previous
@@ -1022,7 +1021,6 @@ class messageQueueHandler {
       };
       const timeout = this.adapter.setTimeout(() => {
         this.adapter.pendingRequests.delete(messageID);
-        this.adapter.localConnector.clearChunkBuffer(duid);
         // Up means the socket this request was written on is still the
         // robot's socket and still connected.
         const transportWasUp = handle ? handle.isUp() : false;
