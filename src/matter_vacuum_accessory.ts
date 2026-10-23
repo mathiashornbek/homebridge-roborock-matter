@@ -182,7 +182,8 @@ interface RoborockApi {
 
 const RUN_MODE_IDLE = 0;
 const RUN_MODE_CLEANING = 1;
-// Live status entries older than this fall back to the HomeData snapshot.
+// Live status entries older than this give way to the HomeData snapshot for
+// the fields HomeData carries (see getNumberStatus).
 const LIVE_STATUS_STALENESS_MS = 15 * 60 * 1000;
 
 // The status fields a live frame can carry that the Matter publish actually
@@ -910,7 +911,9 @@ export default class RoborockMatterVacuumAccessory {
   // kept everything else fresh — the tank verdict went unknown, HomeData's
   // `error_code: 0` then read as "nothing wrong", the standing tank fault was
   // cleared and raised again on the next status: a second notification for
-  // one empty tank, the very thing #9 and #26 were about.
+  // one empty tank, the very thing #9 and #26 were about. The same thing then
+  // happened to the whole cache after 15 quiet minutes, until stale values
+  // stopped giving way to HomeData for fields HomeData does not carry.
   private liveStatusUpdatedAt = 0;
   // The last "Matter publish for …" line actually written to the log. The
   // emit decision compares rendered lines rather than a hand-picked field
@@ -5236,11 +5239,16 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   private getNumberStatus(property: string): number | null {
-    // Prefer the freshest value from a live message, falling back to the
-    // HomeData snapshot for properties live messages do not carry.
-    // A stale live cache must not shadow the periodically refreshed cloud
-    // snapshot forever (dead poller, connectivity loss): live values older
-    // than the staleness window fall back to HomeData, which self-heals.
+    // Prefer the freshest value from a live message. A stale live cache must
+    // not shadow the periodically refreshed cloud snapshot forever (dead
+    // poller, connectivity loss), so a live value older than the staleness
+    // window gives way to HomeData — but only for a field HomeData actually
+    // has. HomeData is keyed by schema id and has no tank field, no
+    // `in_cleaning`, no `dss`; for those the robot's last word, however old,
+    // is the only evidence there is. Falling through to "unknown" instead let
+    // HomeData's `error_code: 0` read as "nothing wrong" and withdraw a
+    // standing tank fault after 15 quiet minutes, which the next reply then
+    // raised again: a second notification for one empty tank (#26).
     const liveValue = this.liveStatus.get(property);
     if (
       liveValue !== undefined &&
@@ -5249,9 +5257,11 @@ export default class RoborockMatterVacuumAccessory {
       return liveValue;
     }
 
-    const value = this.api.getVacuumDeviceStatus(this.getDuid(), property);
+    const snapshotValue = this.getNumberFromValue(
+      this.api.getVacuumDeviceStatus(this.getDuid(), property)
+    );
 
-    return this.getNumberFromValue(value);
+    return snapshotValue ?? liveValue ?? null;
   }
 
   private getNumberFromValue(value: unknown): number | null {

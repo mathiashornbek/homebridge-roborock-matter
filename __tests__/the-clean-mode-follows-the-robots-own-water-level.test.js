@@ -17,7 +17,10 @@
 
 const {
   createRealApiVacuum,
+  disposeRealApiVacuums,
 } = require("../test-support/real-api-matter-vacuum");
+
+afterEach(disposeRealApiVacuums);
 
 const CLEANING = {
   state: 5,

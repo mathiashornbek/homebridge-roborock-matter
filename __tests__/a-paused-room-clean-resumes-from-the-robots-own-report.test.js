@@ -20,7 +20,10 @@
 
 const {
   createRealApiVacuum,
+  disposeRealApiVacuums,
 } = require("../test-support/real-api-matter-vacuum");
+
+afterEach(disposeRealApiVacuums);
 
 // CooperCGN's `get_status` reply from the S8, paused in the middle of a room
 // clean (issue #28, 2026-10-06).

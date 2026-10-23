@@ -29,6 +29,9 @@ const { createMatterStore } = require("./matter-0.17.9-store");
 
 const DUID = "device-real-api";
 
+/** Every accessory built here, so a test can stop their heartbeats. */
+const created = [];
+
 // The schema a classic v1 product carries in HomeData.
 const V1_PRODUCT_SCHEMA = [
   { id: 120, code: "error_code" },
@@ -132,6 +135,7 @@ async function createRealApiVacuum({
   // Homebridge registers the endpoint with accessory.clusters as defaults.
   store = createMatterStore(accessory.clusters);
   api.setDeviceNotify((id, data) => vacuum.notifyDeviceUpdater(id, data));
+  created.push(vacuum);
 
   return {
     api,
@@ -157,4 +161,15 @@ async function createRealApiVacuum({
   };
 }
 
-module.exports = { createRealApiVacuum, V1_PRODUCT_SCHEMA };
+/** Stop every accessory's timers; call from afterEach. */
+function disposeRealApiVacuums() {
+  for (const vacuum of created.splice(0)) {
+    vacuum.dispose();
+  }
+}
+
+module.exports = {
+  createRealApiVacuum,
+  disposeRealApiVacuums,
+  V1_PRODUCT_SCHEMA,
+};
