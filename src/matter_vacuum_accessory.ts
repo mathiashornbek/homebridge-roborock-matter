@@ -2093,9 +2093,10 @@ export default class RoborockMatterVacuumAccessory {
   private async identifyVacuum(
     surface: string = MATTER_SURFACE
   ): Promise<void> {
-    await this.publishCurrentMatterState(`${surface} identify command`, {
-      clearOptimistic: true,
-    });
+    // The optimistic overlay is left alone: locating a robot says nothing
+    // about whether it is starting, and clearing it snapped the tile back to
+    // Docked after a Start the robot had not reported yet (#4).
+    await this.publishCurrentMatterState(`${surface} identify command`);
 
     const findMe = this.api.find_me;
     if (typeof findMe !== "function") {
@@ -2118,10 +2119,7 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     await this.publishCurrentMatterState(
-      `${surface} identify command complete`,
-      {
-        clearOptimistic: true,
-      }
+      `${surface} identify command complete`
     );
   }
 
