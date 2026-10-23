@@ -1971,43 +1971,11 @@ class Roborock {
       const homeId = await roborockAuth.getHomeId(this.loginApi);
       if (homeId) {
         if (this.api) {
-          const homedata = await this.api.get(`v2/user/homes/${homeId}`);
-          const homedataResult = homedata.data.result;
-
-          // Guard the persisted copy the same way updateHomeData already does.
-          // Roborock occasionally answers 200 with an envelope that carries no
-          // `result` (maintenance windows, rate limiting). Writing that through
-          // stores `{"ack":true}` over the cached device list on disk, so the
-          // next restart starts from a destroyed HomeData as well — turning a
-          // transient cloud hiccup into a persistent failure.
-          if (!homedataResult) {
-            throw new Error(
-              `The Roborock cloud returned no home data for home ${homeId}. Keeping the previously cached device list.`
-            );
-          }
-
-          await this.setStateAsync("HomeData", {
-            val: JSON.stringify(homedataResult),
-            ack: true,
-          });
-
-          // Skip devices matching either their serial number or Roborock DUID.
-          const ignoredSet = this.getIgnoredDeviceSet();
-          // create devices and set states
-          this.products = homedataResult.products;
-          // Owned AND shared robots, the list getVacuumList() publishes from:
-          // a robot shared with the account (`receivedDevices`) used to get
-          // an Apple Home tile and no runtime behind it.
-          this.devices = this.getManagedHomeDevices(homedataResult);
-
-          const managedDevicesForDiagnostics = this.getManagedHomeDevices(
-            homedataResult,
-            ignoredSet
-          );
-          const localKeyDevices = await this.refreshLocalKeysFromHomeData(
-            homedataResult,
-            ignoredSet
-          );
+          const homedataResult = await this.fetchHomeData(homeId);
+          // Owned AND shared robots, room names, products and local keys, the
+          // same way the periodic refresh applies them.
+          const { localKeyDevices } = await this.applyHomeData(homedataResult);
+          const managedDevicesForDiagnostics = this.devices;
 
           const cloudOnly = this.isCloudOnlyModeEnabled();
           if (cloudOnly) {
@@ -2038,17 +2006,6 @@ class Roborock {
           await this.rr_mqtt_connector.initUser(userdata);
           await this.rr_mqtt_connector.initMQTT_Subscribe();
           await this.rr_mqtt_connector.initMQTT_Message();
-
-          // store name of each room via ID
-          const rooms = homedataResult.rooms;
-          for (const room in rooms) {
-            const roomID = rooms[room].id;
-            const roomName = rooms[room].name;
-
-            this.roomIDs[roomID] = roomName;
-          }
-          await this.addSharedRobotRoomNames(homedataResult);
-          this.log.debug(`RoomIDs debug: ${JSON.stringify(this.roomIDs)}`);
 
           // Perform a periodic MQTT health check. Reconnect only if needed.
           // A retried start reaches this line again; the timers of the
@@ -2085,8 +2042,6 @@ class Roborock {
                 );
                 return {};
               });
-
-          await this.updateHomeData(homeId, homedataResult);
 
           await this.createDevices();
 
@@ -2590,6 +2545,13 @@ class Roborock {
   async createDevices() {
     const devices = this.devices;
     this.initializedVacuumDuids.clear();
+    // A robot no longer on the account keeps no runtime. Its intervals were
+    // cleared before this start; nothing may poll it again.
+    for (const duid of Object.keys(this.vacuums)) {
+      if (!devices.some((device) => device.duid === duid)) {
+        delete this.vacuums[duid];
+      }
+    }
 
     for (const device of devices) {
       const duid = device.duid;
@@ -4356,9 +4318,7 @@ class Roborock {
     this.log.warn(
       `${reason}; logging in again with the password from the plugin settings.`
     );
-    this.bInited = false;
-    this.clearTimersAndIntervals();
-    await this.startService();
+    await this.restartService();
   }
 
   /**
@@ -4418,28 +4378,141 @@ class Roborock {
   }
 
   /**
-   * Refresh the home snapshot - devices, products, local keys - and let every
-   * robot's polling intervals re-check themselves against it.
+   * Read the home snapshot: `v2/user/homes/{id}`, the endpoint startup has
+   * always used. The refresh used to read v1, whose device list can differ,
+   * so comparing the two would have seen changes that were not there.
+   *
+   * Roborock occasionally answers 200 with an envelope that carries no
+   * `result` (maintenance windows, rate limiting). That is an error here, so
+   * it can never be stored over the cached device list on disk and turn a
+   * transient cloud hiccup into a persistent failure.
    *
    * @param {string | number} homeId
-   * @param {Record<string, any>} [prefetched] a home payload already fetched
-   *   by the caller. Startup fetched `v2/user/homes/{id}` seconds earlier,
-   *   built the device list from it, and then called this, which fetched
-   *   `user/homes/{id}` again before the Matter accessories could register:
-   *   2 cloud round-trips for one snapshot, back to back, on the critical
-   *   path. With the payload handed in, this consumes it. The periodic
-   *   caller passes nothing and fetches fresh, as before.
    */
-  async updateHomeData(homeId, prefetched) {
+  async fetchHomeData(homeId) {
+    const response = await this.api.get(`v2/user/homes/${homeId}`);
+    const homedata = response?.data?.result;
+    if (!homedata) {
+      throw new Error(
+        `The Roborock cloud returned no home data for home ${homeId}. Keeping the previously cached device list.`
+      );
+    }
+    return homedata;
+  }
+
+  /**
+   * Make one home snapshot the plugin's view of the account: products, the
+   * robot list (owned and shared), room names, the room labels already cached
+   * for each robot's maps, local keys, and the stored copy. Startup and the
+   * periodic refresh both apply a snapshot through here, so the refresh is no
+   * longer a partial copy of the startup that stored room names it never
+   * applied.
+   *
+   * The room labels are rewritten BEFORE the snapshot is stored, because
+   * storing it is what tells the Matter accessories to republish (their
+   * Service Area included).
+   *
+   * @param {Record<string, any>} homedata
+   * @returns {Promise<{localKeyDevices: Array<{duid: string}>, added: string[], removed: string[], renamed: string[]}>}
+   *   robot names added, removed and renamed relative to the previous list
+   */
+  async applyHomeData(homedata) {
+    const before = new Map(
+      this.normalizeArray(this.devices).map((device) => [
+        device.duid,
+        device.name,
+      ])
+    );
+
+    this.products = homedata.products;
+    this.devices = this.getManagedHomeDevices(homedata);
+    this.roomIDs = {};
+    for (const room of this.normalizeArray(homedata.rooms)) {
+      if (room && room.id !== undefined) {
+        this.roomIDs[room.id] = room.name;
+      }
+    }
+    await this.addSharedRobotRoomNames(homedata);
+    this.log.debug(`RoomIDs debug: ${JSON.stringify(this.roomIDs)}`);
+    this.relabelRoomMappings();
+
+    const localKeyDevices = await this.refreshLocalKeysFromHomeData(homedata);
+    await this.setStateAsync("HomeData", {
+      val: JSON.stringify(homedata),
+      ack: true,
+    });
+
+    const after = new Map(
+      this.devices.map((device) => [device.duid, device.name])
+    );
+    const name = (duid, names) => names.get(duid) || duid;
+    return {
+      localKeyDevices,
+      added: [...after.keys()]
+        .filter((duid) => !before.has(duid))
+        .map((duid) => name(duid, after)),
+      removed: [...before.keys()]
+        .filter((duid) => !after.has(duid))
+        .map((duid) => name(duid, before)),
+      renamed: [...after.keys()].filter(
+        (duid) => before.has(duid) && before.get(duid) !== after.get(duid)
+      ),
+    };
+  }
+
+  /**
+   * Give every cached room its current name from `roomIDs`. The cache keeps
+   * the name it was given when the robot reported the room, so a room renamed
+   * in the app kept its old name until the robot reported its rooms again.
+   */
+  relabelRoomMappings() {
+    let changed = false;
+    for (const mapping of Object.values(this.roomMappings || {})) {
+      for (const rooms of Object.values(mapping?.roomsByMap || {})) {
+        for (const room of this.normalizeArray(rooms)) {
+          const current = this.roomIDs[room?.roomId];
+          if (typeof current === "string" && current && room.name !== current) {
+            room.name = current;
+            changed = true;
+          }
+        }
+      }
+      if (mapping?.roomsByMap) {
+        mapping.rooms = this.getFlattenedRoomMappings(mapping);
+      }
+    }
+    if (changed) {
+      this.persistRoomMappings();
+    }
+  }
+
+  /**
+   * Run the whole start again on the session in hand: the same path as a
+   * retried start, so a robot added to or removed from the account, or a new
+   * session, ends with a runtime for exactly the robots on the account and a
+   * ready signal that publishes them.
+   */
+  async restartService() {
+    this.bInited = false;
+    this.clearTimersAndIntervals();
+    await this.startService();
+  }
+
+  /**
+   * The periodic refresh: read the home snapshot, apply it, and act on what
+   * changed. A renamed robot is published again (the platform's discovery
+   * updates names); a robot added or removed restarts the start sequence.
+   *
+   * @param {string | number} homeId
+   */
+  async updateHomeData(homeId) {
     if (this.stopped) {
       return;
     }
     this.log.debug(`Updating HomeData with homeId: ${homeId}`);
     if (this.api) {
       try {
-        const homedata = prefetched
-          ? prefetched
-          : (await this.api.get(`user/homes/${homeId}`)).data.result;
+        const homedata = await this.fetchHomeData(homeId);
 
         // A refresh still on the wire when Homebridge stops lands here after
         // stopService, and superviseDeviceIntervals would start the polling
@@ -4447,16 +4520,23 @@ class Roborock {
         if (this.stopped) {
           return;
         }
-        if (homedata) {
-          this.superviseDeviceIntervals();
-          await this.refreshLocalKeysFromHomeData(homedata);
-          await this.setStateAsync("HomeData", {
-            val: JSON.stringify(homedata),
-            ack: true,
-          });
-          this.log.debug(`homedata successfully updated`);
-        } else {
-          this.log.warn("homedata failed to download");
+        this.superviseDeviceIntervals();
+        const change = await this.applyHomeData(homedata);
+        this.log.debug(`homedata successfully updated`);
+
+        if (change.added.length > 0 || change.removed.length > 0) {
+          const parts = [
+            change.added.length ? `added: ${change.added.join(", ")}` : "",
+            change.removed.length
+              ? `removed: ${change.removed.join(", ")}`
+              : "",
+          ].filter(Boolean);
+          this.log.info(
+            `The robots on your Roborock account changed (${parts.join("; ")}); reconnecting so each robot on the account has a runtime and appears in Apple Home.`
+          );
+          await this.restartService();
+        } else if (change.renamed.length > 0) {
+          this.notifyReady();
         }
       } catch (error) {
         const rejection = await this.findSessionRejection(error);
