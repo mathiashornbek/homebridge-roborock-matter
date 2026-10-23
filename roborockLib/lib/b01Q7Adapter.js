@@ -235,6 +235,130 @@ function v1FanPowerToWind(family) {
 const INFORMATIONAL_Q7_FAULTS = new Set([0, 407, 2100, 2102, 2103]);
 const INFORMATIONAL_Q10_FAULTS = new Set([0, 400, 407, 501, 502]);
 
+// Matter RvcOperationalState error ids (ErrorStateEnum), for the B01 fault
+// tables below. The Matter accessory publishes these through the same path a
+// classic robot's faults take.
+const MATTER_RVC_ERROR = Object.freeze({
+  UNABLE_TO_COMPLETE_OPERATION: 2,
+  FAILED_TO_FIND_CHARGING_DOCK: 64,
+  STUCK: 65,
+  DUST_BIN_MISSING: 66,
+  DUST_BIN_FULL: 67,
+  MOP_CLEANING_PAD_MISSING: 71,
+});
+
+// Q7 faults that are a condition the user has to fix, and the Matter error
+// each one is. Labels are python-roborock's `B01Fault` names; the Matter ids
+// follow the classic table in matter_vacuum_accessory.ts, so a jammed brush or
+// a trapped robot reads the same on a Q7 as on an S8 (wheels and bumper:
+// Stuck; brushes and sensors: UnableToCompleteOperation, with the Matter 1.4
+// code the classic table also names but does not send).
+//
+// LEFT OUT ON PURPOSE:
+//   * 500, 501, 503, 569 and 570. Upstream documents that these numbers mean
+//     different things on the two B01 families, and the maintainer's sc05 sent
+//     501 ("robot_suspended" in the Q7 table) at the end of a normal run, just
+//     before docking (pi-roborock.log, 21 Oct 2026) — which is the Q10's
+//     meaning, "cleaning completed, returning". A label that is wrong for this
+//     range on real hardware cannot be trusted to publish a fault.
+//   * Outcomes rather than conditions: 2003, 2007/2012 (cannot reach the
+//     target, cleaning ended), 611/612 (positioning failed, try again). The Q7
+//     fault field lingers after events (2103 persists while docked), and a
+//     Matter fault forces the Error state, which refuses a Start — so a
+//     finished run's outcome must not stand as a blocking error.
+//   * Low-battery codes (502, 518, 533, 534): the robot handles those itself.
+// Anything not listed is logged once by the accessory and never published.
+/** @type {ReadonlyMap<number, {id: number, roborock: string, spec?: string}>} */
+const Q7_FAULT_TO_MATTER = new Map([
+  [
+    509,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "cliff_sensor_error",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [510, { id: MATTER_RVC_ERROR.STUCK, roborock: "bumper_stuck" }],
+  [
+    511,
+    {
+      id: MATTER_RVC_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "docking_error",
+    },
+  ],
+  [
+    512,
+    {
+      id: MATTER_RVC_ERROR.FAILED_TO_FIND_CHARGING_DOCK,
+      roborock: "docking_error",
+    },
+  ],
+  [513, { id: MATTER_RVC_ERROR.STUCK, roborock: "robot_trapped" }],
+  [514, { id: MATTER_RVC_ERROR.STUCK, roborock: "robot_trapped" }],
+  [
+    522,
+    {
+      id: MATTER_RVC_ERROR.MOP_CLEANING_PAD_MISSING,
+      roborock: "mop_not_installed",
+    },
+  ],
+  [
+    560,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "side_brush_entangled",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    568,
+    {
+      id: MATTER_RVC_ERROR.STUCK,
+      roborock: "main_wheels_entangled",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [
+    572,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "main_brush_entangled",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    594,
+    {
+      id: MATTER_RVC_ERROR.DUST_BIN_MISSING,
+      roborock: "dust_bag_not_installed",
+    },
+  ],
+  [
+    629,
+    {
+      id: MATTER_RVC_ERROR.MOP_CLEANING_PAD_MISSING,
+      roborock: "mop_mount_fell_off",
+    },
+  ],
+  [
+    668,
+    {
+      id: MATTER_RVC_ERROR.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "system_error",
+    },
+  ],
+]);
+
+/**
+ * The Matter fault a Q7 `fault` code stands for, or null when it is not a
+ * condition this table can name (see Q7_FAULT_TO_MATTER).
+ * @param {number} code
+ * @returns {{id: number, roborock: string, spec?: string} | null}
+ */
+function describeQ7Fault(code) {
+  return Q7_FAULT_TO_MATTER.get(Number(code)) ?? null;
+}
+
 /** @param {string} family */
 function informationalFaults(family) {
   return family === B01_FAMILY.Q10
@@ -1251,6 +1375,8 @@ function mapStatusToV1(data, family = B01_FAMILY.Q7) {
 }
 
 module.exports = {
+  MATTER_RVC_ERROR,
+  describeQ7Fault,
   translateQ7WorkStatusToV1State,
   B01_MAP_UPLOAD_METHOD,
   createMapKey,

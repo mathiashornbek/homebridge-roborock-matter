@@ -6553,6 +6553,22 @@ class Roborock {
   }
 
   /**
+   * The Matter fault a B01 robot's `error_code` stands for, classified in its
+   * own family's numbering, or null when the code is not one the tables name.
+   * The Matter side publishes the answer through its ordinary fault path; a
+   * classic robot's codes never come here (see isB01Device).
+   *
+   * @param {string} duid
+   * @param {number} errorCode
+   * @returns {{id: number, roborock: string, spec?: string} | null}
+   */
+  describeB01Fault(duid, errorCode) {
+    return this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10
+      ? b01Q10Adapter.describeQ10Fault(errorCode)
+      : b01Q7Adapter.describeQ7Fault(errorCode);
+  }
+
+  /**
    * Which B01 dialect family this robot's model belongs to (see
    * b01Q7Adapter.b01FamilyForModel). One spelling for every caller, so the
    * status, room and live-room loops cannot disagree about a robot.

@@ -223,6 +223,80 @@ const Q10_STATUS_TO_V1_STATE = {
   108: 8,
 };
 
+const RVC = b01Q7Adapter.MATTER_RVC_ERROR;
+
+/**
+ * Q10 `dpFault` (90) codes that are a condition the user has to fix, and the
+ * Matter error each one is. Labels are python-roborock's `YXFault` names; the
+ * Matter ids follow the classic table, as the Q7 table does.
+ *
+ * Left out: the lifecycle codes (INFORMATIONAL_Q10_FAULTS), outcomes that a
+ * lingering field would turn into a standing Error (556 positioning failed,
+ * 570 cannot reach target), the battery codes the robot handles itself, and
+ * service-life reminders (301-304). 310 is inferred upstream from auto-empty
+ * context rather than hardware-confirmed; a full bag is a condition either way.
+ *
+ * @type {ReadonlyMap<number, {id: number, roborock: string, spec?: string}>}
+ */
+const Q10_FAULT_TO_MATTER = new Map([
+  [
+    1,
+    {
+      id: RVC.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "lidar_blocked",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [2, { id: RVC.STUCK, roborock: "bumper_stuck" }],
+  [
+    3,
+    {
+      id: RVC.STUCK,
+      roborock: "robot_suspended",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [
+    4,
+    {
+      id: RVC.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "cliff_sensor_error",
+      spec: "NavigationSensorObscured (78)",
+    },
+  ],
+  [
+    5,
+    {
+      id: RVC.UNABLE_TO_COMPLETE_OPERATION,
+      roborock: "main_brush_stuck",
+      spec: "BrushJammed (77)",
+    },
+  ],
+  [
+    7,
+    {
+      id: RVC.STUCK,
+      roborock: "main_wheels_stuck",
+      spec: "WheelsJammed (76)",
+    },
+  ],
+  [8, { id: RVC.STUCK, roborock: "robot_trapped" }],
+  [9, { id: RVC.DUST_BIN_MISSING, roborock: "check_dustbin_filter" }],
+  [46, { id: RVC.DUST_BIN_MISSING, roborock: "install_dust_bag" }],
+  [54, { id: RVC.MOP_CLEANING_PAD_MISSING, roborock: "mop_mount_fell_off" }],
+  [310, { id: RVC.DUST_BIN_FULL, roborock: "dust_bag_full" }],
+  [503, { id: RVC.FAILED_TO_FIND_CHARGING_DOCK, roborock: "docking_error" }],
+]);
+
+/**
+ * The Matter fault a Q10 `dpFault` code stands for, or null.
+ * @param {number} code
+ * @returns {{id: number, roborock: string, spec?: string} | null}
+ */
+function describeQ10Fault(code) {
+  return Q10_FAULT_TO_MATTER.get(Number(code)) ?? null;
+}
+
 /**
  * @param {unknown} rawStatus a Q10 datapoint-121 value
  * @returns {number | null} the v1 state, or null when the code is not known
@@ -236,6 +310,7 @@ function translateQ10StatusToV1State(rawStatus) {
 }
 
 module.exports = {
+  describeQ10Fault,
   Q10_STATUS_TO_V1_STATE,
   translateQ10StatusToV1State,
   B01_Q10_DP,
