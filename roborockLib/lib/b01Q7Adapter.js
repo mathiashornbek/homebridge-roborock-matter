@@ -56,7 +56,16 @@ const B01_CLOUD_ONLY_REMOTE_REASON = "b01-protocol-cloud-only";
 // Note: no "water" property. Q7-series robots use a manually filled water
 // tank on the robot with no electronic water level/control, so water state
 // is neither queried nor exposed (see also getMatterCleanModeCapabilities).
-const B01_STATUS_PROPS = ["status", "quantity", "fault", "wind", "mode"];
+// `current_map_id` (B01Props) tells the plugin when the robot switched maps,
+// so the rooms, whose ids are per map, can follow at once.
+const B01_STATUS_PROPS = [
+  "status",
+  "quantity",
+  "fault",
+  "wind",
+  "mode",
+  "current_map_id",
+];
 
 // Matter RVC clean modes (Vacuum=0, Mop=1, Vacuum+Mop=2) -> Q7 `mode`
 // property values (CleanTypeMapping: VACUUM=0, VAC_AND_MOP=1, MOP=2).

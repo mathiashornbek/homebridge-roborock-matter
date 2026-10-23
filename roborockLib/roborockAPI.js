@@ -5556,6 +5556,69 @@ class Roborock {
     );
   }
 
+  /**
+   * Follow a Q7's `current_map_id` from its status. A change means the robot
+   * switched maps, so the room list (room ids are per map) and the map id the
+   * live-room fallback asks for are both stale: the cached id is dropped and
+   * the rooms are refreshed at once rather than at the next 6-hour refresh.
+   *
+   * The status id is used only as this signal. The map asked for is still the
+   * one `service.get_map_list` marks current, because nothing documents that
+   * the two numberings are the same.
+   *
+   * @param {string} duid
+   * @param {{currentMapId?: unknown}} refreshState
+   * @param {unknown} currentMapId
+   */
+  noteB01CurrentMapId(duid, refreshState, currentMapId) {
+    if (currentMapId === undefined || currentMapId === null) {
+      return;
+    }
+    const previous = refreshState.currentMapId;
+    refreshState.currentMapId = currentMapId;
+    if (previous === undefined || previous === currentMapId) {
+      return;
+    }
+    this.log.info(
+      `${this.describeDevice(duid)} switched maps (${previous} -> ${currentMapId}); refreshing its rooms.`
+    );
+    this._b01MapIds?.delete(duid);
+    void this.refreshB01Rooms(duid, { force: true }).catch((error) => {
+      this.log.debug(
+        `Room refresh after a map switch failed for ${duid}: ${error?.message || error}`
+      );
+    });
+  }
+
+  /**
+   * The id of the map a Q7 marks current, from `service.get_map_list`, asked
+   * once and then reused until the robot reports a map switch.
+   *
+   * @param {string} duid
+   * @returns {Promise<number | null>}
+   */
+  async b01CurrentMapId(duid) {
+    if (!this._b01MapIds) {
+      this._b01MapIds = new Map();
+    }
+    if (this._b01MapIds.has(duid)) {
+      return this._b01MapIds.get(duid);
+    }
+    const mapListData = await this.messageQueueHandler.sendRequest(
+      duid,
+      "get_map_list",
+      {}
+    );
+    // Acknowledged here, not after the map upload: a robot that answers the
+    // list in 200 ms must not have its counter held open by a silent upload.
+    this.noteMethodAnswered(duid, "get_map_list");
+    const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+    if (mapId !== null) {
+      this._b01MapIds.set(duid, mapId);
+    }
+    return mapId;
+  }
+
   async refreshB01Status(duid, options = {}) {
     // A Q10 (`ss*`) is never sent a status READ: the dialect has no reply,
     // so a read could only be refused, and a refused read counted as a
@@ -5639,6 +5702,7 @@ class Roborock {
         if (v1Status.state === undefined && data.status !== undefined) {
           this.noteUnknownB01WorkStatus(duid, data.status);
         }
+        this.noteB01CurrentMapId(duid, refreshState, data.current_map_id);
         // A run that has just started is the moment the user is watching, and
         // it was also the slowest: the live-room fetch below rides its own
         // throttle, counted from the last attempt, so the first room of a run
@@ -5927,12 +5991,9 @@ class Roborock {
     }
 
     try {
-      const mapListData = await this.messageQueueHandler.sendRequest(
-        duid,
-        "get_map_list",
-        {}
-      );
-      const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+      // A room refresh re-reads the map list: it is what notices a new map.
+      this._b01MapIds?.delete(duid);
+      const mapId = await this.b01CurrentMapId(duid);
       if (mapId === null) {
         // A reply arrived, so the channel is up; there is simply no map yet.
         // That is not a failure and must not accrue a backoff, or a robot
@@ -6278,17 +6339,9 @@ class Roborock {
 
     liveState.inflight = (async () => {
       try {
-        const mapListData = await this.messageQueueHandler.sendRequest(
-          duid,
-          "get_map_list",
-          {}
-        );
-        // Acknowledge THIS request here, not at the bottom. Until 3.31.0 the
-        // acknowledgement sat after the map upload, the decode and a cache
-        // write, so a robot that answered get_map_list in 200 ms never had
-        // its counter reset while the heavy upload leg was silent.
-        this.noteMethodAnswered(duid, "get_map_list");
-        const mapId = b01Q7Adapter.findCurrentMapId(mapListData);
+        // The map id is asked once, not on every attempt (see
+        // b01CurrentMapId and noteB01CurrentMapId).
+        const mapId = await this.b01CurrentMapId(duid);
         if (mapId === null) {
           return liveState.current;
         }
