@@ -124,6 +124,9 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
   > = new Map();
   private readonly scheduleAccountCoordinator: ScheduleAccountCoordinator;
   private schedulePolicyLogged = false;
+  private discoveryQueue: Promise<void> = Promise.resolve();
+  // See discoverDevices: the destructive sweep runs once per process.
+  private staleMatterSweepDone = false;
   private matterUnavailableLogged = false;
   private hapPairingHintLogged = false;
 
@@ -308,29 +311,30 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       self.dispatchDeviceUpdate(id, homeData);
     });
 
+    // Every successful start publishes the robots — the first one, one the
+    // library retried by itself, and one after a re-login or an account
+    // change. Discovery used to hang off a callback only the first start
+    // was given, so a start that succeeded on its retry registered nothing.
+    self.roborockAPI.setReadyListener(() => self.queueDiscovery());
+
     // Belt and braces: no rejection from the service startup may ever
     // escape as an unhandled rejection (Homebridge 2 / Node 22+ would
     // treat that as a plugin crash).
-    Promise.resolve(
-      self.roborockAPI.startService(function () {
-        // startService() invokes this callback on the failure path too — the
-        // getHomeDetail catch logs and falls through — so an unconditional
-        // "Service started" asserted success directly underneath the line
-        // saying it had failed.
-        if (self.roborockAPI.isInited()) {
-          self.log.debug("Roborock service started.");
-        } else {
-          self.log.warn(
-            "Roborock startup did not complete, so no robots were loaded this time. The reason is in the line above. Anything already paired in Apple Home is left alone, and the plugin tries again on the next Homebridge restart."
-          );
-        }
-        self.discoverDevices();
-      })
-    ).catch((error: unknown) => {
+    Promise.resolve(self.roborockAPI.startService()).catch((error: unknown) => {
       self.log.error(
         `Roborock service failed to start: ${error instanceof Error ? error.message : String(error)}`
       );
     });
+  }
+
+  /**
+   * Run discovery after any discovery already in progress. Two runs at once
+   * could both find a robot unregistered and register it twice.
+   */
+  private queueDiscovery(): Promise<void> {
+    const run = this.discoveryQueue.then(() => this.discoverDevices());
+    this.discoveryQueue = run.catch(() => undefined);
+    return run;
   }
 
   private dispatchDeviceUpdate(id: string, homeData: unknown): void {
@@ -594,7 +598,14 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       // Apple Home rather than one kind's share of it.
       this.logHapPairingHint();
 
-      await this.unregisterStaleMatterAccessories();
+      // Once per process, as when discovery could only run once: a Matter
+      // robot unregistered by mistake has to be re-paired, and the later
+      // runs come from a re-login or an account refresh, where one robot
+      // missing from one reading is not worth that risk.
+      if (self.roborockAPI.isInited() && !this.staleMatterSweepDone) {
+        this.staleMatterSweepDone = true;
+        await this.unregisterStaleMatterAccessories();
+      }
     } catch (error) {
       this.log.error(
         "An error occurred during device discovery. " +
@@ -1857,7 +1868,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
    * one is already known.
    *
    * The robot's status can be known a full poll gap before anything is able to
-   * display it. Discovery runs in the startService callback, so a status that
+   * display it. Discovery runs once the start has succeeded, so a status that
    * arrives first is dropped by whichever gate it reaches — no accessory for
    * the duid yet, or an accessory whose `registered` is still false — and
    * nothing redelivers it. The tile then fell back on the HomeData snapshot and
@@ -1991,11 +2002,12 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    // A failed startup surfaces here as "the account has no robots": when
-    // getHomeDetail() throws (Roborock maintenance, a rate-limited response,
-    // or plain DNS failure — EAI_AGAIN hit this log twice in three weeks) the
-    // error is caught and logged, but the discovery callback still runs, so
-    // getVacuumList() returns an empty array. Treating that as "everything is
+    // A failed startup used to surface here as "the account has no robots":
+    // when getHomeDetail() threw (Roborock maintenance, a rate-limited
+    // response, or plain DNS failure — EAI_AGAIN hit this log twice in three
+    // weeks) discovery still ran, so getVacuumList() returned an empty array.
+    // Discovery now runs only after a successful start, and these guards stay
+    // because an empty account is still not proof. Treating that as "everything is
     // stale" unregisters every Matter accessory, and because Matter locks the
     // mode list at commissioning, the user then has to re-pair every single
     // robot — a destructive, non-recoverable outcome triggered by one bad

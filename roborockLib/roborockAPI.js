@@ -467,8 +467,9 @@ class Roborock {
     // the second is a corpse it must not restart.
     /** @type {boolean} */
     this.stopped = false;
-    /** @type {ReturnType<typeof setTimeout> | null} */
-    this.loginRetryTimer = null;
+    // Called every time a start succeeds; see setReadyListener.
+    /** @type {(() => unknown) | null} */
+    this.readyListener = null;
 
     this.config = {
       ...options,
@@ -1825,13 +1826,12 @@ class Roborock {
    * Bring the Roborock side up: log in (or reuse the stored session), fetch
    * the home details, start the MQTT session and the periodic health check
    * and home-data refresh, create a runtime per robot and take the first
-   * status. Called by the platform at launch, and again by the retry timers
-   * after a failed login or home-details fetch. `callback` runs once the
-   * home-details stage has been attempted, whether it succeeded or not
-   * (`isInited()` says which); a login that fails returns before that, so the
-   * callback does not run for that attempt.
+   * status. Called by the platform at launch and again by the one retry loop
+   * (scheduleStartServiceRetry) after a failure at any stage. Every start
+   * that succeeds ends in notifyReady(), so a retried start publishes the
+   * robots exactly as the first one would have.
    */
-  async startService(callback) {
+  async startService() {
     // A deliberate start clears the shutdown latch: Homebridge restarts a
     // child bridge in-process, and a stopped adapter that is started again
     // must be allowed to retry.
@@ -1900,36 +1900,9 @@ class Roborock {
         return;
       }
 
-      this._startupLoginAttempts = (this._startupLoginAttempts || 0) + 1;
-      if (this._startupLoginAttempts <= 10) {
-        const delayMs = Math.min(
-          60000 * this._startupLoginAttempts,
-          10 * 60000
-        );
-        this.log.warn(
-          `Could not reach the Roborock cloud (attempt ${this._startupLoginAttempts}/10): ${message}. Retrying in ${Math.round(delayMs / 60000)} minute(s).`
-        );
-        // The handle goes on the instance, not in a local const: shutdown
-        // clears what it can reach, and a local was unreachable by
-        // construction. The guard inside covers the case the clear cannot —
-        // a timer the event loop had already picked up when stopService ran.
-        const retryTimer = this.setTimeout(() => {
-          this.loginRetryTimer = null;
-          if (this.stopped) {
-            return;
-          }
-          this.startService(callback).catch((retryError) => {
-            this.log.error(
-              `Roborock startup retry failed unexpectedly: ${retryError?.message || retryError}`
-            );
-          });
-        }, delayMs);
-        this.loginRetryTimer = retryTimer;
-      } else {
-        this.log.error(
-          `Could not reach the Roborock cloud after ${this._startupLoginAttempts - 1} attempts: ${message}. Giving up until the next Homebridge restart.`
-        );
-      }
+      // The same loop as a failed home-details fetch: one policy, one timer
+      // that shutdown clears, and a success at the end that publishes.
+      this.scheduleStartServiceRetry(error);
       return;
     }
     if (!userdata) {
@@ -1938,7 +1911,6 @@ class Roborock {
       );
       return;
     }
-    this._startupLoginAttempts = 0;
 
     try {
       this.loginApi.defaults.headers.common["Authorization"] = userdata.token;
@@ -2134,6 +2106,7 @@ class Roborock {
           this.log.info(
             `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
           );
+          this.notifyReady();
 
           // LAN attach runs to completion in the background. Everything above
           // works over the cloud, and the transport layer already falls back
@@ -2165,10 +2138,6 @@ class Roborock {
       // still coming up registered nothing and sat idle until a human
       // restarted Homebridge.
       this.scheduleStartServiceRetry(error);
-    }
-
-    if (callback) {
-      callback();
     }
   }
 
@@ -4198,14 +4167,15 @@ class Roborock {
   }
 
   /**
-   * Try `startService` again after a failure that left nothing running.
+   * Try `startService` again after a failure that left nothing running, at
+   * the login stage or the home-details stage alike.
    *
    * Backoff doubles from 1 minute to a 10-minute ceiling and then keeps
    * going, deliberately without an attempt cap: the failure this recovers
    * from is "the network was not ready yet", and the device it runs on is
    * unattended. Giving up would mean a human has to notice. One timer at a
    * time, unref'd so it can never hold Homebridge open, and cleared on
-   * shutdown.
+   * shutdown. The retried start publishes the robots itself (notifyReady).
    *
    * @param {unknown} [error]
    */
@@ -4219,11 +4189,11 @@ class Roborock {
       600000
     );
     this.log.warn(
-      `Could not fetch your Roborock home details: ${
+      `Could not connect to your Roborock account: ${
         /** @type {any} */ (error)?.message || error
       }. This is almost always a temporary Roborock cloud or network problem. Retrying in ${Math.round(
         delay / 60000
-      )} minute(s); no robots will load until it succeeds.`
+      )} minute(s); the robots appear in Apple Home as soon as it succeeds, without a restart.`
     );
     const timer = setTimeout(() => {
       this.startServiceRetryTimer = null;
@@ -4255,10 +4225,6 @@ class Roborock {
     if (this.startServiceRetryTimer) {
       this.clearTimeout(this.startServiceRetryTimer);
       this.startServiceRetryTimer = null;
-    }
-    if (this.loginRetryTimer) {
-      this.clearTimeout(this.loginRetryTimer);
-      this.loginRetryTimer = null;
     }
     if (this.reconnectIntervall) {
       this.clearInterval(this.reconnectIntervall);
@@ -6623,6 +6589,35 @@ class Roborock {
 
   setDeviceNotify(callback) {
     this.deviceNotify = callback;
+  }
+
+  /**
+   * Register the one listener told that a start has succeeded: the first
+   * start, a retried one, and a restart after a re-login or an account
+   * change. The platform publishes the robots from it; its discovery is
+   * idempotent, so being told again only updates what is already there.
+   *
+   * @param {() => unknown} listener
+   */
+  setReadyListener(listener) {
+    this.readyListener = listener;
+  }
+
+  notifyReady() {
+    if (typeof this.readyListener !== "function") {
+      return;
+    }
+    try {
+      void Promise.resolve(this.readyListener()).catch((error) => {
+        this.log.error(
+          `Publishing the robots failed: ${error?.message || error}`
+        );
+      });
+    } catch (error) {
+      this.log.error(
+        `Publishing the robots failed: ${/** @type {any} */ (error)?.message || error}`
+      );
+    }
   }
 }
 
