@@ -47,9 +47,10 @@ const Q10 = b01.B01_FAMILY.Q10;
  * to reach the target. Cleaning ended") are outcomes a user may well want to
  * know about — a scheduled clean that did not happen is not noise — so they
  * keep surfacing. And the codes upstream itself has no description for stay
- * exactly as they are: 2103, 2105, 2108 and 2110 are bare `fault_NNNN`
- * entries even upstream, so silencing them would be a guess rather than a
- * translation.
+ * exactly as they are: 2105, 2108 and 2110 are bare `fault_NNNN` entries
+ * even upstream, so silencing them would be a guess rather than a
+ * translation. 2103 is not one of them: upstream documents it as "not an
+ * error", hardware-confirmed.
  */
 describe("a finished B01 clean is not an unmapped fault", () => {
   test("Q7: the per-task completion code does not surface as an error", () => {
@@ -96,8 +97,22 @@ describe("a finished B01 clean is not an unmapped fault", () => {
     );
   });
 
+  test("Q7: the finished-and-docked code does not surface as an error", () => {
+    // python-roborock B01Fault.F_2103 "cleaning_complete_docked": "Task
+    // finished and robot docked. Follows 2102 once docking and any auto-empty
+    // complete; persists while docked-idle. Not an error (hw-confirmed on a Q7
+    // M5+)." The maintainer's sc05 logged it after every run (21 Oct 2026).
+    expect(b01.mapStatusToV1({ status: 4, fault: 2103 }, Q7).error_code).toBe(
+      0
+    );
+    // Q7-only, like 2102: upstream's Q10 table has no 21xx range.
+    expect(b01.mapStatusToV1({ status: 8, fault: 2103 }, Q10).error_code).toBe(
+      2103
+    );
+  });
+
   test("codes upstream cannot explain keep surfacing, because silencing them would be a guess", () => {
-    for (const fault of [2103, 2105, 2108, 2110]) {
+    for (const fault of [2105, 2108, 2110]) {
       expect(b01.mapStatusToV1({ status: 5, fault }, Q7).error_code).toBe(
         fault
       );

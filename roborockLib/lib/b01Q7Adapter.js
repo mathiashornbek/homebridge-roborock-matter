@@ -226,10 +226,13 @@ function v1FanPowerToWind(family) {
 // level below 20%. Scheduled task canceled") and 2007/2012 ("Unable to reach
 // the target. Cleaning ended") are outcomes a user may want to know about — a
 // scheduled clean that did not run is not noise. And the codes upstream has no
-// description for at all (2103, 2105, 2108, 2110 are bare `fault_NNNN` there)
-// stay put: silencing a number nobody has explained would be a guess, not a
-// translation.
-const INFORMATIONAL_Q7_FAULTS = new Set([0, 407, 2100, 2102]);
+// description for at all (2105, 2108, 2110 are bare `fault_NNNN` there) stay
+// put: silencing a number nobody has explained would be a guess, not a
+// translation. 2103 is not one of them: upstream's `B01Fault.F_2103` is "task
+// finished and robot docked ... persists while docked-idle. Not an error
+// (hw-confirmed on a Q7 M5+)", and the maintainer's sc05 logs it after every
+// run.
+const INFORMATIONAL_Q7_FAULTS = new Set([0, 407, 2100, 2102, 2103]);
 const INFORMATIONAL_Q10_FAULTS = new Set([0, 400, 407, 501, 502]);
 
 /** @param {string} family */
