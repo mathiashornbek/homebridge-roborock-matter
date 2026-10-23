@@ -200,6 +200,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       enableLiveRoomTracking:
         this.platformConfig.enableLiveRoomTracking !== false,
       cloudOnlyMode: Boolean(this.platformConfig.cloudOnlyMode),
+      enableMqttPreventiveRefresh:
+        this.platformConfig.enableMqttPreventiveRefresh === true,
+      enableMqttSessionRecovery:
+        this.platformConfig.enableMqttSessionRecovery === true,
       log: this.log,
       userData: decryptedSession,
       storagePath: storagePath,

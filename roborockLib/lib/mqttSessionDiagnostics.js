@@ -1,7 +1,8 @@
 "use strict";
 
-// Observations only. Nothing in this class reconnects, gates requests, or
-// changes the unanswered-method breaker. Silence while idle is normal.
+// This class records observations; the connector consumes connection and
+// subscription state for its send gate. It never reconnects or changes the
+// unanswered-method breaker itself. Silence while idle is normal.
 const SILENCE_WINDOW_MS = 60_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const MAX_ROBOTS = 128;
@@ -33,6 +34,8 @@ class MqttSessionDiagnostics {
     this.rawSilenceDuringRequest = null;
     /** @type {number | null} */
     this.lastReadTimeoutAt = null;
+    /** @type {{generation: number, rawSilenceDuringRequest: boolean, at: number} | null} */
+    this.lastEligibleRead = null;
   }
 
   onConnect() {
@@ -109,6 +112,11 @@ class MqttSessionDiagnostics {
     ) {
       this.rawSilenceDuringRequest = request.rawSequence === this.rawSequence;
       this.lastReadTimeoutAt = performance.now();
+      this.lastEligibleRead = {
+        generation: this.generation,
+        rawSilenceDuringRequest: this.rawSilenceDuringRequest,
+        at: this.lastReadTimeoutAt,
+      };
       requestWasSilent = this.rawSilenceDuringRequest;
       if (requestWasSilent) {
         if (
@@ -154,6 +162,12 @@ class MqttSessionDiagnostics {
       // a verdict on the current session or on a silent single robot.
       rawSilenceDuringRequest: this.rawSilenceDuringRequest,
       lastReadTimeoutAgeMs: age(this.lastReadTimeoutAt),
+      // Kept across connections for comparison, never current recovery evidence.
+      lastEligibleRead: this.lastEligibleRead && {
+        generation: this.lastEligibleRead.generation,
+        rawSilenceDuringRequest: this.lastEligibleRead.rawSilenceDuringRequest,
+        ageMs: age(this.lastEligibleRead.at),
+      },
       silentReadRobotCount: this.silentReads.size,
       correlatedSilenceObserved: this.silentReads.size >= 2,
       observationWindowMs: SILENCE_WINDOW_MS,
