@@ -184,7 +184,7 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       // removed the password, so without this line the user only read
       // "Login failed or requires 2FA".
       this.log.error(
-        `The saved login could not be decrypted on this machine: its key (roborock.token.key in ${storagePath}) is missing or is not the one it was saved with. Please log in again in the plugin settings.`
+        `The saved login could not be decrypted on this machine: its key (roborock.token.key in ${storagePath}) is missing or is not the one it was saved with. Log out and log in again in the plugin settings.`
       );
     }
 

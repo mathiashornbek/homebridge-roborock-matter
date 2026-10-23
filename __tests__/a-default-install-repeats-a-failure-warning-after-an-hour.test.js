@@ -66,3 +66,20 @@ test.each([[-1], ["soon"], [""]])(
     ).toBe(HOUR);
   }
 );
+
+// The settings page fills the field with its own default and writes it on
+// every save, so a page default that disagrees with the schema undoes the
+// schema the first time anyone saves the settings.
+test("the settings page offers the schema's default", () => {
+  const page = fs.readFileSync(
+    path.join(__dirname, "../homebridge-ui/public/index.js"),
+    "utf8"
+  );
+  const pageDefault = Number(
+    /DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS = (\d+(?:\.\d+)?);/.exec(page)[1]
+  );
+
+  expect(pageDefault).toBe(
+    schema.schema.properties.transientWarningThrottleHours.default
+  );
+});

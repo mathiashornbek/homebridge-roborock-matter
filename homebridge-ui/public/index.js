@@ -91,7 +91,7 @@ const CUSTOM_SERVER = "custom";
 
 const DIAGNOSTICS_AUTO_REFRESH_DELAY_MS = 3000;
 const DIAGNOSTICS_AUTO_REFRESH_LIMIT = 2;
-const DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS = 6;
+const DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS = 1;
 
 // Kept in the same order as HOMEKIT_ACTION_KEYS in src/types.ts, so the form,
 // the saved config and the plugin all name these the same way.
