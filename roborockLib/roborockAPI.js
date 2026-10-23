@@ -554,6 +554,11 @@ class Roborock {
         ? options.errorLogThrottleMs
         : TRANSIENT_ERROR_LOG_THROTTLE_MS;
     this.errorLogThrottle = new Map();
+    /** @type {number} ms; see roborockAuth.CLOUD_REQUEST_TIMEOUT_MS */
+    this.cloudRestTimeoutMs =
+      typeof options.cloudRestTimeoutMs === "number"
+        ? options.cloudRestTimeoutMs
+        : roborockAuth.CLOUD_REQUEST_TIMEOUT_MS;
     this.now =
       typeof options.now === "function" ? options.now : () => Date.now();
   }
@@ -1878,6 +1883,7 @@ class Roborock {
       username: this.config.username,
       clientID,
       language: this.language,
+      timeout: this.cloudRestTimeoutMs,
     });
     // api/v1/getUrlByEmail(email = ...)
 
@@ -1941,6 +1947,7 @@ class Roborock {
     // Initialize the real API.
     this.api = axios.create({
       baseURL: rriot.r.a,
+      timeout: this.cloudRestTimeoutMs,
     });
     // Every request is signed over its path AND its body (see
     // lib/hawkSignature.js for the measured formula). Until 3.29.0 the body

@@ -10,6 +10,14 @@ const API_V4_LOGIN_CODE = "api/v4/auth/email/login/code";
 const API_V4_LOGIN_PASSWORD = "api/v4/auth/email/login/pwd";
 const API_V4_EMAIL_CODE = "api/v4/email/code/send";
 
+// How long any request to Roborock's REST servers may take. Without one,
+// axios waits forever on a server that never answers (a half-open TCP
+// connection), and one such request wedged the account-wide queue every
+// Routine and schedule switch goes through until Homebridge restarted.
+// python-roborock relies on aiohttp's 300 s default; Roborock answers in well
+// under a second, so 30 s only ever cuts off a request that is not coming.
+const CLOUD_REQUEST_TIMEOUT_MS = 30_000;
+
 const DEFAULT_HEADERS = {
   header_appversion: "4.54.02",
   header_clientlang: "en",
@@ -68,9 +76,16 @@ function encryptPassword(password, k) {
   return encrypted;
 }
 
-function createLoginApi({ baseURL, username, clientID, language }) {
+function createLoginApi({
+  baseURL,
+  username,
+  clientID,
+  language,
+  timeout = CLOUD_REQUEST_TIMEOUT_MS,
+}) {
   return axios.create({
     baseURL: `https://${normalizeBaseURL(baseURL)}`,
+    timeout,
     headers: {
       header_clientid: crypto
         .createHash("md5")
@@ -380,6 +395,7 @@ async function loginByPassword(loginApi, { email, password, country, k, s }) {
 }
 
 module.exports = {
+  CLOUD_REQUEST_TIMEOUT_MS,
   SESSION_REJECTED_CODE,
   getHomeId,
   isSessionRejected,

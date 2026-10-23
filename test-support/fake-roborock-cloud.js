@@ -90,6 +90,8 @@ async function startFakeRoborockCloud(options = {}) {
 
   /** Every request, in order, for assertions. */
   const requests = [];
+  /** Requests being answered, and when anything last happened. */
+  const activity = { inFlight: 0, at: process.hrtime.bigint() };
   /** Sessions this server has issued and not revoked, by token. */
   const sessions = new Map();
   const signedKeys = new Map();
@@ -127,6 +129,8 @@ async function startFakeRoborockCloud(options = {}) {
   function send(res, status, body) {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
+    activity.inFlight -= 1;
+    activity.at = process.hrtime.bigint();
   }
 
   function verifyHawk(req, pathname, body) {
@@ -182,10 +186,15 @@ async function startFakeRoborockCloud(options = {}) {
       headers: req.headers,
     };
     requests.push(record);
+    activity.inFlight += 1;
+    activity.at = process.hrtime.bigint();
 
     const queue = scripted.get(pathname);
     if (queue && queue.length > 0) {
       const next = queue.shift();
+      if (next.hang || next.destroy) {
+        activity.inFlight -= 1;
+      }
       if (next.hang) {
         // Never answers: what a stuck cloud looks like to the client.
         return;
@@ -360,6 +369,23 @@ async function startFakeRoborockCloud(options = {}) {
       sessions.clear();
     },
     sessionCount: () => sessions.size,
+    /**
+     * Wait (real time) until nothing has reached or left this server for a
+     * moment, so the I/O a fired timer started has finished.
+     */
+    async quiet(idleMs = 50, maxMs = 3000) {
+      const start = process.hrtime.bigint();
+      const idle = BigInt(idleMs) * 1_000_000n;
+      while (process.hrtime.bigint() - start < BigInt(maxMs) * 1_000_000n) {
+        // Idle since the later of the last request and this call: whatever
+        // fired just before is given time to send its first request.
+        const since = activity.at > start ? activity.at : start;
+        if (activity.inFlight <= 0 && process.hrtime.bigint() - since > idle) {
+          return;
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    },
     /** Trust this server's test certificate for the rest of the test file. */
     trust() {
       https.globalAgent.options.ca = [CERT];

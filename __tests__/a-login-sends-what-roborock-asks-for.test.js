@@ -28,6 +28,7 @@ const {
   startFakeRoborockCloud,
 } = require("../test-support/fake-roborock-cloud");
 const {
+  advanceUntil,
   createAdapterOnFakeCloud,
   fakeMqttClient,
   homeData,
@@ -113,8 +114,7 @@ describe("the plugin's own password login", () => {
 
     await api.startService();
     expect(api.startServiceRetryTimer).toBeTruthy();
-    await jest.advanceTimersByTimeAsync(60_000);
-    await waitFor(() => api.isInited(), "the retried start");
+    await advanceUntil(cloud, () => api.isInited(), "the retried start");
 
     const signs = cloud.requestsTo("/api/v3/key/sign");
     const logins = cloud.requestsTo("/api/v4/auth/email/login/pwd");
@@ -163,8 +163,7 @@ describe("the plugin's own password login", () => {
     expect(cloud.requestsTo("/api/v4/auth/email/login/pwd")).toHaveLength(1);
     expect(lines(api.log.error).join("\n")).toMatch(/blocked/);
 
-    await jest.advanceTimersByTimeAsync(HOUR);
-    await waitFor(() => api.isInited(), "the later attempt");
+    await advanceUntil(cloud, () => api.isInited(), "the later attempt");
     expect(cloud.requestsTo("/api/v4/auth/email/login/pwd")).toHaveLength(2);
   });
 });

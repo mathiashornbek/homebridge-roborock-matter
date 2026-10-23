@@ -29,6 +29,7 @@ const {
   startFakeRoborockCloud,
 } = require("../test-support/fake-roborock-cloud");
 const {
+  advanceUntil,
   createAdapterOnFakeCloud,
   fakeMqttClient,
   homeData,
@@ -206,8 +207,12 @@ describe("a session Roborock rejects while running", () => {
     expect(lines(api.log.error).join("\n")).toMatch(/again in 6 hour\(s\)/);
     expect(api.startServiceRetryTimer).toBeTruthy();
 
-    await jest.advanceTimersByTimeAsync(6 * HOUR);
-    await waitFor(
+    // Nothing until the six hours are up...
+    await jest.advanceTimersByTimeAsync(5 * HOUR);
+    expect(cloud.requestsTo("/api/v4/auth/email/login/pwd")).toHaveLength(1);
+    // ...and then one fresh login.
+    await advanceUntil(
+      cloud,
       () => api.readyListener.mock.calls.length === 3,
       "the later re-login"
     );

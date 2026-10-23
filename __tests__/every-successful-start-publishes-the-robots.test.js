@@ -28,6 +28,7 @@ const {
   startFakeRoborockCloud,
 } = require("../test-support/fake-roborock-cloud");
 const {
+  advanceUntil,
   createAdapterOnFakeCloud,
   fakeMqttClient,
   homeData,
@@ -91,8 +92,7 @@ describe("the library says ready after every successful start", () => {
     expect(ready).not.toHaveBeenCalled();
     expect(api.startServiceRetryTimer).toBeTruthy();
 
-    await jest.advanceTimersByTimeAsync(60_000);
-    await waitFor(() => ready.mock.calls.length > 0, "ready");
+    await advanceUntil(cloud, () => ready.mock.calls.length > 0, "ready");
 
     expect(api.isInited()).toBe(true);
     expect(ready).toHaveBeenCalledTimes(1);
@@ -117,8 +117,7 @@ describe("the library says ready after every successful start", () => {
     expect(api.startServiceRetryTimer).toBeTruthy();
     expect(api.loginRetryTimer ?? null).toBeNull();
 
-    await jest.advanceTimersByTimeAsync(60_000);
-    await waitFor(() => api.isInited(), "the retried start");
+    await advanceUntil(cloud, () => api.isInited(), "the retried start");
     expect(api.readyListener).toHaveBeenCalledTimes(1);
   });
 });
@@ -177,8 +176,8 @@ describe("the platform publishes the robots on every ready", () => {
       /Retrying in 1 minute\(s\)/
     );
 
-    await jest.advanceTimersByTimeAsync(60_000);
-    await waitFor(
+    await advanceUntil(
+      cloud,
       () => homebridge.matter.registered.length > 0,
       "the Matter registration"
     );

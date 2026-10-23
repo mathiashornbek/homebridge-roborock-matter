@@ -71,6 +71,27 @@ async function waitFor(condition, what, timeoutMs = 5000) {
   }
 }
 
+/**
+ * Fire the plugin's timers one at a time until `condition` holds, letting the
+ * network I/O each one starts finish in real time before the next.
+ *
+ * Jumping the fake clock across a request in flight would fire that
+ * request's own 30-second timeout and abort it, which is a test artefact, not
+ * the behaviour under test. One timer at a time, with the fake server quiet
+ * in between, keeps the two clocks apart.
+ *
+ * @param {{quiet: () => Promise<void>}} cloud the fake server
+ */
+async function advanceUntil(cloud, condition, what, maxTimers = 200) {
+  for (let fired = 0; fired < maxTimers && !condition(); fired += 1) {
+    await jest.advanceTimersToNextTimerAsync();
+    await cloud.quiet();
+  }
+  if (!condition()) {
+    throw new Error(`timed out advancing timers until ${what}`);
+  }
+}
+
 /** Fake timers that leave real I/O and the clock waitFor reads alone. */
 function useFakeTimersAroundRealIo() {
   jest.useFakeTimers({
@@ -120,6 +141,7 @@ function homeData({ devices = [], receivedDevices = [], rooms = [] } = {}) {
 
 module.exports = {
   A70_PRODUCT,
+  advanceUntil,
   createAdapterOnFakeCloud,
   homeData,
   robot,
