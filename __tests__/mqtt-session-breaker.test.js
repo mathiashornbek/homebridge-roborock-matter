@@ -259,8 +259,12 @@ test("a previous-generation read cannot inherit new-generation silence", async (
   await jest.advanceTimersByTimeAsync(30_000);
   const error = await old.result;
   expect(snapshot().correlatedSilenceObserved).toBe(true);
-  expect(isUnansweredRequest(error)).toBe(true);
-  expect(outcomes.at(-1).counted).toBe(true);
+  expect(error.accountSessionWasSilent).not.toBe(true);
+  // Nor is it counted: it went out on a link that is gone, which says
+  // nothing about the robot (transport artefacts never count).
+  expect(error.transportWasUp).toBe(false);
+  expect(isUnansweredRequest(error)).toBe(false);
+  expect(outcomes.at(-1).counted).toBe(false);
 });
 
 test("a read with inbound activity cannot inherit later silence on other reads", async () => {

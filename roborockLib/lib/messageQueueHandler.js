@@ -197,6 +197,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 /**
  * @typedef {Object} MqttConnector
  * @property {import("./mqttSessionDiagnostics").MqttSessionDiagnostics} [sessionDiagnostics]
+ * @property {number} [linkId] which connection is current
  * @property {() => boolean} isConnected
  * @property {(duid: string, message: Buffer, onNotSent?: (error: Error) => void) => void} sendMessage
  */
@@ -849,6 +850,7 @@ class messageQueueHandler {
       const sessionDiagnostics =
         this.adapter.rr_mqtt_connector.sessionDiagnostics;
       const sessionRequest = sessionDiagnostics?.captureRequest();
+      const linkAtSend = this.adapter.rr_mqtt_connector.linkId;
       // The requests python-roborock's HealthManager hears about: V1 RPCs
       // over MQTT, and nothing from the B01 channels.
       const feedsCloudHealth = !b01Q7Adapter.isB01Protocol(version);
@@ -864,10 +866,12 @@ class messageQueueHandler {
         // link that died mid-flight is the entire case the give-up
         // register's transport exclusion exists for, and both previous
         // attempts at that exclusion were dead code because they read a
-        // value captured before the request even went out.
-        const transportWasUp = Boolean(
-          this.adapter.rr_mqtt_connector?.isConnected?.()
-        );
+        // value captured before the request even went out. And it must be
+        // the SAME link: a request in flight across a session restart went
+        // out on a connection that is gone, whatever its successor does.
+        const transportWasUp =
+          Boolean(this.adapter.rr_mqtt_connector?.isConnected?.()) &&
+          this.adapter.rr_mqtt_connector.linkId === linkAtSend;
         const sessionHealth = sessionDiagnostics?.noteTimeout(
           duid,
           method,

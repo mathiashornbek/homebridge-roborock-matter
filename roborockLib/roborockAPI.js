@@ -3620,7 +3620,7 @@ class Roborock {
     }
 
     this.log.info(
-      `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. This is the robot or the Roborock cloud declining to reply, not a connection failure — those are reported separately.${verdict}`
+      `${this.describeDevice(duid)} has not answered ${method} ${outcome.failures} times in a row, so the plugin stops asking for about ${hours} hour(s) and then tries once more. Everything else about this robot is unaffected, and one answer puts it straight back in the normal cycle. Each of those requests went out on a connection that stayed up until it timed out, so this is the robot or the Roborock cloud not replying, not a connection failure — those are reported separately.${verdict}`
     );
     return true;
   }

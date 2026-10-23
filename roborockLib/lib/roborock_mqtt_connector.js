@@ -239,6 +239,10 @@ class roborock_mqtt_connector {
       ).catch(() => {});
     });
     this.connected = false;
+    // Which MQTT connection is current: a new number on every connect, so a
+    // request can tell "the link I went out on is still up" from "a link is
+    // up" across a session restart.
+    this.linkId = 0;
     this.initialConnectTimeout = null;
 
     // NOTE: this class previously generated its own RSA-2048 keypair here,
@@ -312,6 +316,7 @@ class roborock_mqtt_connector {
 
     this.listen("connect", (result) => {
       if (typeof result != "undefined") {
+        this.linkId += 1;
         const generation = this.sessionDiagnostics.onConnect();
         client.subscribe(
           `rr/m/o/${rriot.u}/${mqttUser}/#`,
