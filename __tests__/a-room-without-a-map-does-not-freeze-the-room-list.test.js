@@ -51,6 +51,8 @@ function make(rooms) {
     true
   );
   store = createMatterStore({
+    // An RVC endpoint always has its run mode and operational state.
+    ...accessory.clusters,
     serviceArea: {
       supportedAreas: [],
       supportedMaps: [],
