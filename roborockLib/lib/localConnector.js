@@ -271,6 +271,11 @@ class localConnector {
      * @type {(() => void)|null}
      */
     this.closeDiscoveryPass = null;
+    /**
+     * Counts shutdowns (destroyAllClients), so a connect that was in flight
+     * when one happened can tell, and keep nothing of its socket.
+     */
+    this.shutdowns = 0;
   }
 
   /**
@@ -547,6 +552,7 @@ class localConnector {
     if (existingClient?.connected || existingClient?.connecting) {
       return;
     }
+    const shutdowns = this.shutdowns;
     this.lastConnectAttemptAt.set(duid, Date.now());
 
     const client = new EnhancedSocket();
@@ -617,6 +623,14 @@ class localConnector {
         );
       }
     });
+
+    // A shutdown while it connected: nothing of this socket may stay (it
+    // used to become the robot's socket, with a hello and a keep-alive, on
+    // an adapter that had stopped).
+    if (shutdowns !== this.shutdowns) {
+      client.destroy();
+      return;
+    }
 
     client.on("data", (message) => {
       this.handleLocalData(duid, client, message);
@@ -1779,6 +1793,7 @@ class localConnector {
    * construction rather than by timing.
    */
   destroyAllClients() {
+    this.shutdowns += 1;
     for (const duid of Object.keys(this.localClients)) {
       const client = this.localClients[duid];
       delete this.localClients[duid];

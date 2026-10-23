@@ -431,6 +431,8 @@ class Roborock {
     // the second is a corpse it must not restart.
     /** @type {boolean} */
     this.stopped = false;
+    // The current start; see beginRun().
+    this.currentRun = 0;
     // Called every time a start succeeds; see setReadyListener.
     /** @type {(() => unknown) | null} */
     this.readyListener = null;
@@ -1797,8 +1799,11 @@ class Roborock {
   async startService() {
     // A deliberate start clears the shutdown latch: Homebridge restarts a
     // child bridge in-process, and a stopped adapter that is started again
-    // must be allowed to retry.
+    // must be allowed to retry. Its other callers, the retry timer and
+    // restartService, read the latch immediately before calling, so a start
+    // can never clear a latch set after whatever asked for it.
     this.stopped = false;
+    const run = this.beginRun();
     this.log.info(`Connecting to your Roborock account…`);
     this.translations = require(
       `./i18n/${this.language || "en"}/translations.json`
@@ -1866,6 +1871,9 @@ class Roborock {
     try {
       userdata = await this.getUserData(this.loginApi);
     } catch (error) {
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
       const message = error?.message || String(error);
 
       // A refusal that asking again cannot change stops here with what to
@@ -1892,9 +1900,10 @@ class Roborock {
       this.scheduleStartServiceRetry(error);
       return;
     }
-    // Shutdown can land during any wait below; a start that carried on built
-    // a new MQTT client and intervals on an adapter that had just stopped.
-    if (this.stopped) {
+    // Shutdown, or a newer start, can land during any wait below; a start
+    // that carried on built a new MQTT client and intervals on an adapter
+    // that had moved on.
+    if (!this.isCurrentRun(run)) {
       return;
     }
     if (!userdata) {
@@ -1932,11 +1941,11 @@ class Roborock {
     // Get home details.
     try {
       const homeId = await roborockAuth.getHomeId(this.loginApi);
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
       const homedataResult = await this.fetchHomeData(homeId);
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
       // Owned AND shared robots, room names, products and local keys, the
@@ -1970,7 +1979,7 @@ class Roborock {
         await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
       }
 
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
       await this.rr_mqtt_connector.initUser(userdata);
@@ -2014,6 +2023,9 @@ class Roborock {
           });
 
       await this.createDevices();
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
 
       // Cloud requests fail outright until the MQTT session is up, and
       // the very first ones (the per-robot network probe, then each
@@ -2022,6 +2034,9 @@ class Roborock {
       // hoping an unrelated delay covers it; a broker that never comes
       // up releases the wait and the requests fail as they would have.
       await this.rr_mqtt_connector.waitUntilConnected();
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
 
       // First on the wire once the session is up, because it is the one
       // request an Apple Home tile is waiting for: until a Q7's real
@@ -2038,7 +2053,7 @@ class Roborock {
         this.getNetworkInfo(),
         this.initializeDeviceUpdates(),
       ]);
-      if (this.stopped) {
+      if (!this.isCurrentRun(run)) {
         return;
       }
 
@@ -2059,8 +2074,11 @@ class Roborock {
       // works over the cloud, and the transport layer already falls back
       // to it, so holding accessory registration hostage to a fixed-length
       // broadcast listen only delayed the Apple Home tiles.
-      void this.attachLocalTransports(localDiscovery, localKeyDevices);
+      void this.attachLocalTransports(localDiscovery, localKeyDevices, run);
     } catch (error) {
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
       if (roborockAuth.isSessionRejected(error)) {
         await this.handleRejectedSession(error);
         return;
@@ -2130,14 +2148,23 @@ class Roborock {
    *
    * @param {Promise<Record<string, string>>} localDiscovery
    * @param {Array<{duid: string}>} localKeyDevices
+   * @param {number} [run] the start this attach belongs to
    */
-  async attachLocalTransports(localDiscovery, localKeyDevices) {
+  async attachLocalTransports(
+    localDiscovery,
+    localKeyDevices,
+    run = this.currentRun
+  ) {
     if (this.isCloudOnlyModeEnabled()) {
       return;
     }
 
     try {
       const discoveredDevices = await localDiscovery;
+      // Shutdown ends the discovery window early, and resolves it.
+      if (!this.isCurrentRun(run)) {
+        return;
+      }
 
       // merge udp discovered devices with local devices found via mqtt
       Object.entries(discoveredDevices).forEach(([duid, ip]) => {
@@ -2166,6 +2193,9 @@ class Roborock {
           localIp: ip,
           localDiscoveryState: "discovered",
         });
+        if (!this.isCurrentRun(run)) {
+          return;
+        }
         await this.localConnector.createClient(duid, ip);
       }
     } catch (error) {
@@ -4328,11 +4358,44 @@ class Roborock {
    * retried start, so a robot added to or removed from the account, or a new
    * session, ends with a runtime for exactly the robots on the account and a
    * ready signal that publishes them.
+   *
+   * Its callers get here after a wait (a refresh's reading, a rejected
+   * session's cleanup). A shutdown that landed in that wait is final: the
+   * start would clear the latch and bring a stopped adapter back.
    */
   async restartService() {
+    if (this.stopped) {
+      return;
+    }
+    await this.startService();
+  }
+
+  /**
+   * Make a new start the current one. Every start is a run: the platform's,
+   * a retry and a restart alike. Shutdown and the next start end the run
+   * before it, and a run checks isCurrentRun after every wait, so a start
+   * overtaken by either stops at its next step instead of building an MQTT
+   * client, arming polling, opening LAN sockets or publishing robots on an
+   * adapter that has moved on. What the previous run armed is stopped here,
+   * so no start can leave the last one's polling running beside its own (the
+   * 6-hour re-login retry started without that, and every robot was polled
+   * twice from then on).
+   *
+   * @returns {number} the new run
+   */
+  beginRun() {
+    this.currentRun += 1;
     this.bInited = false;
     this.clearRunTimers();
-    await this.startService();
+    return this.currentRun;
+  }
+
+  /**
+   * @param {number} run a run from beginRun
+   * @returns {boolean} whether it is still the run to carry on
+   */
+  isCurrentRun(run) {
+    return !this.stopped && run === this.currentRun;
   }
 
   /**
@@ -4343,7 +4406,9 @@ class Roborock {
    * @param {string | number} homeId
    */
   async updateHomeData(homeId) {
-    if (this.stopped) {
+    // The refresh belongs to the start that armed it; see beginRun.
+    const run = this.currentRun;
+    if (!this.isCurrentRun(run)) {
       return;
     }
     this.log.debug(`Updating HomeData with homeId: ${homeId}`);
@@ -4354,12 +4419,15 @@ class Roborock {
         // A refresh still on the wire when Homebridge stops lands here after
         // stopService, and superviseDeviceIntervals would start the polling
         // loops again against transports that are already closed.
-        if (this.stopped) {
+        if (!this.isCurrentRun(run)) {
           return;
         }
         this.superviseDeviceIntervals();
         const change = await this.applyHomeData(homedata);
         this.log.debug(`homedata successfully updated`);
+        if (!this.isCurrentRun(run)) {
+          return;
+        }
 
         if (change.added.length > 0 || change.removed.length > 0) {
           const parts = [
@@ -4377,7 +4445,7 @@ class Roborock {
         }
       } catch (error) {
         const rejection = await this.findSessionRejection(error);
-        if (rejection && !this.stopped) {
+        if (rejection && this.isCurrentRun(run)) {
           await this.handleRejectedSession(rejection);
           return;
         }
