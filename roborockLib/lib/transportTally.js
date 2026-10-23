@@ -3,7 +3,8 @@
 
 /**
  * How each robot's requests fared, per transport, summed over an hour and
- * logged once at info when anything in that hour failed.
+ * logged once at info when anything in that hour failed: when the hour ends,
+ * and at shutdown for the hour not yet over.
  *
  * The per-failure "Failed to execute …" warning is throttled, which kept the
  * log readable and hid the rate: on the maintainer's a70, 36 lines stood for
@@ -41,7 +42,7 @@ class TransportTally {
     this.log = log;
     this.describe = describe;
     this.now = now;
-    /** @type {Map<string, {startedAt: number, counts: ReturnType<typeof emptyCounts>}>} */
+    /** @type {Map<string, {startedAt: number, counts: ReturnType<typeof emptyCounts>, timer: ReturnType<typeof setTimeout>}>} */
     this.windows = new Map();
   }
 
@@ -52,14 +53,15 @@ class TransportTally {
    * @returns {void}
    */
   note(duid, transport, outcome) {
-    const now = this.now();
     let window = this.windows.get(duid);
-    if (window && now - window.startedAt >= SUMMARY_WINDOW_MS) {
-      this.report(duid, window.counts);
-      window = undefined;
-    }
     if (!window) {
-      window = { startedAt: now, counts: emptyCounts() };
+      // Closed by its own timer. It used to be reported by the first outcome
+      // after it ended, so a robot with nothing to report for hours got a
+      // line about "the last hour" that described an hour long gone, and the
+      // hour before a shutdown was never reported at all.
+      const timer = setTimeout(() => this.close(duid), SUMMARY_WINDOW_MS);
+      timer.unref?.();
+      window = { startedAt: this.now(), counts: emptyCounts(), timer };
       this.windows.set(duid, window);
     }
     if (outcome === "retried") {
@@ -75,11 +77,49 @@ class TransportTally {
   }
 
   /**
+   * Report a robot's window and start the next one with its next outcome.
+   *
    * @param {string} duid
-   * @param {ReturnType<typeof emptyCounts>} counts
    * @returns {void}
    */
-  report(duid, counts) {
+  close(duid) {
+    const window = this.windows.get(duid);
+    if (!window) {
+      return;
+    }
+    clearTimeout(window.timer);
+    this.windows.delete(duid);
+    const minutes = Math.max(
+      1,
+      Math.round((this.now() - window.startedAt) / 60000)
+    );
+    this.report(
+      duid,
+      window.counts,
+      minutes >= SUMMARY_WINDOW_MS / 60000
+        ? "the last hour"
+        : `the last ${minutes} minute(s)`
+    );
+  }
+
+  /**
+   * Shutdown: report every window, the hour not yet over included.
+   *
+   * @returns {void}
+   */
+  flush() {
+    for (const duid of [...this.windows.keys()]) {
+      this.close(duid);
+    }
+  }
+
+  /**
+   * @param {string} duid
+   * @param {ReturnType<typeof emptyCounts>} counts
+   * @param {string} period
+   * @returns {void}
+   */
+  report(duid, counts, period) {
     const { local, cloud, retried } = counts;
     const failed =
       local.timeout +
@@ -106,7 +146,7 @@ class TransportTally {
       parts.push(`${retried} retried over the cloud after the LAN failed`);
     }
     this.log.info(
-      `${this.describe(duid)}, requests in the last hour: ${parts.join("; ")}.`
+      `${this.describe(duid)}, requests in ${period}: ${parts.join("; ")}.`
     );
   }
 }

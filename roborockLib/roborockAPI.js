@@ -2220,6 +2220,8 @@ class Roborock {
       // Teardown publishes the final disconnected diagnostics. Flush after it
       // so that snapshot reaches disk and its debounce timer is cleared too.
       this.flushPendingPersistedStates();
+      // The hour not yet over is reported too, and its timer cleared.
+      this.transportTally?.flush();
       // Nothing is coming back for these, and leaving them means every
       // caller still awaiting one hangs until Homebridge is killed.
       for (const [messageID, pending] of this.pendingRequests) {
