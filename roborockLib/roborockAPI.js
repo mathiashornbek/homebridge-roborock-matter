@@ -4168,7 +4168,23 @@ class Roborock {
     }
   }
 
+  /**
+   * Shutdown: what a start armed, and the local transport's own timers.
+   */
   clearTimersAndIntervals() {
+    this.clearRunTimers();
+    this.localConnector.clearLocalDevicedTimeout();
+  }
+
+  /**
+   * Stop what a start armed: its retry, the hourly MQTT check, the home-data
+   * refresh, the MQTT startup watchdog, every robot's polling and the B01
+   * status loop. A restart stops only these. The local sockets belong to
+   * their robots, not to a start: one still up keeps its keep-alive across a
+   * restart, which used to stop it for good (the start that followed found
+   * the socket connected and left it alone).
+   */
+  clearRunTimers() {
     if (this.startServiceRetryTimer) {
       this.clearTimeout(this.startServiceRetryTimer);
       this.startServiceRetryTimer = null;
@@ -4179,8 +4195,6 @@ class Roborock {
     if (this.homedataInterval) {
       this.clearInterval(this.homedataInterval);
     }
-
-    this.localConnector.clearLocalDevicedTimeout();
 
     // The MQTT startup watchdog is armed in initMQTT_Subscribe and would
     // otherwise survive shutdown and fire into a torn-down adapter.
@@ -4316,7 +4330,7 @@ class Roborock {
    */
   async restartService() {
     this.bInited = false;
-    this.clearTimersAndIntervals();
+    this.clearRunTimers();
     await this.startService();
   }
 
