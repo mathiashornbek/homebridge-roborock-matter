@@ -46,7 +46,6 @@ import { join } from "node:path";
 
 const DEP0040_CODE = "DEP0040";
 let dep0040FilterInstalled = false;
-const DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS = 6;
 
 function installDeprecationWarningFilter(): void {
   if (dep0040FilterInstalled) {
@@ -204,7 +203,12 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       log: this.log,
       userData: decryptedSession,
       storagePath: storagePath,
-      errorLogThrottleMs: transientWarningThrottleHours * 60 * 60 * 1000,
+      // Unset: the library's own default (one hour), which the hourly
+      // transport summary is written around.
+      errorLogThrottleMs:
+        transientWarningThrottleHours === undefined
+          ? undefined
+          : transientWarningThrottleHours * 60 * 60 * 1000,
     });
 
     /**
@@ -287,16 +291,19 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     await this.loginAndDiscoverDevices();
   }
 
-  private normalizeTransientWarningThrottleHours(value: unknown): number {
+  /** The user's setting in hours, or undefined when there is none. */
+  private normalizeTransientWarningThrottleHours(
+    value: unknown
+  ): number | undefined {
     const parsed =
       typeof value === "number"
         ? value
         : typeof value === "string" && value.trim() !== ""
           ? Number(value)
-          : DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS;
+          : undefined;
 
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      return DEFAULT_TRANSIENT_WARNING_THROTTLE_HOURS;
+    if (parsed === undefined || !Number.isFinite(parsed) || parsed < 0) {
+      return undefined;
     }
 
     return parsed;
