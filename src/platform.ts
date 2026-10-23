@@ -103,9 +103,8 @@ const { redactSecrets } = require("../roborockLib/lib/redactSecrets") as {
  * Based on https://github.com/homebridge/homebridge-plugin-template
  */
 export default class RoborockPlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic =
-    this.api.hap.Characteristic;
+  public readonly Service: typeof Service;
+  public readonly Characteristic: typeof Characteristic;
 
   // Used to track restored cached accessories
   private readonly accessories: PlatformAccessory[] = [];
@@ -149,6 +148,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
     // the narrow helpers below.
     public readonly api: API
   ) {
+    // In the constructor rather than as field initialisers: Babel (the test
+    // runner) runs field initialisers before it assigns `api`, tsc after.
+    this.Service = api.hap.Service;
+    this.Characteristic = api.hap.Characteristic;
     this.platformConfig = config as RoborockPlatformConfig;
 
     // Initialise logging utility
