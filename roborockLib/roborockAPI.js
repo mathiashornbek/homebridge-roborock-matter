@@ -1943,17 +1943,7 @@ class Roborock {
       return;
     }
 
-    try {
-      this.loginApi.defaults.headers.common["Authorization"] = userdata.token;
-    } catch (error) {
-      this.log.error(
-        "Failed to login. Most likely wrong token! Deleting HomeData and UserData. Try again! " +
-          error
-      );
-
-      this.deleteStateAsync("HomeData");
-      this.deleteStateAsync("UserData");
-    }
+    this.loginApi.defaults.headers.common["Authorization"] = userdata.token;
     const rriot = userdata.rriot;
 
     // Initialize the real API.
@@ -1984,140 +1974,131 @@ class Roborock {
       if (this.stopped) {
         return;
       }
-      if (homeId) {
-        if (this.api) {
-          const homedataResult = await this.fetchHomeData(homeId);
-          if (this.stopped) {
-            return;
-          }
-          // Owned AND shared robots, room names, products and local keys, the
-          // same way the periodic refresh applies them.
-          const { localKeyDevices } = await this.applyHomeData(homedataResult);
-          const managedDevicesForDiagnostics = this.devices;
-
-          const cloudOnly = this.isCloudOnlyModeEnabled();
-          if (cloudOnly) {
-            this.log.info(
-              "Roborock cloud-only mode is enabled; local LAN discovery and TCP connections will be skipped."
-            );
-          }
-
-          for (const device of managedDevicesForDiagnostics) {
-            if (cloudOnly) {
-              await this.updateTransportDiagnostics(device.duid, {
-                lastTransport: "cloud",
-                localIp: null,
-              });
-            } else if (!device.localKey) {
-              await this.updateTransportDiagnostics(device.duid, {
-                lastTransport: "cloud",
-                lastTransportReason: "missing-local-key",
-              });
-            }
-
-            // Runs in BOTH directions: switching the mode off has to retract
-            // the markers it wrote, or they stay on disk for good and the
-            // device keeps reporting itself as cloud-only.
-            await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
-          }
-
-          if (this.stopped) {
-            return;
-          }
-          await this.rr_mqtt_connector.initUser(userdata);
-          await this.rr_mqtt_connector.initMQTT_Subscribe();
-          await this.rr_mqtt_connector.initMQTT_Message();
-
-          // Perform a periodic MQTT health check. Reconnect only if needed.
-          // A retried start reaches this line again; the timers of the
-          // attempt that failed after it must not keep running beside these.
-          if (this.reconnectIntervall) {
-            this.clearInterval(this.reconnectIntervall);
-          }
-          if (this.homedataInterval) {
-            this.clearInterval(this.homedataInterval);
-          }
-          this.reconnectIntervall = this.setInterval(async () => {
-            this.log.debug(`Running MQTT health check.`);
-
-            await this.rr_mqtt_connector.ensureConnected();
-          }, 3600 * 1000);
-
-          this.homedataInterval = this.setInterval(
-            this.updateHomeData.bind(this),
-            this.updateInterval * 1000,
-            homeId
-          );
-
-          // LAN discovery listens for UDP broadcasts for a fixed window, so
-          // awaiting it here used to stall startup for the full timeout with
-          // the CPU idle. Its results are only needed at the merge below, and
-          // the local keys it matches against are already loaded, so start it
-          // now and let the home-data refresh, device creation and network
-          // probes run inside that window instead.
-          const localDiscovery = this.isCloudOnlyModeEnabled()
-            ? Promise.resolve({})
-            : this.localConnector.getLocalDevices().catch((error) => {
-                this.log.debug(
-                  `LAN discovery failed; continuing with cloud transport: ${error?.message || error}`
-                );
-                return {};
-              });
-
-          await this.createDevices();
-
-          // Cloud requests fail outright until the MQTT session is up, and
-          // the very first ones (the per-robot network probe, then each
-          // robot's initial poll) used to be issued a second after the
-          // broker handshake started. Wait for the real signal instead of
-          // hoping an unrelated delay covers it; a broker that never comes
-          // up releases the wait and the requests fail as they would have.
-          await this.rr_mqtt_connector.waitUntilConnected();
-
-          // First on the wire once the session is up, because it is the one
-          // request an Apple Home tile is waiting for: until a Q7's real
-          // status lands, the tile shows the registration snapshot from the
-          // Matter store. Started here rather than at the end of
-          // createDevices() so the boot poll cannot precede the wait above.
-          this.startB01StatusLoop();
-
-          // Independent, so concurrent: the network probe feeds the LAN
-          // attach that runs later in the background, and the first status
-          // feeds the tile. Neither needs the other, and serially they were
-          // two full round-trip waits where one is enough.
-          await Promise.allSettled([
-            this.getNetworkInfo(),
-            this.initializeDeviceUpdates(),
-          ]);
-          if (this.stopped) {
-            return;
-          }
-
-          this.bInited = true;
-          // A success ends the retry chain and forgets the backoff, so a
-          // later outage starts from one minute again rather than ten.
-          if (this.startServiceRetryTimer) {
-            this.clearTimeout(this.startServiceRetryTimer);
-            this.startServiceRetryTimer = null;
-          }
-          this.startServiceRetryAttempts = 0;
-          this.log.info(
-            `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
-          );
-          this.notifyReady();
-
-          // LAN attach runs to completion in the background. Everything above
-          // works over the cloud, and the transport layer already falls back
-          // to it, so holding accessory registration hostage to a fixed-length
-          // broadcast listen only delayed the Apple Home tiles.
-          void this.attachLocalTransports(localDiscovery, localKeyDevices);
-        } else {
-          this.log.warn(
-            `Roborock returned no home details, so the saved session has been cleared and the plugin will log in from scratch on the next start. If this repeats, re-enter your credentials in the plugin settings.`
-          );
-          await this.deleteStateAsync(`UserData`);
-        }
+      const homedataResult = await this.fetchHomeData(homeId);
+      if (this.stopped) {
+        return;
       }
+      // Owned AND shared robots, room names, products and local keys, the
+      // same way the periodic refresh applies them.
+      const { localKeyDevices } = await this.applyHomeData(homedataResult);
+      const managedDevicesForDiagnostics = this.devices;
+
+      const cloudOnly = this.isCloudOnlyModeEnabled();
+      if (cloudOnly) {
+        this.log.info(
+          "Roborock cloud-only mode is enabled; local LAN discovery and TCP connections will be skipped."
+        );
+      }
+
+      for (const device of managedDevicesForDiagnostics) {
+        if (cloudOnly) {
+          await this.updateTransportDiagnostics(device.duid, {
+            lastTransport: "cloud",
+            localIp: null,
+          });
+        } else if (!device.localKey) {
+          await this.updateTransportDiagnostics(device.duid, {
+            lastTransport: "cloud",
+            lastTransportReason: "missing-local-key",
+          });
+        }
+
+        // Runs in BOTH directions: switching the mode off has to retract
+        // the markers it wrote, or they stay on disk for good and the
+        // device keeps reporting itself as cloud-only.
+        await this.syncCloudOnlyTransportMarkers(device.duid, cloudOnly);
+      }
+
+      if (this.stopped) {
+        return;
+      }
+      await this.rr_mqtt_connector.initUser(userdata);
+      await this.rr_mqtt_connector.initMQTT_Subscribe();
+      await this.rr_mqtt_connector.initMQTT_Message();
+
+      // Perform a periodic MQTT health check. Reconnect only if needed.
+      // A retried start reaches this line again; the timers of the
+      // attempt that failed after it must not keep running beside these.
+      if (this.reconnectIntervall) {
+        this.clearInterval(this.reconnectIntervall);
+      }
+      if (this.homedataInterval) {
+        this.clearInterval(this.homedataInterval);
+      }
+      this.reconnectIntervall = this.setInterval(async () => {
+        this.log.debug(`Running MQTT health check.`);
+
+        await this.rr_mqtt_connector.ensureConnected();
+      }, 3600 * 1000);
+
+      this.homedataInterval = this.setInterval(
+        this.updateHomeData.bind(this),
+        this.updateInterval * 1000,
+        homeId
+      );
+
+      // LAN discovery listens for UDP broadcasts for a fixed window, so
+      // awaiting it here used to stall startup for the full timeout with
+      // the CPU idle. Its results are only needed at the merge below, and
+      // the local keys it matches against are already loaded, so start it
+      // now and let the home-data refresh, device creation and network
+      // probes run inside that window instead.
+      const localDiscovery = this.isCloudOnlyModeEnabled()
+        ? Promise.resolve({})
+        : this.localConnector.getLocalDevices().catch((error) => {
+            this.log.debug(
+              `LAN discovery failed; continuing with cloud transport: ${error?.message || error}`
+            );
+            return {};
+          });
+
+      await this.createDevices();
+
+      // Cloud requests fail outright until the MQTT session is up, and
+      // the very first ones (the per-robot network probe, then each
+      // robot's initial poll) used to be issued a second after the
+      // broker handshake started. Wait for the real signal instead of
+      // hoping an unrelated delay covers it; a broker that never comes
+      // up releases the wait and the requests fail as they would have.
+      await this.rr_mqtt_connector.waitUntilConnected();
+
+      // First on the wire once the session is up, because it is the one
+      // request an Apple Home tile is waiting for: until a Q7's real
+      // status lands, the tile shows the registration snapshot from the
+      // Matter store. Started here rather than at the end of
+      // createDevices() so the boot poll cannot precede the wait above.
+      this.startB01StatusLoop();
+
+      // Independent, so concurrent: the network probe feeds the LAN
+      // attach that runs later in the background, and the first status
+      // feeds the tile. Neither needs the other, and serially they were
+      // two full round-trip waits where one is enough.
+      await Promise.allSettled([
+        this.getNetworkInfo(),
+        this.initializeDeviceUpdates(),
+      ]);
+      if (this.stopped) {
+        return;
+      }
+
+      this.bInited = true;
+      // A success ends the retry chain and forgets the backoff, so a
+      // later outage starts from one minute again rather than ten.
+      if (this.startServiceRetryTimer) {
+        this.clearTimeout(this.startServiceRetryTimer);
+        this.startServiceRetryTimer = null;
+      }
+      this.startServiceRetryAttempts = 0;
+      this.log.info(
+        `Roborock connection ready; ${this.getVacuumList().length} robot(s) available.`
+      );
+      this.notifyReady();
+
+      // LAN attach runs to completion in the background. Everything above
+      // works over the cloud, and the transport layer already falls back
+      // to it, so holding accessory registration hostage to a fixed-length
+      // broadcast listen only delayed the Apple Home tiles.
+      void this.attachLocalTransports(localDiscovery, localKeyDevices);
     } catch (error) {
       if (roborockAuth.isSessionRejected(error)) {
         await this.handleRejectedSession(error);
