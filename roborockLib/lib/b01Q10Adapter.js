@@ -423,7 +423,175 @@ function mapDpsToV1(dps) {
   return v1;
 }
 
+// The Q10 current-map packet (protocol 301, marker `01 01`), as
+// python-roborock's b01_q10_map_parser reads it: map id u32be at 2, grid
+// width and height u16be at 7 and 9, the compressed layout length u16be at
+// 27 and an LZ4 block from 29. Inflated, the layout is width*height grid
+// cells followed by `01 <room count>` and 47-byte room records.
+const Q10_MAP_PACKET_CURRENT = 1;
+const Q10_MAP_ID_OFFSET = 2;
+const Q10_WIDTH_OFFSET = 7;
+const Q10_HEIGHT_OFFSET = 9;
+const Q10_LAYOUT_LENGTH_OFFSET = 27;
+const Q10_LAYOUT_OFFSET = 29;
+const Q10_ROOM_RECORD_LENGTH = 47;
+const Q10_ROOM_NAME_LENGTH_OFFSET = 26;
+const Q10_MAX_ROOMS = 32;
+const Q10_MAX_GRID_CELLS = 16000000;
+
+/**
+ * Decompress a raw LZ4 block (no frame header), refusing to grow past
+ * `maxOutputSize`. A port of python-roborock's lz4_block_decompress.
+ * @param {Buffer} data
+ * @param {number} maxOutputSize
+ * @returns {Buffer}
+ */
+function lz4BlockDecompress(data, maxOutputSize) {
+  let index = 0;
+  /** @type {number[]} */
+  const output = [];
+  /** @param {number} value */
+  const readLength = (value) => {
+    if (value !== 0x0f) return value;
+    for (;;) {
+      if (index >= data.length) {
+        throw new Error("Truncated LZ4 block while reading a length");
+      }
+      const part = data[index++];
+      value += part;
+      if (part !== 0xff) return value;
+    }
+  };
+  for (;;) {
+    if (index >= data.length) {
+      throw new Error("Truncated LZ4 block while reading a token");
+    }
+    const token = data[index++];
+    const literalLength = readLength(token >> 4);
+    if (index + literalLength > data.length) {
+      throw new Error("Truncated LZ4 block while reading literals");
+    }
+    if (output.length + literalLength > maxOutputSize) {
+      throw new Error("LZ4 block exceeds its maximum output size");
+    }
+    for (let end = index + literalLength; index < end; index += 1) {
+      output.push(data[index]);
+    }
+    if (index === data.length) {
+      return Buffer.from(output);
+    }
+    if (index + 2 > data.length) {
+      throw new Error("Truncated LZ4 block while reading a match offset");
+    }
+    const offset = data[index] | (data[index + 1] << 8);
+    index += 2;
+    if (offset === 0 || offset > output.length) {
+      throw new Error("Invalid LZ4 back-reference offset");
+    }
+    const matchLength = readLength(token & 0x0f) + 4;
+    if (output.length + matchLength > maxOutputSize) {
+      throw new Error("LZ4 block exceeds its maximum output size");
+    }
+    for (let copied = 0; copied < matchLength; copied += 1) {
+      output.push(output[output.length - offset]);
+    }
+  }
+}
+
+/**
+ * A firmware default room name made readable, as python-roborock's
+ * `Q10Room.name` does: "rr_living_room" -> "Living Room".
+ * @param {string} rawName
+ */
+function q10RoomName(rawName) {
+  return rawName
+    .replace(/^rr_/, "")
+    .replace(/_/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(
+      /(^|[^\p{L}])(\p{L})/gu,
+      (_, before, letter) => before + letter.toUpperCase()
+    );
+}
+
+/**
+ * The rooms of a Q10 current-map packet, or null for any other 301 packet
+ * (trace, clean record, saved-map detail). Throws on a malformed packet.
+ *
+ * Room ids are the ids dpStartClean's room clean takes
+ * (`{"cmd":2,"clean_paramters":[id]}`, verified live upstream).
+ *
+ * @param {Buffer} payload
+ * @returns {{mapId: number, rooms: Array<{roomId: number, roomName: string}>} | null}
+ */
+function parseQ10MapRooms(payload) {
+  if (
+    payload.length < Q10_LAYOUT_OFFSET ||
+    payload[0] !== Q10_MAP_PACKET_CURRENT ||
+    payload[1] !== 1
+  ) {
+    return null;
+  }
+  const mapId = payload.readUInt32BE(Q10_MAP_ID_OFFSET);
+  const width = payload.readUInt16BE(Q10_WIDTH_OFFSET);
+  const height = payload.readUInt16BE(Q10_HEIGHT_OFFSET);
+  if (width <= 0 || width * height > Q10_MAX_GRID_CELLS) {
+    throw new Error(`Q10 map packet has invalid dimensions ${width}x${height}`);
+  }
+  const layoutLength = payload.readUInt16BE(Q10_LAYOUT_LENGTH_OFFSET);
+  const layoutEnd = Q10_LAYOUT_OFFSET + layoutLength;
+  if (layoutLength <= 0 || layoutEnd > payload.length) {
+    throw new Error("Q10 map packet has an invalid layout length");
+  }
+  const decoded = lz4BlockDecompress(
+    payload.subarray(Q10_LAYOUT_OFFSET, layoutEnd),
+    Q10_MAX_GRID_CELLS + 2 + Q10_MAX_ROOMS * Q10_ROOM_RECORD_LENGTH
+  );
+
+  /** @param {Buffer} roomData */
+  const wellFormed = (roomData) =>
+    roomData.length >= 2 &&
+    roomData[0] === 1 &&
+    roomData.length === 2 + roomData[1] * Q10_ROOM_RECORD_LENGTH;
+  // The header height first; python-roborock infers the split from the room
+  // count when it does not line up (captures without a height).
+  let roomData = height > 0 ? decoded.subarray(width * height) : null;
+  if (!roomData || !wellFormed(roomData)) {
+    roomData = null;
+    for (let count = 0; count <= Q10_MAX_ROOMS; count += 1) {
+      const area = decoded.length - (2 + count * Q10_ROOM_RECORD_LENGTH);
+      if (area > 0 && area % width === 0) {
+        const candidate = decoded.subarray(area);
+        if (candidate[0] === 1 && candidate[1] === count) {
+          roomData = candidate;
+          break;
+        }
+      }
+    }
+  }
+  if (!roomData) {
+    throw new Error("Q10 map packet has no room records where expected");
+  }
+
+  const rooms = [];
+  for (let index = 0; index < roomData[1]; index += 1) {
+    const record = roomData.subarray(
+      2 + index * Q10_ROOM_RECORD_LENGTH,
+      2 + (index + 1) * Q10_ROOM_RECORD_LENGTH
+    );
+    const nameLength = record[Q10_ROOM_NAME_LENGTH_OFFSET];
+    rooms.push({
+      roomId: record.readUInt16BE(0),
+      roomName: q10RoomName(record.subarray(27, 27 + nameLength).toString()),
+    });
+  }
+  return { mapId, rooms };
+}
+
 module.exports = {
+  parseQ10MapRooms,
+  lz4BlockDecompress,
   REQUEST_STATUS_PUSH,
   mapDpsToV1,
   describeQ10Fault,

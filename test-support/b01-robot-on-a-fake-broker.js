@@ -77,6 +77,58 @@ function encodeQ7MapPayload(scMap, mapKey) {
   return Buffer.from(encrypted.toString("base64"), "ascii");
 }
 
+/**
+ * A Q10 current-map packet (protocol 301, marker `01 01`) laid out as
+ * python-roborock's b01_q10_map_parser reads one. The grid travels as a
+ * literal-only LZ4 block, which is a valid block and needs no compressor; the
+ * reference parser was checked to read these packets' rooms identically.
+ *
+ * @param {{mapId?: number, width?: number, height?: number,
+ *          rooms: Array<{id: number, name: string}>}} options
+ * @returns {Buffer}
+ */
+function buildQ10MapPacket({ mapId = 1, width = 8, height = 6, rooms }) {
+  const grid = Buffer.alloc(width * height, 243);
+  rooms.forEach((room, index) => {
+    grid[index] = (room.id * 4) & 0xff;
+  });
+  const records = rooms.map((room) => {
+    const record = Buffer.alloc(47);
+    record.writeUInt16BE(room.id, 0);
+    const name = Buffer.from(room.name);
+    record[26] = name.length;
+    name.copy(record, 27);
+    return record;
+  });
+  const layout = Buffer.concat([
+    grid,
+    Buffer.from([1, rooms.length]),
+    ...records,
+  ]);
+  const lengthBytes = [];
+  if (layout.length < 15) {
+    lengthBytes.push(layout.length << 4);
+  } else {
+    lengthBytes.push(0xf0);
+    let rest = layout.length - 15;
+    while (rest >= 255) {
+      lengthBytes.push(255);
+      rest -= 255;
+    }
+    lengthBytes.push(rest);
+  }
+  const block = Buffer.concat([Buffer.from(lengthBytes), layout]);
+  const header = Buffer.alloc(29);
+  header[0] = 1;
+  header[1] = 1;
+  header.writeUInt32BE(mapId, 2);
+  header.writeUInt16BE(width, 7);
+  header.writeUInt16BE(height, 9);
+  header.writeUInt16BE(block.length, 27);
+  // An empty erase-zone section, as an unedited map's tail begins.
+  return Buffer.concat([header, block, Buffer.from([0, 0])]);
+}
+
 /** SCMap frames serialized by python-roborock's schema, by name. */
 function scMapFrames() {
   const raw = JSON.parse(
@@ -242,6 +294,11 @@ async function createB01Robots({ robots, config = {} }) {
     await robotSends(duid, 102, JSON.stringify({ dps }));
   }
 
+  /** A protocol-301 frame carrying raw bytes (a Q10 map packet). */
+  async function mapPacket(/** @type {string} */ duid, packet) {
+    await robotSends(duid, 301, packet);
+  }
+
   /** A protocol-301 map frame carrying a Q7 SCMap. */
   async function q7MapFrame(/** @type {string} */ duid, scMap) {
     const b01 = require("../roborockLib/lib/b01Q7Adapter");
@@ -261,11 +318,13 @@ async function createB01Robots({ robots, config = {} }) {
     q7Answers,
     pushes,
     q7MapFrame,
+    mapPacket,
     waitForSent,
   };
 }
 
 module.exports = {
+  buildQ10MapPacket,
   fakeMqttModule,
   createB01Robots,
   encodeQ7MapPayload,

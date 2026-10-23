@@ -89,17 +89,24 @@ function withClock() {
   };
 }
 
-describe("a Q10 room-list refresh is not attempted at all", () => {
-  test("no request is sent for a Q10", async () => {
+// A Q10's rooms arrive in the map it pushes (a-q10-exposes-its-rooms); its
+// room refresh may only ask for that push, never send a read it cannot answer.
+const readsSent = (sendRequest) =>
+  sendRequest.mock.calls
+    .map((call) => call[1])
+    .filter((method) => method !== "request_dps");
+
+describe("a Q10 room-list refresh never sends a read", () => {
+  test("no read is sent for a Q10, only the push request", async () => {
     const { api, sendRequest } = createApi(Q10_MODEL);
 
     const rooms = await api.refreshB01Rooms("duid-q10");
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    expect(readsSent(sendRequest)).toEqual([]);
     expect(rooms).toEqual([]);
   });
 
-  test("twenty poll cycles send nothing and throw nothing", async () => {
+  test("twenty poll cycles send no read and throw nothing", async () => {
     const { api, sendRequest } = createApi(Q10_MODEL);
     const clock = withClock();
     try {
@@ -115,17 +122,17 @@ describe("a Q10 room-list refresh is not attempted at all", () => {
       clock.restore();
     }
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    expect(readsSent(sendRequest)).toEqual([]);
   });
 
-  test("forcing a refresh does not make a Q10 reachable", async () => {
+  test("forcing a refresh does not send a Q10 a read", async () => {
     const { api, sendRequest } = createApi(Q10_MODEL);
 
     await expect(
       api.refreshB01Rooms("duid-q10", { force: true })
     ).resolves.toEqual([]);
 
-    expect(sendRequest).not.toHaveBeenCalled();
+    expect(readsSent(sendRequest)).toEqual([]);
   });
 
   test("a Q7 is still fetched", async () => {

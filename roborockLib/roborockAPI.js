@@ -5950,21 +5950,17 @@ class Roborock {
    * @returns {Promise<any[]>}
    */
   async refreshB01Rooms(duid, options = {}) {
-    // A Q10 (`ss*`) IS NOT FETCHED AT ALL — the third loop of this shape, after
-    // the status loop (3.19.0) and the live-room loop (3.19.1). `get_map_list`
-    // is not in NEUTRAL_RESPONSES and has no Q10 translation, so the send choke
-    // point refuses it by name and throws B01_METHOD_UNSUPPORTED. The caller
-    // catches that at debug level, so it is quiet — but the refusal is certain
-    // before the request is asked, and because it never succeeds the 6-hour
-    // throttle below is never stamped. A Q10 therefore repeats a designed
-    // refusal on every poll for as long as the plugin runs.
-    //
-    // Gated at the entry rather than at the two call sites for the same reason
-    // `refreshB01LiveRoom` is: both of them reach here through
-    // `refreshMatterServiceAreaRoomMappings`, which gates on `isB01Protocol` —
-    // and that is BOTH dialects, the premise of #19. Returning the cache is
-    // what the throttled path above already returns, so every caller handles
-    // it, and no failure state is allocated for a request never made.
+    // A Q10 is never sent the Q7 map reads: its dialect cannot answer them,
+    // and a refusal that never succeeds would never stamp the throttle below
+    // either, repeating on every poll.
+    if (this.b01Family(duid) === b01Q7Adapter.B01_FAMILY.Q10) {
+      // A Q10's rooms arrive in the map it pushes (onB01MapFrame). One that
+      // has none yet is asked to push; the answer fills the cache.
+      if (this.getB01RoomCache(duid).length === 0) {
+        await this.requestB01Q10StatusPush(duid, { force: true });
+      }
+      return this.getB01RoomCache(duid);
+    }
     if (this.b01Family(duid) !== b01Q7Adapter.B01_FAMILY.Q7) {
       return this.getB01RoomCache(duid);
     }
@@ -6059,10 +6055,24 @@ class Roborock {
    * @returns {boolean} whether the frame settled a pending request
    */
   onB01MapFrame(duid, rawPayload) {
-    if (this.b01Family(duid) !== b01Q7Adapter.B01_FAMILY.Q7) {
-      this.log.debug(
-        `Ignored a protocol 301 frame from ${this.describeDevice(duid)}: only the Q7 map format is read.`
-      );
+    const family = this.b01Family(duid);
+    if (family === b01Q7Adapter.B01_FAMILY.Q10) {
+      // A Q10 pushes its current map after dpRequestDps; its rooms are read
+      // from it (b01Q10Adapter.parseQ10MapRooms). Trace and record packets
+      // carry no rooms and are not read.
+      try {
+        const packet = b01Q10Adapter.parseQ10MapRooms(rawPayload);
+        if (packet) {
+          void this.noteB01MapRooms(duid, packet.rooms, { announce: true });
+        }
+      } catch (error) {
+        this.log.debug(
+          `A Q10 map packet from ${this.describeDevice(duid)} could not be read: ${error?.message || error}`
+        );
+      }
+      return false;
+    }
+    if (family !== b01Q7Adapter.B01_FAMILY.Q7) {
       return false;
     }
     const pending = this.pendingB01MapRequests?.get(duid);
@@ -6136,14 +6146,22 @@ class Roborock {
    * persisted, and live frames arrive every few seconds while cleaning.
    * @param {string} duid
    * @param {Array<{roomId: number, roomName: string}>} rooms
+   * @param {{announce?: boolean}} [options] log a changed list, as a room
+   *   refresh does (the only source of a Q10's rooms)
    */
-  async noteB01MapRooms(duid, rooms) {
+  async noteB01MapRooms(duid, rooms, options = {}) {
     if (!this._b01RoomRefreshAt) {
       this._b01RoomRefreshAt = new Map();
     }
     this._b01RoomRefreshAt.set(duid, Date.now());
-    if (JSON.stringify(this.getB01RoomCache(duid)) !== JSON.stringify(rooms)) {
-      await this.setB01RoomCache(duid, rooms);
+    if (JSON.stringify(this.getB01RoomCache(duid)) === JSON.stringify(rooms)) {
+      return;
+    }
+    await this.setB01RoomCache(duid, rooms);
+    if (options.announce) {
+      this.log.info(
+        `B01 rooms for ${this.describeDevice(duid)}: ${rooms.length ? rooms.map((room) => `${room.roomName || "?"} (${room.roomId})`).join(", ") : "none reported"}.`
+      );
     }
   }
 
