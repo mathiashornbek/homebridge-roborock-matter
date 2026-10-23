@@ -507,6 +507,8 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
           existingAccessory,
         ]);
+        // Out of our list too, or later lookups by UUID find it first.
+        this.accessories.splice(this.accessories.indexOf(existingAccessory), 1);
       }
     } catch (e) {
       this.log.error("Error loading accessory from cache: " + e);
