@@ -597,6 +597,14 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
         // itself never appears over HomeKit. Everything this plugin registers
         // over HAP is opt-in and synced below: the schedule and Routine
         // switches, the action switches and the state sensors.
+        // A B01 robot registering for the first time waits a few seconds
+        // for its first rooms (discoverMatterVacuum). All robots wait
+        // together, so the longest wait is one robot's, not the sum.
+        await Promise.all(
+          devices.map((device) =>
+            self.roborockAPI.waitForFirstB01Rooms?.(String(device.duid))
+          )
+        );
         for (const device of devices) {
           await self.discoverMatterVacuum(device);
         }
@@ -1736,6 +1744,10 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       // Its clusters are fixed once it registers: a robot whose rooms are
       // about to arrive registers with them (waitForFirstB01Rooms).
       await this.roborockAPI.waitForFirstB01Rooms?.(String(device.duid));
+      if (this.roborockAPI.stopped) {
+        // Homebridge is shutting down; nothing is registered after that.
+        return;
+      }
     }
     const accessory =
       existingAccessory ||

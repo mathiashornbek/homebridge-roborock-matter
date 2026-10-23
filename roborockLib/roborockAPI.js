@@ -6185,6 +6185,16 @@ class Roborock {
    * @returns {Promise<void>}
    */
   waitForFirstB01Rooms(duid) {
+    if (!this._b01FirstRoomWaited) {
+      this._b01FirstRoomWaited = new Map();
+    }
+    // One wait per robot per process: discovery starts every robot's wait
+    // at once, and the robot's own registration then joins it instead of
+    // waiting again.
+    const started = this._b01FirstRoomWaited.get(duid);
+    if (started) {
+      return started;
+    }
     if (
       !this.config.enableMatterServiceArea ||
       !this.isB01Device(duid) ||
@@ -6198,7 +6208,7 @@ class Roborock {
     }
     const waits = this._b01FirstRoomWaits.get(duid) || new Set();
     this._b01FirstRoomWaits.set(duid, waits);
-    return new Promise((resolve) => {
+    const waiting = new Promise((resolve) => {
       const end = () => {
         clearTimeout(timer);
         waits.delete(end);
@@ -6208,6 +6218,8 @@ class Roborock {
       timer.unref?.();
       waits.add(end);
     });
+    this._b01FirstRoomWaited.set(duid, waiting);
+    return waiting;
   }
 
   /**

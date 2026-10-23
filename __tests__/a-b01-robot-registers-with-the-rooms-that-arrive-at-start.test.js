@@ -155,4 +155,36 @@ describe("a B01 robot registers with the rooms that arrive at start", () => {
     await Promise.resolve();
     expect(waited).toBe(false);
   });
+
+  test("a robot's registration joins the wait discovery started, instead of waiting again", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    const first = robots.api.waitForFirstB01Rooms(DUID);
+    await jest.advanceTimersByTimeAsync(8000);
+    await first;
+
+    let waited = true;
+    void robots.api.waitForFirstB01Rooms(DUID).then(() => {
+      waited = false;
+    });
+    await Promise.resolve();
+    expect(waited).toBe(false);
+  });
+
+  test("nothing is registered when Homebridge stops during the wait", async () => {
+    const setup = platformOver(robots.api);
+    platform = setup.platform;
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    const discovering = platform.discoverMatterVacuum({
+      duid: DUID,
+      name: "Kitchen Q10",
+      pv: "B01",
+      online: true,
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    await robots.api.stopService();
+    await jest.advanceTimersByTimeAsync(8000);
+    await discovering;
+
+    expect(setup.registered).toHaveLength(0);
+  });
 });
