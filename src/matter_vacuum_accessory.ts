@@ -531,6 +531,9 @@ function isRoborockMoppingOnTheFloor(state: number | null): boolean {
   );
 }
 
+/** Roborock state 10: a run paused where the robot stands. */
+const ROBOROCK_STATE_PAUSED = 10;
+
 /** `in_cleaning` values that each have their own resume verb. */
 const IN_CLEANING_ZONE = 2;
 const IN_CLEANING_SEGMENT = 3;
@@ -2218,6 +2221,15 @@ export default class RoborockMatterVacuumAccessory {
    * looking at.
    */
   private async startCleaning(surface: string = MATTER_SURFACE): Promise<void> {
+    if (this.isPausedRunTheStartWouldRepeat()) {
+      // An automation or a Shortcut has no Resume; it sets the run mode to
+      // Cleaning, which lands here. Starting again restarted the paused run, or
+      // made a paused room clean a whole-home one (#28). Home Assistant's
+      // start resumes a paused run the same way.
+      await this.resumeCleaning(surface);
+      return;
+    }
+
     const name = this.getVacuumName();
     const duid = this.getDuid();
     const selectedAreas = this.getSelectedServiceAreaSegments();
@@ -2434,38 +2446,70 @@ export default class RoborockMatterVacuumAccessory {
     return "app_start";
   }
 
-  private async resumeCleaning(): Promise<void> {
+  /**
+   * Whether a start would only repeat the run the robot has paused: it is
+   * paused, and no rooms other than the ones that run is cleaning are selected.
+   */
+  private isPausedRunTheStartWouldRepeat(): boolean {
+    if (this.getNumberStatus("state") !== ROBOROCK_STATE_PAUSED) {
+      return false;
+    }
+
+    const selected = this.getSelectedServiceAreaSegments().map(
+      (area) => area.areaId
+    );
+    const running = new Set(
+      this.serviceAreaProgress.map((entry) => entry.areaId)
+    );
+    return (
+      selected.length === 0 ||
+      (selected.length === running.size &&
+        selected.every((areaId) => running.has(areaId)))
+    );
+  }
+
+  private async resumeCleaning(
+    surface: string = MATTER_SURFACE
+  ): Promise<void> {
     // Matter's Resume has always been `app_start`. That is right for a paused
     // FULL clean and wrong for a paused ROOM or ZONE clean, where it starts a
     // new whole-home run instead of continuing the one that was interrupted
     // (#28). See getResumeVerb() for which verb goes with which clean.
     const verb = this.getResumeVerb();
+    const from = surfacePhrase(surface);
 
     this.platform.log.info(
       verb === "resume_segment_clean"
-        ? `Resuming the paused room clean on ${this.getVacuumName()} from Matter.`
+        ? `Resuming the paused room clean on ${this.getVacuumName()} from ${from}.`
         : verb === "resume_zoned_clean"
-          ? `Resuming the paused zone clean on ${this.getVacuumName()} from Matter.`
-          : `Resuming ${this.getVacuumName()} from Matter.`
+          ? `Resuming the paused zone clean on ${this.getVacuumName()} from ${from}.`
+          : `Resuming ${this.getVacuumName()} from ${from}.`
     );
     this.platform.log.debug(
       `Resume for ${this.getVacuumName()}: in_cleaning=${this.getNumberStatus("in_cleaning") ?? "unknown"}, sending ${verb}.`
     );
     const state = cleaningOptimisticState();
     this.setAndScheduleOptimisticState(state, "resume");
-    this.dispatchRoborockMatterCommand("resume", async () => {
-      await this.applyCleanModeBeforeStarting();
+    this.dispatchRoborockMatterCommand(
+      "resume",
+      async () => {
+        await this.applyCleanModeBeforeStarting();
 
-      if (verb === "resume_segment_clean" || verb === "resume_zoned_clean") {
-        // No fallback to `app_start` if this fails. A failed resume leaves a
-        // paused robot paused, and the user presses play again; falling back
-        // would silently produce the exact whole-home run #28 is about.
-        await this.api[verb]!(this.getDuid(), this.getMatterCommandOptions());
-        return;
-      }
+        if (verb === "resume_segment_clean" || verb === "resume_zoned_clean") {
+          // No fallback to `app_start` if this fails. A failed resume leaves a
+          // paused robot paused, and the user presses play again; falling back
+          // would silently produce the exact whole-home run #28 is about.
+          await this.api[verb]!(this.getDuid(), this.getMatterCommandOptions());
+          return;
+        }
 
-      await this.api.app_start(this.getDuid(), this.getMatterCommandOptions());
-    });
+        await this.api.app_start(
+          this.getDuid(),
+          this.getMatterCommandOptions()
+        );
+      },
+      { surface }
+    );
   }
 
   private async returnToDock(surface: string = MATTER_SURFACE): Promise<void> {
