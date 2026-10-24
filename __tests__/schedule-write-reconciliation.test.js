@@ -397,7 +397,7 @@ test.each([true, false])(
     expect(coordinator.accountCoordinator.currentThrottleError()).toBe(
       throttle
     );
-    expect(adapter.log.info).toHaveBeenCalledWith(
+    expect(adapter.log.debug).toHaveBeenCalledWith(
       expect.stringContaining(
         `primaryConfirmed=${applied ? 1 : 0}; retried=0; fallbackSent=0; failed=${applied ? 0 : 1}`
       )

@@ -1581,7 +1581,8 @@ export default class RoborockHapScheduleAccessory {
       }
       return failures;
     } finally {
-      this.platform.log.info(
+      // Every toggle ends here; a failure has its own warning above.
+      this.platform.log.debug(
         `Schedule reconciliation for ${this.robotName}: requested=${requests.length}; ambiguous=${ambiguous.size}; primaryConfirmed=${primaryConfirmed}; retried=${fallback.length}; fallbackSent=${finalCandidates.length}; failed=${failures.size}.`
       );
     }

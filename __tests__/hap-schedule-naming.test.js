@@ -604,7 +604,7 @@ describe("HAP schedule names and stable group identity", () => {
       await Promise.all([first, second]);
 
       expect(platform.roborockAPI.getServerTimers).toHaveBeenCalledTimes(2);
-      expect(platform.log.info).toHaveBeenCalledWith(
+      expect(platform.log.debug).toHaveBeenCalledWith(
         "Schedule reconciliation for Test Vacuum: requested=2; ambiguous=0; primaryConfirmed=1; retried=1; fallbackSent=1; failed=0."
       );
       expect(

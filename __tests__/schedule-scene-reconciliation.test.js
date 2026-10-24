@@ -114,6 +114,8 @@ beforeEach(async () => {
     lastCloudSceneSchedules: [],
     refreshGeneration: 0,
     lastScheduleRefreshAt: 0,
+    lastFailedRefreshAt: 0,
+    nextRefreshAttemptAt: 0,
     consecutiveRefreshFailures: 0,
     scheduleBackoffRandom: () => 0.5,
     accountCoordinator: new ScheduleAccountCoordinator(),
@@ -124,6 +126,8 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  coordinator.disposed = true;
+  if (coordinator.retryReadTimer) clearTimeout(coordinator.retryReadTimer);
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 });

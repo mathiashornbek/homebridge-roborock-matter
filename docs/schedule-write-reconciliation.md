@@ -25,22 +25,22 @@ retried. There is no new setting or forced MQTT reconnect.
 The MQTT tests use the real queue's timeout and the real receiver's refusal
 objects. Scene tests use Roborock's HTTP methods against a local server that
 can apply a PUT and then drop its socket, producing an actual Axios error.
-The source is based directly on v3.39.0 and does not require experimental MQTT
-recovery, breaker suppression, or readiness changes. An optional already-running
-recovery may be awaited; absent recovery hooks and error markers are harmless.
+The code does not depend on the parked MQTT recovery work (#31); its optional
+hooks are absent on 3.40 and harmless.
 
 ## Repeated taps
 
-Consecutive same-state HomeKit writes share the pending write and confirmation
-promise, including while read-back reconciliation is in progress. They do not
-queue another cloud write. An intervening opposite-state request is a new intent
-and retains the existing batching rules. This does not acknowledge early or
-optimistically change the displayed schedule value.
+A same-state write that arrives while an earlier one is still waiting for its
+HomeKit answer (until Roborock accepts the write, or 2.5 s) shares that answer
+and sends nothing. After HomeKit has been answered, read-back continues in the
+background; a further same-state write is a new request and sends the
+assignment again once the running batch ends. An intervening opposite-state
+request is a new intent and keeps the existing batching rules.
 
 An on → off → on sequence while the first on is in flight represents three
 intents. Sharing checks the newest intent, so the final on can send another
-assignment. Persistent switches still wait for confirmation; a failure throws
-`HapStatusError`, preserving v3.39.0's HAP write contract.
+assignment. A failure known before the HomeKit answer throws `HapStatusError`;
+one found by the later read-back turns the switch back, with a warning.
 
 ## Account throttle policy
 
