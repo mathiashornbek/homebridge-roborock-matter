@@ -4306,9 +4306,8 @@ class Roborock {
     const response = await this.api.get(`v2/user/homes/${homeId}`);
     const homedata = response?.data?.result;
     if (!homedata) {
-      throw new Error(
-        `The Roborock cloud returned no home data for home ${homeId}. Keeping the previously cached device list.`
-      );
+      // Both callers say what happens next; this says only what went wrong.
+      throw new Error(`the cloud returned no home data for home ${homeId}`);
     }
     return homedata;
   }
@@ -4569,7 +4568,12 @@ class Roborock {
           await this.handleRejectedSession(rejection);
           return;
         }
-        this.log.error(`Failed to update updateHomeData with error: ${error}`);
+        // Not fatal, and usually the network (a nightly outage reads
+        // "getaddrinfo EAI_AGAIN"): nothing the robots need is lost.
+        const reason = error instanceof Error ? error.message : String(error);
+        this.log.warn(
+          `The robot list could not be refreshed from Roborock's cloud (${reason}). The robots already known keep working; the next refresh tries again.`
+        );
       }
     }
   }
@@ -7197,7 +7201,7 @@ class Roborock {
       }
       if (!this._b01Q7PushNoticed.has(duid)) {
         this._b01Q7PushNoticed.add(duid);
-        this.log.info(
+        this.log.debug(
           `${this.describeDevice(duid)} pushed datapoints ${JSON.stringify(dps)}. The Q7 numbering of pushed datapoints is not documented, so they are not read directly; a status read is taken instead. This is said once per robot.`
         );
       }

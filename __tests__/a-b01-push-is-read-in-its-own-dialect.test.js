@@ -153,12 +153,12 @@ describe("a Q7 push is never read as a classic datapoint", () => {
     expect(sent[0].dps["10000"].method).toBe("prop.get");
   });
 
-  test("the datapoints it pushed are named once per robot", async () => {
+  test("the datapoints it pushed are named once per robot, at debug", async () => {
     robots = await robotsWithInbox();
     await robots.pushes(Q7, { 121: 26 });
     await robots.pushes(Q7, { 121: 5 });
 
-    const lines = robots.log.info.mock.calls
+    const lines = robots.log.debug.mock.calls
       .map(([line]) => String(line))
       .filter((line) => line.includes("pushed datapoint"));
     expect(lines).toHaveLength(1);
