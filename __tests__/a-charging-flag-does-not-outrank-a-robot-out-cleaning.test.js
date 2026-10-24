@@ -257,18 +257,18 @@ describe("charge_status still decides when the robot's state does not", () => {
     expect(vacuum.getHomeKitStateSensorValue("docked")).toBe(true);
   });
 
-  test("a robot driving home is still deferred to the charging flag, so the dock retry stays disarmed", async () => {
-    // State 6 is deliberately NOT in the away-from-dock set: a robot already
-    // returning must not have its dock command re-sent, which the sibling test
-    // in matter-vacuum.test.js pins. Widening the set to "not in the dock"
-    // would read more consistently and would break that, so the transit states
-    // keep deferring to charge_status on purpose.
+  test("a robot driving home is not docked yet, and its dock command is still not re-sent", async () => {
+    // State 6 stays out of the away-from-dock set that arms the dock retry: a
+    // robot already returning must not have its dock command re-sent, which
+    // the sibling test in matter-vacuum.test.js pins. But it is not in the
+    // dock either (#28): robots report charge_status 1 off the dock, and
+    // python-roborock's get_dock_state() calls this state "returning".
     const platform = createPlatform({
       status: { state: 6, battery: 100, charge_status: 1 },
     });
     const { vacuum } = createVacuum(platform);
 
-    expect(vacuum.getHomeKitStateSensorValue("docked")).toBe(true);
+    expect(vacuum.getHomeKitStateSensorValue("docked")).toBe(false);
   });
 });
 

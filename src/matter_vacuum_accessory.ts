@@ -508,6 +508,21 @@ const ROBOROCK_MOPPING_STATE_FIRST = 6301;
 const ROBOROCK_MOPPING_STATE_LAST_ON_THE_FLOOR = 6309;
 const ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER = 6310;
 
+/** Idle (3) and Charger Disconnected (2): stopped, and not on the charger. */
+function isRoborockOnTheFloorAtRest(state: number | null): boolean {
+  return state === 2 || state === 3;
+}
+
+/** Driving to the dock: Returning (6), Docking (15), going to wash the mop. */
+function isRoborockHeadingForTheDock(state: number | null): boolean {
+  return (
+    state === 6 ||
+    state === 15 ||
+    state === 26 ||
+    state === ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER
+  );
+}
+
 function isRoborockMoppingOnTheFloor(state: number | null): boolean {
   return (
     state !== null &&
@@ -5276,6 +5291,9 @@ export default class RoborockMatterVacuumAccessory {
         return RVC_OPERATIONAL_STATE.DOCKED;
       case ROBOROCK_BACK_TO_DOCK_WASHING_DUSTER:
         return RVC_OPERATIONAL_STATE.SEEKING_CHARGER;
+      case 2: // Charger Disconnected
+      case 3: // Idle: charge_status is 1 off the dock too (#28)
+        return RVC_OPERATIONAL_STATE.STOPPED;
       default:
         if (isRoborockMoppingOnTheFloor(state)) {
           return RVC_OPERATIONAL_STATE.RUNNING;
@@ -5694,6 +5712,13 @@ export default class RoborockMatterVacuumAccessory {
    *
    * Reuses that predicate rather than listing the states again: a second
    * hand-written copy of a list is the most repeated defect in this codebase.
+   *
+   * A state that places the robot on the floor without cleaning answers the
+   * question too (#28): a robot that stopped at a pin & go spot reported Idle
+   * with charge_status 1 and read as docked 5 m from its dock. charge_status
+   * is not stale there; robots report 1 off the dock (the a144 sends
+   * `state: 18, charge_status: 1` in one get_status reply), and
+   * python-roborock's get_dock_state() places the robot from the state alone.
    */
   private isRoborockDockedOrCharging(
     roborockState: number | null,
@@ -5703,7 +5728,11 @@ export default class RoborockMatterVacuumAccessory {
       return true;
     }
 
-    if (this.isRoborockActivelyCleaningAwayFromDock(roborockState)) {
+    if (
+      this.isRoborockActivelyCleaningAwayFromDock(roborockState) ||
+      isRoborockOnTheFloorAtRest(roborockState) ||
+      isRoborockHeadingForTheDock(roborockState)
+    ) {
       return false;
     }
 
