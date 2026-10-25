@@ -144,7 +144,10 @@ test.each([
   ["unknown state", { state: 999, battery: 98, charge_status: 1 }, 1],
   ["missing state and charge flag", { battery: 98 }, 0],
   ["missing battery", { state: 2, charge_status: 1 }, 0],
-])("preserves existing battery reporting when %s", (_label, status, expected) => {
-  const { accessory } = createRobot(status);
-  expect(accessory.clusters.powerSource.batChargeState).toBe(expected);
-});
+])(
+  "preserves existing battery reporting when %s",
+  (_label, status, expected) => {
+    const { accessory } = createRobot(status);
+    expect(accessory.clusters.powerSource.batChargeState).toBe(expected);
+  }
+);
