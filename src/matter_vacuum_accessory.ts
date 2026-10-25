@@ -5244,6 +5244,16 @@ export default class RoborockMatterVacuumAccessory {
       return BATTERY_CHARGE_STATE.UNKNOWN;
     }
 
+    // Some robots retain a nonzero charge_status while away from the dock.
+    // Prefer known off-dock states, even at 100%, as the docked sensor does.
+    if (
+      isRoborockOnTheFloorAtRest(state) ||
+      this.isRoborockActivelyCleaningAwayFromDock(state) ||
+      isRoborockHeadingForTheDock(state)
+    ) {
+      return BATTERY_CHARGE_STATE.IS_NOT_CHARGING;
+    }
+
     if (state === 100 || (battery >= 100 && chargeStatus !== 0)) {
       return BATTERY_CHARGE_STATE.IS_AT_FULL_CHARGE;
     }
