@@ -45,13 +45,7 @@ const { CAPTURES } = require("../test-support/a144-vacuum-harness");
 const DUID = "device-restart";
 const WATER_TANK_EMPTY = 68;
 const ERROR = 3;
-// Keep the captured dock fault; add an onboard shortage so BOTH water
-// supplies are empty under the Matter blocking policy. The original capture
-// has shortage 0 and still drives the independent HAP sensor tests.
-const DOCKED_TANK_EMPTY = {
-  ...CAPTURES.run1_1748_dockedBothTanksFlagged.reply[0],
-  water_shortage_status: 1,
-};
+const DOCKED_TANK_EMPTY = CAPTURES.run1_1748_dockedBothTanksFlagged.reply[0];
 
 function createLog() {
   return {

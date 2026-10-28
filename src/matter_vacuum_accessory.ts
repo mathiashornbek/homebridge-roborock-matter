@@ -1372,11 +1372,10 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
-   * Whether a clean-water shortage should block a Matter start. An automatic
-   * refill dock provides a second supply: require BOTH an onboard shortage
-   * and an empty/missing dock reservoir. Either supply can allow the robot
-   * to start its normal wash/refill cycle. A missing reading does not prove
-   * that both supplies are empty.
+   * An onboard shortage alone does not block a Matter start when a recognised
+   * refill dock reports no empty/missing clean-water tank. An explicit dock
+   * tank fault still blocks regardless of the onboard shortage flag. Without
+   * a dock reading, keep the existing tank check, including its unknown state.
    *
    * The HAP water sensor keeps isWaterTankEmpty() so a dock needing attention
    * remains visible even when the Matter tile permits a start.
@@ -1387,13 +1386,17 @@ export default class RoborockMatterVacuumAccessory {
       return this.isWaterTankEmpty();
     }
 
-    const shortage = this.getNumberStatus("water_shortage_status");
-    const dockEmpty =
-      this.getNumberStatus("dock_error_status") ===
-        DOCK_ERROR_CLEAN_WATER_TANK_EMPTY ||
-      this.getDockTankField(DSS_CLEAN_WATER_SHIFT) === DSS_TANK_NEEDS_ATTENTION;
+    const dockError = this.getNumberStatus("dock_error_status");
+    const cleanTank = this.getDockTankField(DSS_CLEAN_WATER_SHIFT);
+    if (
+      (dockError !== null || cleanTank !== null) &&
+      dockError !== DOCK_ERROR_CLEAN_WATER_TANK_EMPTY &&
+      cleanTank !== DSS_TANK_NEEDS_ATTENTION
+    ) {
+      return false;
+    }
 
-    return shortage !== null && shortage !== 0 && dockEmpty;
+    return this.isWaterTankEmpty();
   }
 
   /**
@@ -1469,9 +1472,8 @@ export default class RoborockMatterVacuumAccessory {
    * because 68 is the one code measured rendering on a real tile and because
    * `dock_error_status` describes the dock while `error_code` describes the
    * robot — a docked robot can carry both at once and the tank is the one the
-   * user can act on. Automatic refill docks use the two-supply rule above;
-   * the sensor's maintenance warning alone does not block a Matter start.
-   * Below that comes the robot's own fault.
+   * user can act on. Below that comes the robot's own fault. Only when both
+   * are known and neither is a fault does this return NoError.
    *
    * Returning null rather than NoError for an unknown robot is the 3.12.1
    * lesson applied to a second field: publishing NoError on the robot's behalf
@@ -1591,9 +1593,10 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     if (tankKnown || errorCode === 0) {
-      // No applicable tank or robot fault remains. For refill docks, missing
-      // tank readings do not establish that both supplies are empty. A robot
-      // need not report error_code to clear a known tank warning after a refill.
+      // At least one source affirmatively says it is fine and neither says
+      // otherwise. Requiring both to be known would mean a robot that never
+      // reports `error_code` could never clear a tank warning after a refill,
+      // which is worse than no warning at all.
       //
       // `tankEmpty === true` reaches here only when the run was ruled to use
       // no water above, and then NoError is the affirmative answer rather

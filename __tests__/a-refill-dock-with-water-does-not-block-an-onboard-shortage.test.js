@@ -42,7 +42,7 @@ async function select(robot, mode) {
   await robot.settle();
 }
 
-describe("an automatic refill dock provides a second water supply", () => {
+describe("a refill dock with water permits an onboard shortage", () => {
   test("Uptown's reported shortage does not create a blocking fault at rest", async () => {
     const robot = await uptown();
 
@@ -59,7 +59,7 @@ describe("an automatic refill dock provides a second water supply", () => {
     ["Mop", 1],
     ["Vacuum + Mop", 2],
   ])(
-    "%s is blocked only when both supplies report empty",
+    "%s is blocked whenever the dock tank reports empty",
     async (_name, mode) => {
       const robot = await uptown();
       await select(robot, mode);
@@ -67,7 +67,7 @@ describe("an automatic refill dock provides a second water supply", () => {
       for (const [dockError, shortage, expected] of [
         [0, 0, 0],
         [0, 1, 0],
-        [38, 0, 0],
+        [38, 0, 68],
         [38, 1, 68],
       ]) {
         await robot.localReply({
@@ -82,24 +82,29 @@ describe("an automatic refill dock provides a second water supply", () => {
     }
   );
 
-  test.each([
-    ["dock reservoir", { dock_error_status: 0 }],
-    ["onboard tank", { water_shortage_status: 0 }],
-  ])(
-    "refilling either the %s clears a standing warning immediately",
-    async (_name, refill) => {
-      const empty = { ...UPTOWN, dock_error_status: 38 };
-      const robot = await uptown(empty);
-      expect(fault(robot)).toBe(68);
-      expect(state(robot)).toBe(3);
+  test("refilling the dock clears the warning despite an onboard shortage", async () => {
+    const robot = await uptown({ ...UPTOWN, dock_error_status: 38 });
+    expect(fault(robot)).toBe(68);
+    expect(state(robot)).toBe(3);
 
-      await robot.localReply({ ...empty, ...refill });
+    await robot.localReply(UPTOWN);
 
-      expect(fault(robot)).toBe(0);
-      expect(state(robot)).toBe(66);
-      expect(robot.store.events).toHaveLength(1);
-    }
-  );
+    expect(fault(robot)).toBe(0);
+    expect(state(robot)).toBe(66);
+    expect(robot.store.events).toHaveLength(1);
+  });
+
+  test("clearing the onboard shortage does not clear an empty dock warning", async () => {
+    const empty = { ...UPTOWN, dock_error_status: 38 };
+    const robot = await uptown(empty);
+    expect(fault(robot)).toBe(68);
+
+    await robot.localReply({ ...empty, water_shortage_status: 0 });
+
+    expect(fault(robot)).toBe(68);
+    expect(state(robot)).toBe(3);
+    expect(robot.store.events).toHaveLength(1);
+  });
 
   test.each([2, 3, 6, 7, 8, 9, 15, 16, 20, 45])(
     "dock type %i also permits an onboard shortage when its reservoir is clear",
@@ -113,8 +118,9 @@ describe("an automatic refill dock provides a second water supply", () => {
   test.each([
     ["both clear", 40, 0, 0],
     ["onboard shortage only", 40, 1, 0],
-    ["dock reservoir empty only", 36, 0, 0],
+    ["dock reservoir empty only", 36, 0, 68],
     ["both empty", 36, 1, 68],
+    ["clear zero-valued clean-water field", 32, 1, 0],
   ])(
     "a dock status word distinguishes %s",
     async (_name, dss, shortage, expected) => {
@@ -130,18 +136,81 @@ describe("an automatic refill dock provides a second water supply", () => {
   );
 
   test.each([
-    ["onboard reading", "water_shortage_status"],
-    ["dock reading", "dock_error_status"],
+    ["dock error", { dock_error_status: 38, dss: 40 }],
+    ["dock status word", { dock_error_status: 0, dss: 36 }],
   ])(
-    "a missing %s does not establish that both tanks are empty",
-    async (_name, key) => {
-      const frame = { ...UPTOWN, dock_error_status: 38 };
-      delete frame[key];
-      const robot = await uptown(frame);
-      expect(fault(robot)).toBe(0);
-      expect(robot.store.events).toEqual([]);
+    "an empty-tank %s wins over the other clear dock reading",
+    async (_name, dock) => {
+      const robot = await uptown({
+        ...UPTOWN,
+        ...dock,
+        water_shortage_status: 0,
+      });
+      expect(fault(robot)).toBe(68);
+      expect(state(robot)).toBe(3);
     }
   );
+
+  test.each([
+    ["dock error", { dock_error_status: 38 }],
+    ["dock status word", { dss: 36 }],
+  ])(
+    "an empty-tank %s blocks even without an onboard reading",
+    async (_name, dock) => {
+      const frame = { ...UPTOWN, ...dock };
+      delete frame.water_shortage_status;
+      const robot = await uptown(frame);
+      expect(fault(robot)).toBe(68);
+      expect(state(robot)).toBe(3);
+    }
+  );
+
+  test.each([
+    ["clear", 40, 0],
+    ["empty", 36, 68],
+  ])(
+    "a %s dock status word is sufficient without a dock error reading",
+    async (_name, dss, expected) => {
+      const frame = { ...UPTOWN, dss };
+      delete frame.dock_error_status;
+      const robot = await uptown(frame);
+      expect(fault(robot)).toBe(expected);
+    }
+  );
+
+  test.each([
+    ["present", 1, 68],
+    ["clear", 0, 0],
+  ])(
+    "without a dock reading, an onboard shortage that is %s keeps its warning behavior",
+    async (_name, shortage, expected) => {
+      const frame = { ...UPTOWN, water_shortage_status: shortage };
+      delete frame.dock_error_status;
+      const robot = await uptown(frame);
+      expect(fault(robot)).toBe(expected);
+    }
+  );
+
+  test("a zero dock status word does not suppress an onboard shortage", async () => {
+    const frame = { ...UPTOWN, dss: 0 };
+    delete frame.dock_error_status;
+    const robot = await uptown(frame);
+    expect(fault(robot)).toBe(68);
+  });
+
+  test("an unreported onboard shortage does not clear an empty dock warning", async () => {
+    const robot = await uptown({
+      ...UPTOWN,
+      dock_error_status: 38,
+      water_shortage_status: 0,
+    });
+    expect(fault(robot)).toBe(68);
+
+    await robot.localReply({ battery: 99 });
+
+    expect(fault(robot)).toBe(68);
+    expect(robot.store.events).toHaveLength(1);
+  });
 
   test("a clean dock word clears the warning while onboard shortage remains", async () => {
     const robot = await uptown({ ...UPTOWN, dock_type: 16, dss: 36 });
@@ -153,7 +222,7 @@ describe("an automatic refill dock provides a second water supply", () => {
     expect(state(robot)).toBe(66);
   });
 
-  test("a standing two-tank fault survives sparse battery pushes without repeated events", async () => {
+  test("a standing dock-tank fault survives sparse battery pushes without repeated events", async () => {
     const robot = await uptown({ ...UPTOWN, dock_error_status: 38 });
     await robot.localReply({ battery: 99 });
     for (let i = 0; i < 3; i += 1) {
@@ -177,8 +246,12 @@ describe("an automatic refill dock provides a second water supply", () => {
     expect(robot.store.rejected).toEqual([]);
   });
 
-  test("vacuum-only use remains available even with both tanks empty", async () => {
-    const robot = await uptown({ ...UPTOWN, dock_error_status: 38 });
+  test("vacuum-only use remains available with an empty dock tank", async () => {
+    const robot = await uptown({
+      ...UPTOWN,
+      dock_error_status: 38,
+      water_shortage_status: 0,
+    });
     expect(fault(robot)).toBe(68);
     await select(robot, 0);
     expect(fault(robot)).toBe(0);
@@ -209,7 +282,7 @@ describe("other water sensors and faults retain their meaning", () => {
       dock_error_status: 38,
       water_shortage_status: 0,
     });
-    expect(fault(robot)).toBe(0);
+    expect(fault(robot)).toBe(68);
     expect(robot.vacuum.getHomeKitStateSensorValue("waterTankEmpty")).toBe(
       true
     );

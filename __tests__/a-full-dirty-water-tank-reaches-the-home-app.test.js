@@ -147,15 +147,11 @@ describe("a full dirty-water tank reaches the Home app", () => {
     expect(fault(robot)).toBe(DIRTY_WATER_TANK_FULL);
   });
 
-  test("both clean-water supplies empty outranks the dirty-tank fault", async () => {
+  test("an empty clean tank outranks it: one fault at a time, and 68 is the measured one", async () => {
     const robot = await qrevoS();
 
     // dss 149: clean tank 1 (empty), dirty tank 1 (full).
-    await robot.localReply({
-      ...DOCKED_DIRTY_FULL,
-      dss: 149,
-      water_shortage_status: 1,
-    });
+    await robot.localReply({ ...DOCKED_DIRTY_FULL, dss: 149 });
 
     expect(fault(robot)).toBe(WATER_TANK_EMPTY);
   });
