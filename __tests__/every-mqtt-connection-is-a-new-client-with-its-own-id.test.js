@@ -190,6 +190,7 @@ test("a client let go of cannot emit into the connector", async () => {
 test("3.39.0's guarantees stay: no queued QoS 0 publishes, QoS 0, mqtt.js never reconnects by itself, no removeAllListeners", async () => {
   const connector = await startConnector();
   current().emit("connect", { sessionPresent: false });
+  current().emit("packetreceive", { cmd: "suback", granted: [0] });
   connector.sendMessage("duid", Buffer.from("frame"));
 
   const { options } = current();

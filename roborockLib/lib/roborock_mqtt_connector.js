@@ -12,6 +12,8 @@ const {
   createRefusalError,
 } = require("./describeReplyRefusal");
 
+const { MqttReadiness } = require("./mqttReadiness");
+
 const { MqttSessionDiagnostics } = require("./mqttSessionDiagnostics");
 
 // python-roborock's MQTT reconnect policy (mqtt/roborock_session.py):
@@ -218,6 +220,10 @@ class roborock_mqtt_connector {
     this.robotPresenceByDuid = new Map();
 
     this.sessionDiagnostics = new MqttSessionDiagnostics((snapshot) => {
+      if (!snapshot.connected || snapshot.subscriptionAcknowledged) {
+        this.unsubscribedExpiries = 0;
+      }
+      this.readiness?.changed();
       Promise.resolve(
         this.adapter.setStateAsync?.("MqttSessionDiagnostics", {
           val: JSON.stringify(snapshot),
@@ -225,6 +231,13 @@ class roborock_mqtt_connector {
         })
       ).catch(() => {});
     });
+    this.readiness = new MqttReadiness(
+      () =>
+        this.sessionDiagnostics.connected &&
+        this.sessionDiagnostics.subscriptionAcknowledged,
+      () => this.sessionDiagnostics.generation
+    );
+    this.unsubscribedExpiries = 0;
     this.connected = false;
     // Which MQTT connection is current: a new number on every connect, so a
     // request can tell "the link I went out on is still up" from "a link is
@@ -255,6 +268,7 @@ class roborock_mqtt_connector {
     // kept disconnecting one for the other, both kept reconnecting, and the
     // old one still delivered every frame and was never ended at shutdown.
     this.disconnect();
+    this.readiness.start();
     rriot = userdata.rriot;
 
     endpoint = roborockCrypto
@@ -397,6 +411,7 @@ class roborock_mqtt_connector {
     this.listen("connect", (result) => {
       if (typeof result != "undefined") {
         this.linkId += 1;
+        this.unsubscribedExpiries = 0;
         // python-roborock: the back-off starts over after every connect.
         this.reconnectDelayMs = this.reconnectDelays.initialMs;
         const generation = this.sessionDiagnostics.onConnect();
@@ -932,10 +947,46 @@ class roborock_mqtt_connector {
    *   so the caller can fail the request at once instead of waiting out its
    *   timeout and reading a dead link as a silent robot.
    */
+  isReady() {
+    return !this.readiness.stopped && this.readiness.isReady();
+  }
+
+  waitUntilReady({ timeoutMs = 10000 } = {}) {
+    const connectedAtWait = this.connected;
+    const linkAtWait = this.linkId;
+    return this.readiness.wait(timeoutMs).catch((error) => {
+      // An unsent request is not robot silence. But a connected client whose
+      // reply subscription never succeeds must not stay stuck forever either.
+      if (
+        error.code === "MQTT_READINESS_TIMEOUT" &&
+        connectedAtWait &&
+        linkAtWait === this.linkId &&
+        this.connected &&
+        !this.sessionDiagnostics.subscriptionAcknowledged &&
+        !this.readiness.stopped
+      ) {
+        this.unsubscribedExpiries += 1;
+        if (this.unsubscribedExpiries >= 3) {
+          this.adapter.restartCloudSession?.(
+            `${this.unsubscribedExpiries} requests in a row could not be sent because the connected MQTT session did not acknowledge its reply subscription`
+          );
+        }
+      }
+      throw error;
+    });
+  }
+
   sendMessage(duid, roborockMessage, onNotSent) {
     if (!client) {
       // Shut down between the caller's connection check and this publish.
       onNotSent?.(new Error("The MQTT client is closed"));
+      return;
+    }
+    try {
+      this.readiness.assertReady();
+    } catch (error) {
+      if (!onNotSent) throw error;
+      onNotSent(error);
       return;
     }
     client.publish(
@@ -994,6 +1045,7 @@ class roborock_mqtt_connector {
   disconnect() {
     this.sessionWanted = false;
     this.clearReconnectTimer();
+    this.readiness.stop();
     this.clearInitialConnectTimeout();
     const closing = client;
     client = undefined;
