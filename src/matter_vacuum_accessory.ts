@@ -319,6 +319,19 @@ const ROBOROCK_WATER_BOX_OFF = 200;
 const ROBOROCK_WATER_BOX_MILD = 201;
 
 /**
+ * SmartPlan, the Roborock app's mode where the robot picks suction, water and
+ * mop route per room itself. It is a fan-power value, but choosing it is not
+ * choosing a suction level: `set_custom_mode 110` puts the robot back into
+ * SmartPlan, which overrides the water level sent just before it. Measured on
+ * a Qrevo MaxV (a87, 22 Oct 2026): Vacuum was applied and acknowledged
+ * (water 200, then fan 110), the dock washed the mop two seconds later, and
+ * the robot still reported fan 110 / water 209 / mop route 306 afterwards.
+ * So neither SmartPlan value is ever carried into an explicit clean mode.
+ */
+const ROBOROCK_FAN_POWER_SMART_PLAN = 110;
+const ROBOROCK_WATER_BOX_SMART_PLAN = 209;
+
+/**
  * Floor on how many DISTINCT live-room observations a room needs before the
  * plugin will call it visited. This is only a floor: the dwell below is what
  * actually separates cleaning a room from crossing it. See
@@ -3786,22 +3799,39 @@ export default class RoborockMatterVacuumAccessory {
 
   private rememberCurrentRoborockCleanModeSettings(): void {
     const fanPower = this.getNumberStatus("fan_power");
-    if (fanPower !== null && fanPower !== ROBOROCK_FAN_POWER_OFF) {
+    if (this.isManualVacuumFanPower(fanPower)) {
       this.lastVacuumFanPower = fanPower;
     }
 
     const waterBoxMode = this.getWaterBoxModeStatus();
-    if (waterBoxMode !== null && waterBoxMode !== ROBOROCK_WATER_BOX_OFF) {
+    if (this.isManualMopWaterBoxMode(waterBoxMode)) {
       this.lastWaterBoxMode = waterBoxMode;
     }
   }
 
+  /** A suction level that can be re-sent as-is: not off, not SmartPlan. */
+  private isManualVacuumFanPower(fanPower: number | null): fanPower is number {
+    return (
+      fanPower !== null &&
+      fanPower !== ROBOROCK_FAN_POWER_OFF &&
+      fanPower !== ROBOROCK_FAN_POWER_SMART_PLAN
+    );
+  }
+
+  /** A water level that can be re-sent as-is: not off, not SmartPlan. */
+  private isManualMopWaterBoxMode(
+    waterBoxMode: number | null
+  ): waterBoxMode is number {
+    return (
+      waterBoxMode !== null &&
+      waterBoxMode !== ROBOROCK_WATER_BOX_OFF &&
+      waterBoxMode !== ROBOROCK_WATER_BOX_SMART_PLAN
+    );
+  }
+
   private getPreferredVacuumFanPower(): number {
     const currentFanPower = this.getNumberStatus("fan_power");
-    if (
-      currentFanPower !== null &&
-      currentFanPower !== ROBOROCK_FAN_POWER_OFF
-    ) {
+    if (this.isManualVacuumFanPower(currentFanPower)) {
       this.lastVacuumFanPower = currentFanPower;
       return currentFanPower;
     }
@@ -3824,10 +3854,7 @@ export default class RoborockMatterVacuumAccessory {
 
   private getPreferredWaterBoxMode(): number {
     const currentWaterBoxMode = this.getWaterBoxModeStatus();
-    if (
-      currentWaterBoxMode !== null &&
-      currentWaterBoxMode !== ROBOROCK_WATER_BOX_OFF
-    ) {
+    if (this.isManualMopWaterBoxMode(currentWaterBoxMode)) {
       this.lastWaterBoxMode = currentWaterBoxMode;
       return currentWaterBoxMode;
     }
