@@ -198,6 +198,7 @@ function describeCloudSilence(adapter, duid, receiptsAtSend) {
 /**
  * @typedef {Object} MqttConnector
  * @property {import("./mqttSessionDiagnostics").MqttSessionDiagnostics} [sessionDiagnostics]
+ * @property {{sendPaused: boolean, observeTimeout: (observation: any) => void} | null} [recovery]
  * @property {number} [linkId] which connection is current
  * @property {(options?: {timeoutMs?: number}) => Promise<number>} [waitUntilReady]
  * @property {() => boolean} [isReady]
@@ -609,12 +610,32 @@ class messageQueueHandler {
       false,
       b01Q10Dps ? { b01Q10Dps } : {}
     );
-    const roborockMessage = await this.adapter.message.buildRoborockMessage(
+    let roborockMessage = await this.adapter.message.buildRoborockMessage(
       duid,
       protocol,
       timestamp,
       payload
     );
+
+    if (
+      roborockMessage &&
+      useCloudConnection &&
+      this.adapter.rr_mqtt_connector.recovery &&
+      !this.adapter.rr_mqtt_connector.isReady?.()
+    ) {
+      const remaining = deadline === undefined ? 10000 : deadline - Date.now();
+      if (remaining <= 0) throw budgetExpired();
+      await this.adapter.rr_mqtt_connector.waitUntilReady?.({
+        timeoutMs: Math.min(10000, remaining),
+      });
+      mqttConnectionState = this.adapter.rr_mqtt_connector.isConnected();
+      roborockMessage = await this.adapter.message.buildRoborockMessage(
+        duid,
+        protocol,
+        Math.floor(Date.now() / 1000),
+        payload
+      );
+    }
 
     if (useCloudConnection && deadline !== undefined) {
       const remaining = deadline - Date.now();
@@ -981,6 +1002,7 @@ class messageQueueHandler {
         }
         this.adapter.noteTransportOutcome?.(duid, "cloud", "timeout");
         reject(error);
+        this.adapter.rr_mqtt_connector.recovery?.observeTimeout(sessionHealth);
       };
 
       // `secure` travels with the entry so the MQTT receiver can tell a

@@ -363,6 +363,7 @@ test("verification does not adopt a read started before the write completed", as
 test("verification waits for an optional existing recovery without starting one", async () => {
   let finishRecovery;
   connector.recovery = {
+    stop: jest.fn(),
     inFlight: new Promise((resolve) => {
       finishRecovery = resolve;
     }),
