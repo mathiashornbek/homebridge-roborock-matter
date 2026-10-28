@@ -418,6 +418,17 @@ const DSS_TANK_NEEDS_ATTENTION = 1;
 const DOCK_TYPES_WITHOUT_TANKS: ReadonlySet<number> = new Set([0, 1, 5]);
 
 /**
+ * Known v1 wash-and-fill docks, from python-roborock's RoborockDockTypeCode
+ * and is_wash_n_fill_dock. Unknown codes must not grant refill capability.
+ * This is a water-supply classification, not a grant of dock commands.
+ */
+const DOCK_TYPES_WITH_AUTOMATIC_REFILL: ReadonlySet<number> = new Set([
+  2, 3, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+  49,
+]);
+
+/**
  * The Matter cluster whose writes have to be ordered by hand. See
  * writeOperationalStateCluster().
  */
@@ -1361,6 +1372,31 @@ export default class RoborockMatterVacuumAccessory {
   }
 
   /**
+   * Whether a clean-water shortage should block a Matter start. An automatic
+   * refill dock provides a second supply: require BOTH an onboard shortage
+   * and an empty/missing dock reservoir. Either supply can allow the robot
+   * to start its normal wash/refill cycle. A missing reading does not prove
+   * that both supplies are empty.
+   *
+   * The HAP water sensor keeps isWaterTankEmpty() so a dock needing attention
+   * remains visible even when the Matter tile permits a start.
+   */
+  private isMatterWaterSupplyEmpty(): boolean | null {
+    const dockType = this.getNumberStatus("dock_type");
+    if (dockType === null || !DOCK_TYPES_WITH_AUTOMATIC_REFILL.has(dockType)) {
+      return this.isWaterTankEmpty();
+    }
+
+    const shortage = this.getNumberStatus("water_shortage_status");
+    const dockEmpty =
+      this.getNumberStatus("dock_error_status") ===
+        DOCK_ERROR_CLEAN_WATER_TANK_EMPTY ||
+      this.getDockTankField(DSS_CLEAN_WATER_SHIFT) === DSS_TANK_NEEDS_ATTENTION;
+
+    return shortage !== null && shortage !== 0 && dockEmpty;
+  }
+
+  /**
    * One 2-bit tank field out of the dock's `dss` word (python-roborock
    * `v1_containers.py`: clean water at bit 2, dirty water at 4, cleaning fluid
    * at 10). 1 means the tank needs attention — empty, full or not fitted,
@@ -1433,15 +1469,16 @@ export default class RoborockMatterVacuumAccessory {
    * because 68 is the one code measured rendering on a real tile and because
    * `dock_error_status` describes the dock while `error_code` describes the
    * robot — a docked robot can carry both at once and the tank is the one the
-   * user can act on. Below that comes the robot's own fault. Only when both
-   * are known and neither is a fault does this return NoError.
+   * user can act on. Automatic refill docks use the two-supply rule above;
+   * the sensor's maintenance warning alone does not block a Matter start.
+   * Below that comes the robot's own fault.
    *
    * Returning null rather than NoError for an unknown robot is the 3.12.1
    * lesson applied to a second field: publishing NoError on the robot's behalf
    * would clear a warning nobody has contradicted.
    */
   private getMatterFault(): { id: number; text: string } | null {
-    const tankEmpty = this.isWaterTankEmpty();
+    const tankEmpty = this.isMatterWaterSupplyEmpty();
     if (tankEmpty === true && !this.isVacuumOnlyModeChosen()) {
       return {
         id: RVC_OPERATIONAL_ERROR.WATER_TANK_EMPTY,
@@ -1554,10 +1591,9 @@ export default class RoborockMatterVacuumAccessory {
     }
 
     if (tankKnown || errorCode === 0) {
-      // At least one source affirmatively says it is fine and neither says
-      // otherwise. Requiring both to be known would mean a robot that never
-      // reports `error_code` could never clear a tank warning after a refill,
-      // which is worse than no warning at all.
+      // No applicable tank or robot fault remains. For refill docks, missing
+      // tank readings do not establish that both supplies are empty. A robot
+      // need not report error_code to clear a known tank warning after a refill.
       //
       // `tankEmpty === true` reaches here only when the run was ruled to use
       // no water above, and then NoError is the affirmative answer rather

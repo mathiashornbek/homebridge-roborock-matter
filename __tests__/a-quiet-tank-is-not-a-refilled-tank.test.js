@@ -1,7 +1,7 @@
 "use strict";
 
 // Why the live cache keeps ONE freshness stamp (3.35.0 tried one per field and
-// review caught this). Real inputs only: DSimeone1989's a144
+// review caught this). Based on DSimeone1989's a144
 // replies and dps pushes from test-support/issue-22-a144-captures.json
 // (RM_log_without_both.txt / RM_log_without_cloud_only.txt, 30 Sept).
 //
@@ -133,8 +133,15 @@ test("battery pushes while docked do not withdraw, then re-raise, the tank fault
     expect(reply.error_code).toBe(0);
   }
 
+  // The original capture has shortage 0. Assert an onboard shortage in this
+  // lifecycle test so both supplies are empty under the Matter blocking rule.
   const docked = () =>
-    rocky.push(JSON.parse(JSON.stringify(DOCKED_TANK_EMPTY_1843)));
+    rocky.push(
+      DOCKED_TANK_EMPTY_1843.map((frame) => ({
+        ...JSON.parse(JSON.stringify(frame)),
+        water_shortage_status: 1,
+      }))
+    );
   expect(DOCKED_TANK_EMPTY_1843[0]).toMatchObject({
     state: 8,
     dock_error_status: 38,

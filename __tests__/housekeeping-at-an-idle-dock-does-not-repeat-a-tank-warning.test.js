@@ -36,7 +36,13 @@ const RUNNING = 1;
 const WATER_TANK_EMPTY = 68;
 const NO_ERROR = 0;
 
-const DOCKED_TANK_EMPTY = CAPTURES.run1_1748_dockedBothTanksFlagged.reply[0];
+// Keep the captured dock fault; add an onboard shortage so BOTH water
+// supplies are empty under the Matter blocking policy. The original capture
+// has shortage 0 and still drives the independent HAP sensor tests.
+const DOCKED_TANK_EMPTY = {
+  ...CAPTURES.run1_1748_dockedBothTanksFlagged.reply[0],
+  water_shortage_status: 1,
+};
 const at = (state, extra = {}) => ({ ...DOCKED_TANK_EMPTY, state, ...extra });
 
 async function dockedWithEmptyTank() {
