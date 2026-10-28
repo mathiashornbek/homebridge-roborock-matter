@@ -147,7 +147,7 @@
       },
       "enableHomeKitActionSwitches": {
         "title": "Add Home App Switches for Start, Dock, Empty Bin, Pause and Find",
-        "description": "Publishes one extra HomeKit switch per robot per action, so Apple Home automations and Shortcuts can send a command that Apple does not offer for a Matter vacuum. Measured in issue #3: Apple Home has no \"send the vacuum to its dock\" automation action for a Matter vacuum, and a plain switch is an automation action everywhere. Each switch is momentary: it turns itself off again about a second after it is pressed. Off by default, because turning it on adds accessories to your Home app. IMPORTANT \u2014 THESE NEED THEIR OWN PAIRING: the robot reaches Apple Home over Matter, but the switches are HomeKit accessories on this plugin's Homebridge child bridge, which is paired separately. Go to Plugins -> homebridge-roborock-matter -> the three-dot menu -> Child Bridge Config, make sure Enable HAP is ON (on a Matter-only setup it is often off, and until it is on no QR code will work), restart, then press Connect to HomeKit on that same screen and scan THAT QR code. It is not the main Homebridge QR code, and not the robot's Matter pairing code.",
+        "description": "Publishes one extra HomeKit switch per robot per action, so Apple Home automations and Shortcuts can send a command that Apple does not offer for a Matter vacuum. Measured in issue #3: Apple Home has no \"send the vacuum to its dock\" automation action for a Matter vacuum, and a plain switch is an automation action everywhere. Each switch is momentary: it turns itself off again about a second after it is pressed. Off by default, because turning it on adds accessories to your Home app. IMPORTANT — THESE NEED THEIR OWN PAIRING: the robot reaches Apple Home over Matter, but the switches are HomeKit accessories on this plugin's Homebridge child bridge, which is paired separately. Go to Plugins -> homebridge-roborock-matter -> the three-dot menu -> Child Bridge Config, make sure Enable HAP is ON (on a Matter-only setup it is often off, and until it is on no QR code will work), restart, then press Connect to HomeKit on that same screen and scan THAT QR code. It is not the main Homebridge QR code, and not the robot's Matter pairing code.",
         "type": "boolean",
         "default": false
       },
@@ -250,6 +250,18 @@
       "preferCloudForMatterCommands": {
         "title": "Prefer Roborock Cloud for Matter Commands",
         "description": "Sends Matter vacuum commands through the Roborock cloud when cloud transport is connected. This can avoid local LAN command timeouts on some models, such as S8. Status reporting is unaffected.",
+        "type": "boolean",
+        "default": false
+      },
+      "enableMqttSessionRecovery": {
+        "title": "Enable experimental MQTT session recovery",
+        "description": "Adds correlated-silence recovery and bounded session recreation. Off by default. Commands are not replayed. Restart the child bridge after changing this setting.",
+        "type": "boolean",
+        "default": false
+      },
+      "enableMqttPreventiveRefresh": {
+        "title": "Enable preventive MQTT refresh",
+        "description": "Refreshes the MQTT session after four hours when idle. Requires experimental MQTT session recovery. Off by default. Restart the child bridge after changing this setting.",
         "type": "boolean",
         "default": false
       }

@@ -85,6 +85,8 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableMatterDockPhases?: boolean;
   matterChargedBatteryThreshold?: number;
   cloudOnlyMode?: boolean;
+  enableMqttSessionRecovery?: boolean;
+  enableMqttPreventiveRefresh?: boolean;
   preferCloudForMatterCommands?: boolean;
   enableHomeKitActionSwitches?: boolean;
   homeKitActionSwitches?: string[];

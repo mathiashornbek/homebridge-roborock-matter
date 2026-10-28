@@ -44,7 +44,7 @@ const fakeMqttModule = {
       on: (/** @type {string} */ event, /** @type {Function} */ handler) => {
         broker.handlers.set(event, handler);
       },
-      subscribe: jest.fn(),
+      subscribe: jest.fn((topic, callback) => callback(null, [{ qos: 0 }])),
       publish: jest.fn((topic, message, options, callback) => {
         broker.published.push({ topic, message });
         callback?.();
@@ -211,8 +211,9 @@ async function createB01Robots({ robots, config = {} }) {
   await api.rr_mqtt_connector.initUser({
     rriot: { u: "user", k: "key", s: "secret", r: { m: "mqtts://broker" } },
   });
+  await api.rr_mqtt_connector.initMQTT_Subscribe();
   await api.rr_mqtt_connector.initMQTT_Message();
-  api.rr_mqtt_connector.connected = true;
+  broker.handlers.get("connect")({ sessionPresent: false });
 
   /** What the plugin published to one robot, decoded with its own decoder. */
   function sentTo(/** @type {string} */ duid) {
