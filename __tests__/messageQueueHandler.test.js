@@ -116,24 +116,37 @@ describe("messageQueueHandler transport selection", () => {
   });
 
   test("uses per-request timeout overrides when sending a request", async () => {
-    const adapter = createAdapter({
-      setTimeout: jest.fn((callback, timeout) => setTimeout(callback, timeout)),
-    });
-    adapter.rr_mqtt_connector.sendMessage.mockImplementation(() => {
-      const pending = adapter.pendingRequests.get(42);
-      adapter.clearTimeout(pending.timeout);
-      adapter.pendingRequests.delete(42);
-      pending.resolve(["ok"]);
-    });
+    // Assert the override without consuming a millisecond of wall-clock time.
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const adapter = createAdapter({
+        setTimeout: jest.fn((callback, timeout) =>
+          setTimeout(callback, timeout)
+        ),
+      });
+      adapter.rr_mqtt_connector.sendMessage.mockImplementation(() => {
+        queueMicrotask(() => {
+          const pending = adapter.pendingRequests.get(42);
+          adapter.clearTimeout(pending.timeout);
+          adapter.pendingRequests.delete(42);
+          pending.resolve(["ok"]);
+        });
+      });
 
-    const handler = new messageQueueHandler(adapter);
-    await expect(
-      handler.sendRequest("device-1", "app_start", [], false, false, {
-        requestTimeoutMs: 2000,
-      })
-    ).resolves.toEqual(["ok"]);
+      const handler = new messageQueueHandler(adapter);
+      await expect(
+        handler.sendRequest("device-1", "app_start", [], false, false, {
+          requestTimeoutMs: 2000,
+        })
+      ).resolves.toEqual(["ok"]);
 
-    expect(adapter.setTimeout).toHaveBeenCalledWith(expect.any(Function), 2000);
+      expect(adapter.setTimeout).toHaveBeenCalledWith(
+        expect.any(Function),
+        2000
+      );
+    } finally {
+      now.mockRestore();
+    }
   });
 
   test("attempts a local reconnect for preferred-local commands", async () => {
