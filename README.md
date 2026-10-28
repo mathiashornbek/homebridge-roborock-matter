@@ -35,7 +35,7 @@ Sign in with the account you already use in the Roborock app. That is the whole 
 - 📍 **See where it is cleaning, live.** The Home app says _"Cleaning — Kitchen"_ and follows the robot from room to room, even for cleans started in the Roborock app or on the robot itself.
 - 🧭 **One tidy tile per robot.** No fake fans or helper accessories. Your rooms keep the names you gave them in the Roborock app.
 - ⚡ **Fast and dependable.** Commands go straight to the robot on your own network when they can, with the Roborock cloud as automatic backup.
-- 🛡️ **Verified by Homebridge.** Reviewed by the Homebridge team, 2600 automated tests, no analytics, and it keeps running when the Wi-Fi or the Roborock cloud has a bad day.
+- 🛡️ **Verified by Homebridge.** Reviewed by the Homebridge team, 2630 automated tests, no analytics, and it keeps running when the Wi-Fi or the Roborock cloud has a bad day.
 
 ## What you can do
 
@@ -149,7 +149,7 @@ If the plugin makes your home a little smarter, a small donation via [PayPal](ht
 
 ## Contributing
 
-Model reports, diagnostics reports and pull requests are welcome. The code has 2600 tests, strict TypeScript and CI on Node 22 and 24 with Homebridge 1.11 and 2.x; run `npm test` before you push. Every change is described in the [changelog](./CHANGELOG.md).
+Model reports, diagnostics reports and pull requests are welcome. The code has 2630 tests, strict TypeScript and CI on Node 22 and 24 with Homebridge 1.11 and 2.x; run `npm test` before you push. Every change is described in the [changelog](./CHANGELOG.md).
 
 ## Attribution
 

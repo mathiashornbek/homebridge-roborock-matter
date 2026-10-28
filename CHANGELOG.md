@@ -2,6 +2,14 @@
 
 Entries before 3.39.0 are short summaries. The full notes for every release are on the [GitHub releases page](https://github.com/mathiashornbek/homebridge-roborock-matter/releases) and in the git history of this file.
 
+## 3.40.2
+
+**A robot away from its dock no longer tells Apple Home that its battery is charging.**
+
+- **Battery charge state** ([#47](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/47), @pponce). An S7 MaxV asleep off its dock reported `charge_status` 1, and Apple Home showed "Charging: Yes". The battery now follows the same rule 3.40.1 gave the Docked sensor: a robot that is idle, sleeping, paused, cleaning or on its way home is not charging, even at 100 %. Charging, full and dock-maintenance states are unchanged.
+
+2,630 tests. 19 of the 30 new tests fail on 3.40.1.
+
 ## 3.40.1
 
 **A robot that stops away from its dock no longer reads as docked, a start from an automation resumes a paused clean, and three contributions from @pponce are in.**
