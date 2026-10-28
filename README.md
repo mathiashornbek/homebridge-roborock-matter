@@ -103,25 +103,26 @@ It is **not the main Homebridge QR code** on the status page, and **not the robo
 
 Everything can be set on the plugin's settings page. The most useful options:
 
-| Option                                  | Default      | What it does                                                                                      |
-| --------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------- |
-| `enableMatterServiceArea`               | `true`       | Pick rooms in Apple Home                                                                          |
-| `enableLiveRoomTracking`                | `true`       | Show the room the robot is in right now                                                           |
-| `enableMatterCleanMode`                 | `true`       | Vacuum / Mop / Vacuum + Mop                                                                       |
-| `enableFanPowerCleanModes`              | `true`       | Suction levels in the mode list                                                                   |
-| `enableMatterExtendedOperationalStates` | `true`       | Show returning, emptying the bin and washing the mop                                              |
-| `enableMatterChargingDockedStates`      | `true`       | Say Charging or Docked instead of Ready on the dock                                               |
-| `enableMatterFaultReporting`            | `true`       | Show a robot that has stopped with a problem as Error ([details](#why-the-robot-needs-attention)) |
-| `enableMatterTankFaultReporting`        | `true`       | Say what the problem is, such as an empty water tank                                              |
-| `enableHomeKitActionSwitches`           | `false`      | Add the switches                                                                                  |
-| `homeKitActionSwitches`                 | `["dock"]`   | Which switches: `clean`, `dock`, `empty`, `pause`, `locate`                                       |
-| `enableHomeKitStateSensors`             | `false`      | Add the sensors                                                                                   |
-| `homeKitStateSensors`                   | `["docked"]` | Which sensors: `docked`, `cleaning`, `waterTankEmpty`, `dirtyWaterTankFull`, `cleaningFluidEmpty` |
-| `enableHomeKitScheduleSwitches`         | `false`      | Add the schedule switches                                                                         |
-| `enableHomeKitRoutineSwitches`          | `false`      | Add the Routine switches                                                                          |
-| `cloudOnlyMode`                         | `false`      | Use only the Roborock cloud, never your local network                                             |
-| `skipDevices`                           |              | Robots the plugin should leave alone                                                              |
-| `transientWarningThrottleHours`         | `1`          | How often a recurring connection warning may repeat (0 = debug log only)                          |
+| Option                                  | Default      | What it does                                                                                                                                         |
+| --------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enableMatterServiceArea`               | `true`       | Pick rooms in Apple Home                                                                                                                             |
+| `enableLiveRoomTracking`                | `true`       | Show the room the robot is in right now                                                                                                              |
+| `enableMatterCleanMode`                 | `true`       | Vacuum / Mop / Vacuum + Mop                                                                                                                          |
+| `enableFanPowerCleanModes`              | `true`       | Suction levels in the mode list                                                                                                                      |
+| `enableMatterExtendedOperationalStates` | `true`       | Show returning, emptying the bin and washing the mop                                                                                                 |
+| `enableMatterChargingDockedStates`      | `true`       | Say Charging or Docked instead of Ready on the dock                                                                                                  |
+| `enableMatterFaultReporting`            | `true`       | Show a robot that has stopped with a problem as Error ([details](#why-the-robot-needs-attention))                                                    |
+| `enableMatterTankFaultReporting`        | `true`       | Say what the problem is, such as an empty water tank                                                                                                 |
+| `enableHomeKitActionSwitches`           | `false`      | Add the switches                                                                                                                                     |
+| `homeKitActionSwitches`                 | `["dock"]`   | Which switches: `clean`, `dock`, `empty`, `pause`, `locate`                                                                                          |
+| `enableHomeKitStateSensors`             | `false`      | Add the sensors                                                                                                                                      |
+| `homeKitStateSensors`                   | `["docked"]` | Which sensors: `docked`, `cleaning`, `waterTankEmpty`, `dirtyWaterTankFull`, `cleaningFluidEmpty`                                                    |
+| `enableHomeKitScheduleSwitches`         | `false`      | Add the schedule switches                                                                                                                            |
+| `enableHomeKitRoutineSwitches`          | `false`      | Add the Routine switches                                                                                                                             |
+| `cloudOnlyMode`                         | `false`      | Use only the Roborock cloud, never your local network                                                                                                |
+| `enableLocalServerFastRefresh`          | `false`      | Experimental faster status, live maps and device settings for a self-hosted server ([intervals and test guide](./docs/local-server-fast-refresh.md)) |
+| `skipDevices`                           |              | Robots the plugin should leave alone                                                                                                                 |
+| `transientWarningThrottleHours`         | `1`          | How often a recurring connection warning may repeat (0 = debug log only)                                                                             |
 
 > ⚠️ Options that change what a robot can do in Apple Home (modes, rooms, states) need the robot removed from Apple Home and added again. **Before you turn suction levels off, select Vacuum, Mop or Vacuum + Mop on the tile**, or Matter refuses to bring the robot back. [The details](./docs/matter-clean-mode-shrink-issue-draft.md).
 
