@@ -19,11 +19,7 @@ import { HAP_PLUGIN_IDENTIFIER, PLATFORM_NAME } from "./settings";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const VERIFY_DELAY_MS = 3000;
-// How long a schedule switch's HomeKit write may take to answer. hap-nodejs
-// logs "slow to respond" at 3 s (Accessory.TIMEOUT_WARNING) and answers the
-// controller OPERATION_TIMED_OUT at 9 s, and the write with its verification
-// takes 4 s at the very least. So the write answers when Roborock has
-// accepted it, or at this budget, and verification finishes behind it.
+// Preserve upstream's short refusal window before accepting a provisional state.
 const SCHEDULE_WRITE_ANSWER_BUDGET_MS = 2500;
 const WRITE_SUPPRESSION_MS = 5000;
 // WHY FIVE MINUTES, IN THE AUTHOR'S OWN WORDS. Recorded here rather than left
@@ -382,7 +378,13 @@ interface ScheduleWriteRequest {
   onRefused?: (error: unknown) => void;
 }
 
+interface ScheduleDisplayState {
+  confirmed: boolean;
+  pending?: { enabled: boolean; startedAt: number; outcomeUnknown?: boolean };
+}
+
 export interface HapScheduleContext {
+  scheduleDisplayStates?: Record<string, ScheduleDisplayState>;
   kind: typeof HAP_EXTENSION_KIND;
   extension: typeof HAP_SCHEDULE_EXTENSION;
   duid: string;
@@ -574,6 +576,7 @@ export default class RoborockHapScheduleAccessory {
       () => this.accountCoordinator.recordAvoided("coalesced")
     );
     accessory.context = {
+      ...accessory.context,
       kind: HAP_EXTENSION_KIND,
       extension: HAP_SCHEDULE_EXTENSION,
       duid,
@@ -588,6 +591,7 @@ export default class RoborockHapScheduleAccessory {
     this.managerAccessory.displayName = displayName;
 
     this.managerAccessory.context = {
+      ...this.managerAccessory.context,
       kind: HAP_EXTENSION_KIND,
       extension: HAP_SCHEDULE_EXTENSION,
       duid: this.duid,
@@ -777,7 +781,7 @@ export default class RoborockHapScheduleAccessory {
       return false;
     }
 
-    this.sync(restored);
+    this.sync(restored, []);
 
     this.platform.log.debug(
       `Schedule restoration for ${this.vacuumName}: ` +
@@ -809,9 +813,14 @@ export default class RoborockHapScheduleAccessory {
 
       seen.add(scheduleId);
 
-      const enabled = Boolean(
-        service.getCharacteristic(this.platform.Characteristic.On).value
-      );
+      const saved =
+        this.managerAccessory.context.scheduleDisplayStates?.[scheduleId];
+      const enabled =
+        typeof saved?.confirmed === "boolean"
+          ? saved.confirmed
+          : Boolean(
+              service.getCharacteristic(this.platform.Characteristic.On).value
+            );
 
       if (isCloudSceneScheduleId(scheduleId)) {
         // A cloud scene's switch remembers its Routine's name in the service
@@ -965,7 +974,7 @@ export default class RoborockHapScheduleAccessory {
       : undefined;
   }
 
-  private async refreshDetailed(
+  async refreshDetailed(
     minimumRefreshStartedAt = 0,
     accountCoordinatorHeld = false,
     forceFresh = false
@@ -1188,7 +1197,14 @@ export default class RoborockHapScheduleAccessory {
           "."
       );
 
-      this.sync(merged);
+      this.sync(merged, [
+        ...(readings.timers.state === "read" && timerSchedules.ok
+          ? ["serverTimer" as const]
+          : []),
+        ...(readings.scenes.state === "read" && sceneSchedules.ok
+          ? ["cloudScene" as const]
+          : []),
+      ]);
 
       if (readings.scenes.state === "read") {
         this.syncRoutines(readings.scenes.value);
@@ -1487,12 +1503,28 @@ export default class RoborockHapScheduleAccessory {
           primaryConfirmed++;
           failures.delete(request.scheduleId);
         } else if (throttle !== undefined) {
-          failures.set(request.scheduleId, throttle);
+          failures.set(
+            request.scheduleId,
+            verified(verification, request)
+              ? throttle
+              : Object.assign(
+                  new Error(
+                    "Schedule verification was throttled; outcome unknown"
+                  ),
+                  {
+                    code: "SCHEDULE_OUTCOME_UNKNOWN",
+                    cause: throttle,
+                  }
+                )
+          );
         } else if (!verified(verification, request)) {
           failures.set(
             request.scheduleId,
-            new Error(
-              `Fresh schedule verification failed for ${request.scheduleId}; no retry was sent`
+            Object.assign(
+              new Error(
+                `Fresh schedule verification failed for ${request.scheduleId}; outcome unknown; no retry was sent`
+              ),
+              { code: "SCHEDULE_OUTCOME_UNKNOWN" }
             )
           );
         } else if (
@@ -1572,8 +1604,15 @@ export default class RoborockHapScheduleAccessory {
           } else {
             failures.set(
               request.scheduleId,
-              new Error(
-                `Roborock did not freshly confirm schedule ${request.scheduleId}; no further retry was sent`
+              Object.assign(
+                new Error(
+                  `Roborock did not freshly confirm schedule ${request.scheduleId}; no further retry was sent`
+                ),
+                {
+                  code: verified(finalVerification, request)
+                    ? "SCHEDULE_NOT_CONFIRMED"
+                    : "SCHEDULE_OUTCOME_UNKNOWN",
+                }
               )
             );
           }
@@ -1923,7 +1962,18 @@ export default class RoborockHapScheduleAccessory {
     this.routineAccessory = undefined;
   }
 
-  private sync(schedules: RoborockSchedule[]): void {
+  scheduleRobotLabel(): string {
+    return (
+      this.vacuumName ||
+      this.platform.roborockAPI?.getVacuumDeviceInfo(this.duid, "name") ||
+      this.duid
+    );
+  }
+
+  private sync(
+    schedules: RoborockSchedule[],
+    verifiedSources?: ScheduleSource[]
+  ): void {
     if (this.exposeSchedules === false) {
       // Routines only: the reading is still applied to the routine
       // switches by the caller, but no schedule switch may exist.
@@ -1961,10 +2011,13 @@ export default class RoborockHapScheduleAccessory {
               "Roborock Vacuum",
               `Schedule ${++timerOrdinal}`
             );
+      const sourceVerified =
+        verifiedSources === undefined ||
+        verifiedSources.includes(schedule.source ?? "serverTimer");
       const existing = this.scheduleAccessories.get(schedule.id);
 
       if (existing) {
-        existing.updateIdentity(displayName, schedule);
+        existing.updateIdentity(displayName, schedule, sourceVerified);
         continue;
       }
 
@@ -1976,7 +2029,7 @@ export default class RoborockHapScheduleAccessory {
         schedule.id
       );
 
-      child.initialize(displayName, schedule);
+      child.initialize(displayName, schedule, sourceVerified);
       this.scheduleAccessories.set(schedule.id, child);
 
       this.platform.log.debug(
@@ -1990,7 +2043,10 @@ export default class RoborockHapScheduleAccessory {
       this.platform.log.debug(
         `Schedule sync: removing stale HAP switch for ${id}.`
       );
-      child.dispose();
+      child.dispose("schedule removal");
+      if (this.managerAccessory.context.scheduleDisplayStates) {
+        delete this.managerAccessory.context.scheduleDisplayStates[id];
+      }
 
       const service = this.managerAccessory.getServiceById(
         this.platform.Service.Switch,
@@ -2062,14 +2118,23 @@ class RoborockHapScheduleSwitchAccessory {
   private static readonly FAILED_COMMAND_COOLDOWN_MS = 30000;
 
   private schedule: RoborockSchedule;
-  // What Roborock last reported or confirmed. `schedule.enabled` also carries
-  // an answer given ahead of verification, so a write that fails goes back to
-  // this instead.
-  private reportedEnabled = false;
   private disposed = false;
-  private pendingCommand:
-    | { enabled: boolean; promise: Promise<void> }
+  private intentSequence = 0;
+  private uncertain:
+    | { enabled: boolean; startedAt: number; showRequested: boolean }
     | undefined;
+  private followUpTimer: ReturnType<typeof scheduleTimer> | undefined;
+  private correctionTimer: ReturnType<typeof scheduleTimer> | undefined;
+  private pendingCommand:
+    | {
+        enabled: boolean;
+        startedAt: number;
+        promise: Promise<void>;
+        acknowledgement: Promise<void>;
+        showRequested: boolean;
+      }
+    | undefined;
+  private readonly answerWaiters = new Set<() => void>();
 
   constructor(
     private readonly platform: RoborockPlatform,
@@ -2085,9 +2150,19 @@ class RoborockHapScheduleSwitchAccessory {
     };
   }
 
-  initialize(displayName: string, schedule: RoborockSchedule): void {
+  initialize(
+    displayName: string,
+    schedule: RoborockSchedule,
+    sourceVerified = true
+  ): void {
     this.disposed = false;
-    this.updateIdentity(displayName, schedule);
+    const saved = this.accessory.context.scheduleDisplayStates?.[
+      this.scheduleId
+    ] as ScheduleDisplayState | undefined;
+    if (saved?.pending) {
+      this.uncertain = { ...saved.pending, showRequested: false };
+    }
+    this.updateIdentity(displayName, schedule, sourceVerified);
 
     const subtype = `${SERVICE_PREFIX}${encodeURIComponent(this.scheduleId)}`;
     let service = this.accessory.getServiceById(
@@ -2127,17 +2202,37 @@ class RoborockHapScheduleSwitchAccessory {
       .onSet((value) => this.setSchedule(Boolean(value)))
       .onGet(() => {
         void this.coordinator.refreshIfNeeded();
-        return this.schedule.enabled;
+        return this.displayValue();
       });
     service.updateCharacteristic(
       this.platform.Characteristic.On,
-      schedule.enabled
+      this.displayValue()
     );
+    if (this.uncertain) {
+      this.platform.log.warn(
+        `Schedule display rollback for ${this.displayLabel()}: interrupted request from before restart; restoring last confirmed ${this.schedule.enabled ? "on" : "off"}. The previous outcome is unknown, not a user change.`
+      );
+      this.scheduleFollowUpRead();
+    }
+    this.saveDisplayState();
   }
 
-  updateIdentity(displayName: string, schedule: RoborockSchedule): void {
+  updateIdentity(
+    displayName: string,
+    schedule: RoborockSchedule,
+    sourceVerified = true
+  ): void {
+    const previous = this.schedule.enabled;
     this.schedule = { ...schedule, timer: [...schedule.timer] };
-    this.reportedEnabled = schedule.enabled;
+    if (sourceVerified && this.uncertain) {
+      this.platform.log.info(
+        `Schedule outcome resolved by fresh read for ${this.displayLabel()}: confirmed ${schedule.enabled ? "on" : "off"}; previous confirmed ${previous ? "on" : "off"}; ${this.pendingCommand ? "keeping the newer requested display" : "updating the display"}. This is reconciliation, not a user change.`
+      );
+      this.uncertain = undefined;
+      if (this.followUpTimer) clearTimer(this.followUpTimer);
+      this.followUpTimer = undefined;
+    }
+    this.saveDisplayState();
 
     const switchService = this.accessory.getServiceById(
       this.platform.Service.Switch,
@@ -2170,187 +2265,278 @@ class RoborockHapScheduleSwitchAccessory {
       }
       switchService.updateCharacteristic(
         this.platform.Characteristic.On,
-        schedule.enabled
+        this.displayValue()
       );
     }
   }
 
-  dispose(): void {
+  dispose(reason = "shutdown"): void {
+    if (this.pendingCommand || this.uncertain) {
+      this.platform.log.warn(
+        `Schedule request interrupted by ${reason} for ${this.displayLabel()}: outcome unknown; last confirmed ${this.schedule.enabled ? "on" : "off"} is saved for restart.`
+      );
+      this.saveDisplayState();
+    }
     this.disposed = true;
+    for (const stop of this.answerWaiters) stop();
+    this.answerWaiters.clear();
+    if (this.followUpTimer) clearTimer(this.followUpTimer);
+    if (this.correctionTimer) clearTimer(this.correctionTimer);
+    this.followUpTimer = undefined;
+    this.correctionTimer = undefined;
     this.suppression.clear();
     this.failedCommands.clear();
   }
 
   private setSchedule(enabled: boolean): Promise<void> {
-    if (this.pendingCommand?.enabled === enabled) {
-      return this.pendingCommand.promise;
-    }
-    const promise = this.performScheduleChange(enabled).finally(() => {
-      if (this.pendingCommand?.promise === promise)
-        this.pendingCommand = undefined;
-    });
-    this.pendingCommand = { enabled, promise };
-    return promise;
-  }
-
-  private async performScheduleChange(enabled: boolean): Promise<void> {
-    const previous = this.schedule.enabled;
-    const now = Date.now();
-    const last = this.suppression.get(this.scheduleId);
-
+    if (this.disposed) return Promise.resolve();
+    if (this.pendingCommand?.enabled === enabled)
+      return this.pendingCommand.acknowledgement;
+    const recent = this.suppression.get(this.scheduleId);
     if (
-      last &&
-      last.enabled === enabled &&
-      now - last.timestamp < WRITE_SUPPRESSION_MS
+      !this.pendingCommand &&
+      recent?.enabled === enabled &&
+      Date.now() - recent.timestamp < WRITE_SUPPRESSION_MS
     ) {
-      return;
+      this.restoreConfirmedDisplay();
+      return Promise.resolve();
     }
-
     const failed = this.failedCommands.get(this.scheduleId);
     if (
-      failed &&
-      failed.enabled === enabled &&
-      now - failed.timestamp <
+      !this.pendingCommand &&
+      failed?.enabled === enabled &&
+      Date.now() - failed.timestamp <
         RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS
     ) {
-      this.updateService(previous);
-      throw this.writeFailed();
+      this.restoreConfirmedDisplay();
+      this.platform.log.warn(
+        `Schedule request suppressed after failure for ${this.displayLabel()}; retaining confirmed ${this.schedule.enabled ? "on" : "off"} state.`
+      );
+      return Promise.reject(this.writeFailed());
     }
-
-    // Debug: the batch logs the command itself when it sends it.
-    this.platform.log.debug(
-      `Schedule command: queueing ${enabled ? "enable" : "disable"} for schedule ${this.scheduleId} of ${this.coordinator.robotName}.`
-    );
-
     let markSent = (): void => undefined;
     const sent = new Promise<"sent">((resolve) => {
       markSent = () => resolve("sent");
     });
     let markRefused = (_error: unknown): void => undefined;
-    const refused = new Promise<{ settled: true; error: unknown }>(
-      (resolve) => {
-        markRefused = (error) => resolve({ settled: true, error });
+    const refused = new Promise<{ error: unknown }>((resolve) => {
+      markRefused = (error) => resolve({ error });
+    });
+    const startedAt = Date.now();
+    const intent = ++this.intentSequence;
+    const promise = Promise.resolve().then(async () => {
+      try {
+        this.platform.log.info(
+          `Schedule command: queueing ${enabled ? "enable" : "disable"} for ${this.displayLabel()}. Display is provisional until confirmed.`
+        );
+        const executed = await this.coordinator.enqueueScheduleWrite(
+          this.scheduleId,
+          enabled,
+          { onSent: markSent, onRefused: markRefused }
+        );
+        if (this.disposed) return;
+        if (executed) {
+          this.schedule.enabled = enabled;
+          this.schedule.timer[1] = enabled ? "on" : "off";
+          this.uncertain = undefined;
+          if (this.followUpTimer) clearTimer(this.followUpTimer);
+          this.followUpTimer = undefined;
+          this.saveDisplayState();
+          this.failedCommands.delete(this.scheduleId);
+          this.suppression.set(this.scheduleId, {
+            enabled,
+            timestamp: Date.now(),
+          });
+        } else if (this.pendingCommand?.promise === promise) {
+          this.platform.log.warn(
+            `Schedule display rollback for ${this.displayLabel()}: request was not executed; restoring confirmed ${this.schedule.enabled ? "on" : "off"} after ${Date.now() - startedAt}ms.`
+          );
+        }
+      } catch (error) {
+        if (this.disposed) return;
+        const unverified =
+          (error as { code?: string })?.code === "SCHEDULE_OUTCOME_UNKNOWN";
+        const unknown = unverified || Boolean(this.uncertain);
+        if (!unknown) markRefused(error);
+        if (unknown && intent === this.intentSequence) {
+          if (unverified)
+            this.uncertain = { enabled, startedAt, showRequested: true };
+          this.failedCommands.delete(this.scheduleId);
+          this.suppression.delete(this.scheduleId);
+          this.platform.log.warn(
+            `Schedule outcome unknown for ${this.displayLabel()}: unverified request ${this.uncertain?.enabled ? "on" : "off"} after ${Date.now() - startedAt}ms; the earlier write may have applied. One follow-up read is scheduled; no failed-command cooldown is applied.`
+          );
+          this.scheduleFollowUpRead();
+        } else if (!unknown)
+          this.failedCommands.set(this.scheduleId, {
+            enabled,
+            timestamp: Date.now(),
+          });
+        const detail = error instanceof Error ? error.message : String(error);
+        if (unknown) {
+          if (intent !== this.intentSequence)
+            this.platform.log.warn(
+              `Earlier schedule outcome unknown for ${this.displayLabel()}; keeping the newer intent and its confirmation.`
+            );
+        } else if (this.pendingCommand?.promise === promise) {
+          this.platform.log.warn(
+            `Schedule display rollback for ${this.displayLabel()}: requested ${enabled ? "on" : "off"}, restoring confirmed ${this.schedule.enabled ? "on" : "off"} after ${Date.now() - startedAt}ms; ${detail}. This is failure recovery, not a user change.`
+          );
+        } else {
+          this.platform.log.warn(
+            `Earlier schedule request failed for ${this.displayLabel()}: ${detail}. Keeping the newer requested display.`
+          );
+        }
+      } finally {
+        if (this.pendingCommand?.promise === promise) {
+          this.pendingCommand = undefined;
+          if (!this.disposed) {
+            this.saveDisplayState();
+            this.restoreConfirmedDisplay();
+          }
+        }
       }
-    );
-    const outcome = this.coordinator.enqueueScheduleWrite(
-      this.scheduleId,
+    });
+    const acknowledgement = this.answerScheduleWrite(promise, sent, refused);
+    this.pendingCommand = {
       enabled,
-      { onSent: () => markSent(), onRefused: (error) => markRefused(error) }
-    );
-    // The batch reports a refusal again when it ends; by then it is handled.
-    outcome.catch(() => undefined);
+      startedAt,
+      promise,
+      acknowledgement,
+      showRequested: false,
+    };
+    // Persist confirmation and intent before Homebridge can cache either value.
+    this.saveDisplayState();
+    return acknowledgement;
+  }
 
-    let budgetTimer: ReturnType<typeof scheduleTimer> | undefined;
+  private async answerScheduleWrite(
+    operation: Promise<void>,
+    sent: Promise<"sent">,
+    refused: Promise<{ error: unknown }>
+  ): Promise<void> {
+    let timer: ReturnType<typeof scheduleTimer> | undefined;
+    let stop = (): void => undefined;
+    const stopped = new Promise<"stopped">((resolve) => {
+      stop = () => resolve("stopped");
+      this.answerWaiters.add(stop);
+    });
     const budget = new Promise<"budget">((resolve) => {
-      budgetTimer = scheduleTimer(
+      timer = scheduleTimer(
         () => resolve("budget"),
         SCHEDULE_WRITE_ANSWER_BUDGET_MS
       );
-      unrefTimer(budgetTimer);
+      unrefTimer(timer);
     });
-    const first = await Promise.race([
-      outcome.then(
-        (executed) => ({ settled: true as const, executed }),
-        (error: unknown) => ({ settled: true as const, error })
-      ),
-      refused,
-      sent,
-      budget,
-    ]);
-    if (budgetTimer) {
-      clearTimer(budgetTimer);
-    }
-
-    if (typeof first === "object") {
-      // Settled within the budget: the outcome is known, so HomeKit gets it.
-      if ("error" in first) {
-        if (this.disposed) {
-          return;
-        }
-        this.writeFailedFor(enabled, first.error);
-        throw this.writeFailed();
+    try {
+      const first = await Promise.race([
+        refused,
+        sent,
+        budget,
+        stopped,
+        operation.then(() => "complete" as const),
+      ]);
+      if (this.disposed) throw this.writeFailed();
+      // A known refusal inside the answer window must reach HAP as an error.
+      // Verification/unknown outcomes continue through the persisted state path.
+      if (typeof first === "object") throw this.writeFailed();
+      if (this.pendingCommand?.promise === operation) {
+        this.pendingCommand.showRequested = true;
+        this.updateService(this.displayValue());
       }
-      if (first.executed) {
-        this.writeConfirmed(enabled);
-      }
-      return;
+    } finally {
+      if (timer) clearTimer(timer);
+      this.answerWaiters.delete(stop);
     }
-
-    // Accepted, or still under way: answer now with the requested state and
-    // let verification finish behind the answer. If it does not confirm, the
-    // switch is turned back and the reason logged — it is never left showing
-    // a state Roborock did not keep.
-    this.schedule.enabled = enabled;
-    void outcome.then(
-      (executed) => {
-        if (executed) {
-          this.writeConfirmed(enabled);
-        }
-      },
-      (error: unknown) => this.writeFailedFor(enabled, error)
-    );
   }
 
-  private writeConfirmed(enabled: boolean): void {
-    if (this.disposed) {
-      return;
-    }
-    this.schedule.enabled = enabled;
-    this.reportedEnabled = enabled;
-    this.schedule.timer[1] = enabled ? "on" : "off";
-    this.failedCommands.delete(this.scheduleId);
-    this.suppression.set(this.scheduleId, {
-      enabled,
-      timestamp: Date.now(),
-    });
-    this.updateService(enabled);
-  }
-
-  /**
-   * Put the switch back to what Roborock last reported. Not to the value it
-   * showed when this write started: with two quick toggles that is the first
-   * one's unverified answer, and a late failure of the second left the switch
-   * showing a state Roborock did not hold.
-   */
-  private writeFailedFor(enabled: boolean, error: unknown): void {
-    if (this.disposed) {
-      return;
-    }
-    const previous = this.reportedEnabled;
-    this.schedule.enabled = previous;
-    this.updateService(previous);
-
-    this.failedCommands.set(this.scheduleId, {
-      enabled,
-      timestamp: Date.now(),
-    });
-
-    const message = error instanceof Error ? error.message : String(error);
-
-    this.platform.log.warn(
-      `Unable to ${enabled ? "enable" : "disable"} Roborock schedule ${this.scheduleId}: ${message}. ` +
-        `The switch shows the schedule as ${previous ? "on" : "off"} again. ` +
-        `Further attempts for this same state are suppressed for ` +
-        `${RoborockHapScheduleSwitchAccessory.FAILED_COMMAND_COOLDOWN_MS / 1000}s.`
-    );
-  }
-
-  /**
-   * What a failed write throws back to HAP.
-   *
-   * HAP stores the requested value once an onSet handler RESOLVES, over any
-   * value the handler wrote while it ran. Restoring the previous state and
-   * returning normally therefore left the switch showing the state the
-   * Roborock cloud had just refused, and told every other controller it had
-   * changed, until the next refresh flipped it back without a word. Only a
-   * throw keeps the previous value, and it is also how Home learns the write
-   * failed.
-   */
   private writeFailed(): Error {
     const hap = this.platform.api?.hap;
     return typeof hap?.HapStatusError === "function"
       ? new hap.HapStatusError(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE)
       : new Error("The Roborock schedule write failed.");
+  }
+
+  private restoreConfirmedDisplay(): void {
+    this.updateService(this.displayValue());
+    if (this.correctionTimer) clearTimer(this.correctionTimer);
+    // HAP applies the requested value after onSet returns. Reassert the
+    // correction on the next turn so a suppressed tap cannot leave it on.
+    const timer = scheduleTimer(() => {
+      this.correctionTimer = undefined;
+      if (!this.disposed) this.updateService(this.displayValue());
+    }, 0);
+    this.correctionTimer = timer;
+    unrefTimer(timer);
+  }
+
+  private displayValue(): boolean {
+    return (
+      (this.pendingCommand?.showRequested
+        ? this.pendingCommand.enabled
+        : undefined) ??
+      (this.uncertain?.showRequested
+        ? this.uncertain.enabled
+        : this.schedule.enabled)
+    );
+  }
+
+  private displayLabel(): string {
+    const service = this.accessory.getServiceById(
+      this.platform.Service.Switch,
+      `${SERVICE_PREFIX}${encodeURIComponent(this.scheduleId)}`
+    );
+    const name =
+      service?.getCharacteristic(this.platform.Characteristic.ConfiguredName)
+        .value ||
+      service?.displayName ||
+      this.schedule.name ||
+      this.scheduleId;
+    return `${this.coordinator.scheduleRobotLabel()} / "${name}" (${this.duid}/${this.scheduleId})`;
+  }
+
+  private saveDisplayState(): void {
+    const intent = this.pendingCommand ?? this.uncertain;
+    const state: ScheduleDisplayState = {
+      confirmed: this.schedule.enabled,
+      ...(intent
+        ? {
+            pending: {
+              enabled: intent.enabled,
+              startedAt: intent.startedAt,
+              ...(this.uncertain && !this.pendingCommand
+                ? { outcomeUnknown: true }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    const states = this.accessory.context.scheduleDisplayStates ?? {};
+    if (JSON.stringify(states[this.scheduleId]) === JSON.stringify(state))
+      return;
+    this.accessory.context.scheduleDisplayStates = {
+      ...states,
+      [this.scheduleId]: state,
+    };
+    this.platform.api.updatePlatformAccessories([this.accessory]);
+  }
+
+  private scheduleFollowUpRead(): void {
+    if (this.followUpTimer || this.disposed) return;
+    this.followUpTimer = scheduleTimer(() => {
+      this.followUpTimer = undefined;
+      if (this.disposed || !this.uncertain) return;
+      void this.coordinator
+        .refreshDetailed(Date.now(), false, true)
+        .then(() => {
+          if (!this.disposed && this.uncertain) {
+            this.platform.log.warn(
+              `Schedule outcome still unknown for ${this.displayLabel()}: the follow-up could not confirm this source. The next successful refresh will report the resolved state.`
+            );
+          }
+        });
+    }, VERIFY_DELAY_MS);
+    unrefTimer(this.followUpTimer);
   }
 
   private updateService(enabled: boolean): void {

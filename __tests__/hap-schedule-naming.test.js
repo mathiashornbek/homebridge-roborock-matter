@@ -157,6 +157,10 @@ describe("HAP schedule names and stable group identity", () => {
       kind: "hapExtension",
       extension: "schedules",
       duid: "device-1",
+      scheduleDisplayStates: {
+        "timer-1": { confirmed: true },
+        "timer-2": { confirmed: false },
+      },
     });
 
     expect(
@@ -259,6 +263,7 @@ describe("HAP schedule names and stable group identity", () => {
       .setValue("Weekend Downstairs");
 
     const originalServices = [...accessory.services];
+    platform.api.updatePlatformAccessories.mockClear();
 
     coordinator.shutdown();
 
@@ -293,7 +298,12 @@ describe("HAP schedule names and stable group identity", () => {
 
     expect(switchService(accessory, "timer-1")).toBe(service);
     expect(service.getCharacteristic(Characteristic.On).value).toBe(false);
-    expect(platform.api.updatePlatformAccessories).not.toHaveBeenCalled();
+    expect(accessory.context.scheduleDisplayStates["timer-1"]).toEqual({
+      confirmed: false,
+    });
+    expect(platform.api.updatePlatformAccessories).toHaveBeenCalledWith([
+      accessory,
+    ]);
   });
 
   test("an authoritative deleted schedule removes only its own service", () => {
@@ -719,4 +729,95 @@ test("repeated same-state taps share the pending write and confirmation", async 
   } finally {
     jest.useRealTimers();
   }
+});
+
+function optimisticFixture() {
+  const platform = makePlatform();
+  const accessory = new FakeAccessory("Test Vacuum Schedules");
+  const coordinator = makeCoordinator(platform, accessory);
+  coordinator.sync([
+    { id: "optimistic", enabled: false, timer: ["optimistic", "off"] },
+  ]);
+  const calls = [];
+  coordinator.refreshIfNeeded = jest.fn(() => new Promise(() => {}));
+  coordinator.enqueueScheduleWrite = jest.fn(
+    () => new Promise((resolve, reject) => calls.push({ resolve, reject }))
+  );
+  return {
+    platform,
+    coordinator,
+    calls,
+    on: switchService(accessory, "optimistic").getCharacteristic(
+      Characteristic.On
+    ),
+  };
+}
+
+describe("persisted schedule feedback with the upstream answer window", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+  async function tap(on, enabled) {
+    const answer = on.setHandler(enabled);
+    await jest.advanceTimersByTimeAsync(2500);
+    await answer;
+  }
+
+  test("acknowledges a pending write within the budget and explicitly rolls back a later failure", async () => {
+    const { platform, on, calls, coordinator } = optimisticFixture();
+    let answered = false;
+    const result = on.setHandler(true).then(() => {
+      answered = true;
+    });
+    await jest.advanceTimersByTimeAsync(2499);
+    expect(answered).toBe(false);
+    expect(on.value).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    await result;
+    expect(on.value).toBe(true);
+    calls[0].reject(new Error("cloud refused"));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(on.value).toBe(false);
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /Schedule display rollback.*device-1\/optimistic.*cloud refused.*not a user change/
+      )
+    );
+    await expect(on.setHandler(true)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+    coordinator.stopRuntime();
+  });
+
+  test("an older failure cannot overwrite a newer pending schedule intent", async () => {
+    const { on, calls, coordinator } = optimisticFixture();
+    await tap(on, true);
+    await tap(on, false);
+    await tap(on, true);
+    expect(on.value).toBe(true);
+    calls[0].reject(new Error("old failure"));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(on.value).toBe(true);
+    calls[1].resolve(true);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(on.value).toBe(true);
+    calls[2].reject(new Error("latest failure"));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(on.value).toBe(false);
+    coordinator.stopRuntime();
+  });
+
+  test("an authoritative refresh keeps the accepted provisional display until confirmation", async () => {
+    const { on, calls, coordinator } = optimisticFixture();
+    await tap(on, true);
+    coordinator.sync([
+      { id: "optimistic", enabled: false, timer: ["optimistic", "off"] },
+    ]);
+    expect(on.value).toBe(true);
+    calls[0].resolve(true);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(on.value).toBe(true);
+    coordinator.stopRuntime();
+  });
 });
