@@ -16,21 +16,21 @@ whether the preset is active. Changing the preset requires no HomeKit re-pairing
 | Requests                                                                                                        | Ordinary setting                                | Local preset                                                              | Purpose                                                                                                                                                 |
 | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Classic status (`get_prop` containing `get_status`)                                                             | At least 60 seconds apart, on a 15-second timer | At least 15 seconds apart, same timer                                     | State, battery, charging, errors and other live status; MQTT push continues independently.                                                              |
-| Classic live map (`get_map_v1`)                                                                                 | At least 10 seconds apart                       | At least 5 seconds apart while the map channel is answering               | Locate the robot in a room during cleaning. Each robot allows only one live-map request in flight.                                                      |
+| Classic live map (`get_map_v1`)                                                                                 | At least 10 seconds apart                       | At least 3 seconds apart while the map channel is answering               | Locate the robot in a room during cleaning. Each robot allows only one live-map request in flight.                                                      |
 | Slow device parameters                                                                                          | 30-minute minimum                               | 5-minute minimum; normally about 6 minutes on the existing 3-minute cycle | Consumables, timer lists when owned by the generic poller, carpet/water settings and model-specific dock settings. Unsupported requests remain skipped. |
 | Schedule/routine list cache                                                                                     | 5 minutes                                       | **5 minutes**                                                             | Cache is checked on reads; expiry permits a fresh request. HomeKit writes still trigger their own verification.                                         |
 | Account/device snapshot                                                                                         | 3 minutes                                       | **3 minutes**                                                             | Fetch account devices and supervise their polling.                                                                                                      |
 | Classic map list / room names (`get_multi_maps_list`, `get_room_mapping`, plus fresh status for floor identity) | 3 minutes                                       | **3 minutes**                                                             | Notice new maps, renamed rooms and map changes.                                                                                                         |
 | Missing saved-map room cache                                                                                    | 6 hours between attempts per map                | **6 hours**                                                               | Avoid repeatedly switching maps to discover missing room mappings; skipped while cleaning.                                                              |
 
-The map gap is a limit, not an independent 5-second poller. Requests are triggered
+The map gap is a limit, not an independent 3-second poller. Requests are triggered
 by live status updates and the Matter accessory's update cycle. Sparse status
 updates can therefore produce fewer map requests. Maps are fetched only for
 states where the robot is moving through rooms, not when paused or docked.
 
 B01/Q7 robots keep their existing status cadence (about 15 seconds active and
 30 seconds idle), 30-second fresh-pushed-map suppression, and six-hour room-list
-cache. Their healthy fallback live-map request gap can use the 5-second minimum,
+cache. Their healthy fallback live-map request gap can use the 3-second minimum,
 but their existing failure backoff remains. Q10 live-map support is unchanged.
 
 Faster status reads do not guarantee Apple Home will display battery percentages

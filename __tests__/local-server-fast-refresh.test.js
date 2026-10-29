@@ -210,7 +210,7 @@ function mapApi(options) {
 
 describe("faster live maps retain their guards", () => {
   test.each([
-    [true, 5000],
+    [true, 3000],
     [false, 10000],
   ])("preset=%s permits the next map at %sms, not before", async (on, gap) => {
     const api = mapApi({ enableLocalServerFastRefresh: on });
