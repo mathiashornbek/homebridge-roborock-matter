@@ -252,9 +252,10 @@ class vacuum {
    */
   shouldPollStatusNow(duid) {
     const last = this.lastStatusPollAt.get(duid);
-    return (
-      last === undefined || Date.now() - last >= STATUS_POLL_MIN_INTERVAL_MS
-    );
+    const gap =
+      this.adapter.getRequestPolicy?.().classicStatusGapMs ??
+      STATUS_POLL_MIN_INTERVAL_MS;
+    return last === undefined || Date.now() - last >= gap;
   }
 
   /** @param {string} duid */

@@ -36,6 +36,7 @@ const { describeDroppedFrames } = require("./lib/roborock_mqtt_connector");
 const { UnansweredMethodBreaker } = require("./lib/unansweredMethodBreaker");
 const { TransportTally } = require("./lib/transportTally");
 const { LateReplyTracker } = require("./lib/lateReplies");
+const { resolveRequestPolicy } = require("./lib/requestPolicy");
 
 // The Q7 work statuses, in the v1 numbering mapStatusToV1 gives them, in
 // which the robot is actively doing something and state transitions are
@@ -113,10 +114,15 @@ const LIVE_ROOM_FAILURE_BACKOFF_MAX_MS = 300000; // 5 min
  * @param {number} [consecutiveFailures]
  * @returns {number}
  */
-function liveRoomFetchGapMs(consecutiveFailures) {
+function liveRoomFetchGapMs(
+  consecutiveFailures,
+  healthyGapMs = B01_LIVE_ROOM_MIN_FETCH_GAP_MS
+) {
   const over = Number(consecutiveFailures) - LIVE_ROOM_FAILURE_BACKOFF_AFTER;
   if (!Number.isFinite(over) || over <= 0) {
-    return B01_LIVE_ROOM_MIN_FETCH_GAP_MS;
+    return Number(consecutiveFailures) > 0
+      ? B01_LIVE_ROOM_MIN_FETCH_GAP_MS
+      : healthyGapMs;
   }
   return Math.min(
     B01_LIVE_ROOM_MIN_FETCH_GAP_MS * 2 ** over,
@@ -349,7 +355,7 @@ const CLASSIC_STATUS_TICK_MS = 15000;
 // 30 minutes cuts a classic robot from 160 to about 52 requests an hour and a
 // Q7 from 60 to about 46. A diagnostics export still sees the last reading;
 // anything that needs a fresh one can ask for it.
-const SLOW_PARAMETER_POLL_INTERVAL_MS = 30 * 60 * 1000;
+// requestPolicy supplies the default 30-minute gap or the local-server preset.
 
 // The longest startup will wait for a classic robot's first status before the
 // Matter accessories register. A robot that answers does so in well under a
@@ -533,6 +539,10 @@ class Roborock {
 
   isCloudOnlyModeEnabled() {
     return Boolean(this.config.cloudOnlyMode);
+  }
+
+  getRequestPolicy() {
+    return resolveRequestPolicy(this.config, this.userData);
   }
 
   getKnownLocalIp(duid) {
@@ -1929,6 +1939,18 @@ class Roborock {
     this.loginApi.defaults.headers.common["Authorization"] = userdata.token;
     const rriot = userdata.rriot;
 
+    if (this.config.enableLocalServerFastRefresh === true) {
+      if (this.getRequestPolicy().localServer) {
+        this.log.info(
+          "Local server fast refresh active: classic status 15s; live-map minimum gap 3s; device settings at least 5m apart (about 6m on the 3m background cycle). Schedule cache remains 5m; background refresh remains 3m."
+        );
+      } else {
+        this.log.warn(
+          "Local server fast refresh is inactive: a custom HTTPS server and a session using custom REST and MQTT endpoints are required. Standard refresh rates remain active."
+        );
+      }
+    }
+
     // Initialize the real API.
     this.api = axios.create({
       baseURL: rriot.r.a,
@@ -3266,7 +3288,7 @@ class Roborock {
    */
   isSlowParameterPollDue(duid) {
     const last = this.lastSlowParameterPollAt.get(duid) ?? 0;
-    return Date.now() - last >= SLOW_PARAMETER_POLL_INTERVAL_MS;
+    return Date.now() - last >= this.getRequestPolicy().slowParameterGapMs;
   }
 
   /** @param {string} duid */
@@ -3786,7 +3808,7 @@ class Roborock {
       }
 
       // Everything below this line is the slow lane. See
-      // SLOW_PARAMETER_POLL_INTERVAL_MS for the measurement behind it.
+      // the slow-parameter policy for the cadence and the note above for why.
       if (!this.isSlowParameterPollDue(duid)) {
         return;
       }
@@ -6649,7 +6671,10 @@ class Roborock {
     }
     if (
       Date.now() - liveState.lastAttemptAt <
-      liveRoomFetchGapMs(liveState.consecutiveFailures)
+      liveRoomFetchGapMs(
+        liveState.consecutiveFailures,
+        this.getRequestPolicy().liveMapGapMs
+      )
     ) {
       return liveState.current;
     }
@@ -6991,7 +7016,13 @@ class Roborock {
     if (liveState.inflight) {
       return liveState.inflight;
     }
-    if (Date.now() - liveState.lastAttemptAt < B01_LIVE_ROOM_MIN_FETCH_GAP_MS) {
+    // Keep the existing 10s retry floor after a failure. Only a healthy map
+    // channel gets the shorter local-server gap.
+    const mapGapMs =
+      liveState.consecutiveFailures > 0
+        ? B01_LIVE_ROOM_MIN_FETCH_GAP_MS
+        : this.getRequestPolicy().liveMapGapMs;
+    if (Date.now() - liveState.lastAttemptAt < mapGapMs) {
       return liveState.current;
     }
     // A robot that has stopped answering the map request is not asked again
