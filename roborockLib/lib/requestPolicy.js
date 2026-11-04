@@ -14,7 +14,7 @@ const DEFAULT_REQUEST_POLICY = Object.freeze({
 const LOCAL_SERVER_REQUEST_POLICY = Object.freeze({
   localServer: true,
   classicStatusGapMs: 15_000,
-  liveMapGapMs: 5_000,
+  liveMapGapMs: 3_000,
   slowParameterGapMs: 5 * 60_000,
 });
 
