@@ -63,6 +63,12 @@
         "placeholder": "https://api-roborock.example.com:555",
         "description": "Optional. The address of a self-hosted Roborock server such as local_roborock_server (https://host or https://host:port). When set, the login goes to this server instead of the Region, using the email and PIN configured on the server as the verification code. Leave empty for Roborock's own servers."
       },
+      "enableLocalServerFastRefresh": {
+        "title": "Faster updates for local server (experimental)",
+        "type": "boolean",
+        "default": false,
+        "description": "For a self-hosted Roborock server: classic status every 15 seconds, live-map requests at least 5 seconds apart, and device settings about every 6 minutes. Schedule cache stays at 5 minutes and background refresh at 3 minutes. Requires a Custom Server URL and a session using custom server endpoints. Restart the child bridge after changing this setting."
+      },
       "debugMode": {
         "title": "Debug Mode",
         "description": "Write verbose Roborock API, discovery, and transport diagnostics to the Homebridge log.",
