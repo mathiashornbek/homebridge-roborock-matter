@@ -2,6 +2,15 @@
 
 Entries before 3.39.0 are short summaries. The full notes for every release are on the [GitHub releases page](https://github.com/mathiashornbek/homebridge-roborock-matter/releases) and in the git history of this file.
 
+## 3.40.3
+
+**Resuming from Apple Home no longer rewrites the paused run, and a robot whose dock refills it no longer refuses to start because its own small tank reads empty.**
+
+- **Resume sends only the resume (#28).** Every resume re-sent the clean mode Apple Home was displaying before continuing. Into a paused Roborock routine (a full clean, then a mop step) that is a settings change mid-run, and the likely cause of what CooperCGN saw: his robot finished the current room, went home and skipped the mop step, and it chimed when resumed from HomeKit. His own `app_start` with nothing before it continued the routine. A resume now sends a mode only when one picked in Apple Home has not reached the robot yet. A mode picked while paused is applied on the spot, as before. Starts are unchanged: they still apply the displayed mode (#8).
+- **Water tank warning on wash docks** ([#49](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/49), @pponce). Robots on a dock that washes and refills the mop can report an onboard water shortage while the dock's clean-water tank is fine. Apple Home then showed "water tank empty" and would not start a mop clean. On a recognised wash dock (python-roborock's wash-and-fill dock types), an onboard shortage alone no longer raises the warning when the dock reports its clean tank as fine. An empty or missing dock tank (`dock_error_status` 38) still raises it, as measured on the S8 Pro Ultra (#5) and the Qrevo S (#26). Robots without a wash dock, or without a dock reading, behave as before. The Water Tank Empty sensor is unchanged.
+
+2,675 tests. 17 of the 43 new refill-dock tests and 3 of the 4 new and changed resume tests fail on 3.40.2.
+
 ## 3.40.2
 
 **A robot away from its dock no longer tells Apple Home that its battery is charging.**
