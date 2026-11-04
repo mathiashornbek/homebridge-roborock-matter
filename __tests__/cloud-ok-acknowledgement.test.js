@@ -100,9 +100,12 @@ describe("the secure flag reaches the pending request", () => {
     // Re-pinned in 3.32.0: `resolve` is now a wrapper that tells the give-up
     // register a reply arrived, so the entry object contains a nested `}` and
     // the old `[^}]*` window closed too early. Look at the whole call instead.
-    const at = source.indexOf("pendingRequests.set(messageID, {");
+    const at = source.indexOf("const pendingRequest = {");
     expect(at).toBeGreaterThan(-1);
-    const entry = source.slice(at, source.indexOf("});", at));
+    const entry = source.slice(
+      at,
+      source.indexOf("this.adapter.pendingRequests.set", at)
+    );
     expect(entry).toMatch(/\bsecure\b/);
     expect(entry).toMatch(/\bmethod\b/);
   });
