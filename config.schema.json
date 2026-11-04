@@ -261,9 +261,16 @@
       },
       "enableMqttPreventiveRefresh": {
         "title": "Enable preventive MQTT refresh",
-        "description": "Refreshes the MQTT session after four hours when idle. Requires experimental MQTT session recovery. Off by default. Restart the child bridge after changing this setting.",
+        "description": "Refreshes the MQTT session at the configured interval when no cloud requests are outstanding. Requires experimental MQTT session recovery. Off by default. Restart the child bridge after changing this setting.",
         "type": "boolean",
         "default": false
+      },
+      "mqttPreventiveRefreshMinutes": {
+        "title": "Preventive refresh interval (minutes)",
+        "description": "Session age before a preventive refresh. Enter whole minutes, at least 1. Default: 180 minutes (3 hours). Requires preventive MQTT refresh and experimental session recovery. Restart the child bridge after changing this setting.",
+        "type": "integer",
+        "minimum": 1,
+        "default": 180
       }
     },
     "required": ["email"]

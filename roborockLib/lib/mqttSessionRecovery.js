@@ -1,6 +1,6 @@
 "use strict";
 
-const PREVENTIVE_AGE_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_PREVENTIVE_REFRESH_MINUTES = 180;
 const COOLDOWN_MS = 60_000;
 const SILENCE_COOLDOWN_MS = 30 * 60_000;
 const READY_TIMEOUT_MS = 20_000;
@@ -13,6 +13,13 @@ class MqttSessionRecovery {
     this.adapter = connector.adapter;
     this.preventiveRefreshEnabled =
       this.adapter.config.enableMqttPreventiveRefresh === true;
+    const minutes = this.adapter.config.mqttPreventiveRefreshMinutes;
+    this.preventiveRefreshMinutes =
+      Number.isSafeInteger(minutes) &&
+      minutes >= 1 &&
+      Number.isSafeInteger(minutes * 60_000)
+        ? minutes
+        : DEFAULT_PREVENTIVE_REFRESH_MINUTES;
     /** @type {string | null} */
     this.lastReason = null;
     this.lastResult = "never";
@@ -36,7 +43,8 @@ class MqttSessionRecovery {
         if (
           this.preventiveRefreshEnabled &&
           this.readyAt !== null &&
-          performance.now() - this.readyAt >= PREVENTIVE_AGE_MS
+          performance.now() - this.readyAt >=
+            this.preventiveRefreshMinutes * 60_000
         ) {
           void this.recreate("preventive");
         }
@@ -73,6 +81,7 @@ class MqttSessionRecovery {
     return {
       enabled: true,
       preventiveRefreshEnabled: this.preventiveRefreshEnabled,
+      preventiveRefreshMinutes: this.preventiveRefreshMinutes,
       inProgress: this.recovering,
       lastReason: this.lastReason,
       lastResult: this.lastResult,

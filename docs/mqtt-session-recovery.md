@@ -1,9 +1,8 @@
 # Opt-in MQTT session recreation
 
-This proposal is parked for further field evidence. The full optional lifecycle
-is retained here for comparison, rather than proposed for immediate merge. The
-branch is based on 3.40.1 and the revised ordinary send-readiness change.
-3.40 already creates a fresh client with a random id on every reconnect.
+Optional MQTT session recreation adds correlated-silence recovery and preventive
+refresh to the plugin's default recovery. Each replacement uses a fresh client
+with a random id.
 
 `enableMqttSessionRecovery` defaults to false. Enable it in advanced plugin
 settings or config.json and restart the child bridge to participate in this
@@ -46,14 +45,20 @@ runs with experimental recovery both off and on.
 
 ## Preventive refresh: separate and off by default
 
-`enableMqttPreventiveRefresh` defaults to false and lives in the collapsible
-Advanced troubleshooting section of the plugin config UI for now. The maintainer
-can choose another presentation later. It is a configuration option, not a HomeKit
-accessory. It requires experimental session recovery to be enabled, and a child
-bridge restart after changing it.
+`enableMqttPreventiveRefresh` defaults to false and is available in the collapsible
+Advanced troubleshooting section of the plugin config UI. It requires
+experimental session recovery to be enabled. Restart the child bridge after
+changing either option or the refresh interval.
+
+`mqttPreventiveRefreshMinutes` sets the session age before preventive refresh,
+in whole minutes. The default is **180 minutes (3 hours)**. Any saved positive
+whole-minute value takes precedence; a missing or invalid value uses the default.
+The value must also fit safely in milliseconds. The settings page retains the
+chosen interval when either recovery option is disabled.
 
 When enabled, a once-per-minute check refreshes sessions that have been ready for
-at least four hours. Refresh defers if any cloud request is
+at least the configured interval. Refresh can occur up to a minute after that age,
+or later while requests are outstanding. Refresh defers if any cloud request is
 outstanding, including a write or B01 map request, before closing the send gate.
 Commands arriving during that deferral can still use the ready session.
 It does not coordinate entire multi-command schedule transactions.
@@ -65,7 +70,8 @@ request-queue timeouts; upstream baseline tests are retained, with additional te
 ## Recovery diagnostics
 
 The persisted `MqttSessionDiagnostics` snapshot includes a `recovery` object:
-`enabled`, `preventiveRefreshEnabled`, `inProgress`, `lastReason`, `lastResult`,
+`enabled`, `preventiveRefreshEnabled`, `preventiveRefreshMinutes`,
+`inProgress`, `lastReason`, `lastResult`,
 `consecutiveFailures`, `cooldownRemainingMs`, and `silenceCooldownRemainingMs`.
 The two remaining durations distinguish the general success/failure cooldown from
 the shared 30-minute silence cooldown. They are measured when the snapshot is

@@ -184,12 +184,34 @@
         <label class="checkbox"
           ><input id="enableMqttPreventiveRefresh" type="checkbox" /><span
             >Enable preventive MQTT refresh<small
-              >Refreshes the MQTT session after four hours when idle. Requires
-              experimental MQTT session recovery. Off by default. Restart the
-              child bridge after changing this setting.</small
+              >Refreshes the MQTT session at the configured interval when no
+              cloud requests are outstanding. Requires experimental MQTT session
+              recovery. Off by default. Restart the child bridge after changing
+              this setting.</small
             ></span
           ></label
         >
+        <div
+          id="mqtt-preventive-refresh-options"
+          class="checkbox-group disabled"
+        >
+          <label for="mqtt-preventive-refresh-minutes"
+            >Refresh interval (minutes)</label
+          >
+          <input
+            id="mqtt-preventive-refresh-minutes"
+            type="number"
+            min="1"
+            step="1"
+            value="180"
+            aria-describedby="mqtt-preventive-refresh-help"
+            disabled
+          />
+          <p id="mqtt-preventive-refresh-help" class="help">
+            Default: 180 minutes (3 hours). Enter whole minutes, at least 1.
+            Restart the Roborock child bridge after changing these settings.
+          </p>
+        </div>
       </div>
     </details>
 

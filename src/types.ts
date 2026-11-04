@@ -87,6 +87,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   cloudOnlyMode?: boolean;
   enableMqttSessionRecovery?: boolean;
   enableMqttPreventiveRefresh?: boolean;
+  mqttPreventiveRefreshMinutes?: number;
   preferCloudForMatterCommands?: boolean;
   enableHomeKitActionSwitches?: boolean;
   homeKitActionSwitches?: string[];

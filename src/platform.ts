@@ -202,6 +202,8 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       cloudOnlyMode: Boolean(this.platformConfig.cloudOnlyMode),
       enableMqttPreventiveRefresh:
         this.platformConfig.enableMqttPreventiveRefresh === true,
+      mqttPreventiveRefreshMinutes:
+        this.platformConfig.mqttPreventiveRefreshMinutes,
       enableMqttSessionRecovery:
         this.platformConfig.enableMqttSessionRecovery === true,
       log: this.log,

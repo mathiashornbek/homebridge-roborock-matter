@@ -370,29 +370,55 @@ test("preventive refresh is off even when reactive recovery is enabled", async (
   expect(mockClients).toHaveLength(1);
 });
 
-test("the independent preventive control permits an idle four-hour refresh", async () => {
+test("preventive refresh defaults to three hours and never starts early", async () => {
   await restartWith({
     enableMqttSessionRecovery: true,
     enableMqttPreventiveRefresh: true,
   });
-  await jest.advanceTimersByTimeAsync(4 * 60 * 60 * 1000);
+  await jest.advanceTimersByTimeAsync(179 * 60_000);
+  expect(mockClients).toHaveLength(1);
+  await jest.advanceTimersByTimeAsync(60_000);
   expect(mockClients).toHaveLength(2);
   await replacementReady();
   expect(connector.isConnected()).toBe(true);
 });
+
+test.each([1, 5, 240])(
+  "a saved %i-minute interval controls when the session is refreshed",
+  async (minutes) => {
+    await restartWith({
+      enableMqttSessionRecovery: true,
+      enableMqttPreventiveRefresh: true,
+      mqttPreventiveRefreshMinutes: minutes,
+    });
+    expect(connector.recovery.snapshot().preventiveRefreshMinutes).toBe(
+      minutes
+    );
+    await jest.advanceTimersByTimeAsync((minutes - 1) * 60_000);
+    expect(mockClients).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockClients).toHaveLength(2);
+    await replacementReady();
+    expect(connector.isConnected()).toBe(true);
+  }
+);
 
 test("preventive refresh defers for a pending write", async () => {
   await restartWith({
     enableMqttSessionRecovery: true,
     enableMqttPreventiveRefresh: true,
   });
-  await jest.advanceTimersByTimeAsync(4 * 60 * 60 * 1000 - 1000);
+  await jest.advanceTimersByTimeAsync(180 * 60_000 - 1000);
   const write = await startRequest("robot-a", "app_start");
   await jest.advanceTimersByTimeAsync(1500);
   expect(mockClients).toHaveLength(1);
   expect(adapter.pendingRequests.has(write.id)).toBe(true);
   receive(reply(write.id));
   expect(await write.result).toEqual(["ok"]);
+  await jest.advanceTimersByTimeAsync(60_000 - 500);
+  expect(mockClients).toHaveLength(2);
+  await replacementReady();
+  expect(connector.isConnected()).toBe(true);
 });
 
 test("recovery remains disabled when the option is absent", async () => {
