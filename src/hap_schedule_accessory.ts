@@ -1616,11 +1616,11 @@ export default class RoborockHapScheduleAccessory {
     await setCloudSceneScheduleEnabled(api, scene, request.enabled);
   }
 
-  /**
-   * Run one Routine now. Called by a routine switch; never throws, because a
-   * HAP set handler that throws shows as a broken accessory rather than as
-   * the reason.
-   */
+  getRoutineRobotLabel(): string {
+    return this.vacuumName || this.duid;
+  }
+
+  /** Run one Routine; expected cloud failures are logged after acceptance. */
   async runRoutine(sceneId: string, displayName: string): Promise<void> {
     const api = this.platform.roborockAPI as any;
     try {
@@ -1636,7 +1636,7 @@ export default class RoborockHapScheduleAccessory {
       );
     } catch (error) {
       this.platform.log.warn(
-        `Unable to run Roborock routine "${displayName}": ${
+        `Accepted Home routine "${displayName}" for ${this.vacuumName || this.duid} failed: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
@@ -2368,6 +2368,7 @@ class RoborockHapScheduleSwitchAccessory {
  * and a Home automation can run a Routine the way it runs a scene.
  */
 class RoborockHapRoutineSwitch {
+  private runPending = false;
   private resetTimer: ReturnType<typeof scheduleTimer> | undefined;
   private disposed = false;
   private displayName = "";
@@ -2413,7 +2414,7 @@ class RoborockHapRoutineSwitch {
       // when there is no schedule switch to prompt a refresh.
       void this.coordinator.refreshIfNeeded();
       return false;
-    }).onSet((value) => this.handlePress(Boolean(value)));
+    }).onSet((value) => this.acceptPress(Boolean(value)));
 
     // Whatever the cache remembered, a momentary switch starts off.
     service.updateCharacteristic(this.platform.Characteristic.On, false);
@@ -2484,6 +2485,19 @@ class RoborockHapRoutineSwitch {
     }
   }
 
+  /** A Routine switch acknowledges the momentary press immediately. */
+  private acceptPress(value: boolean): void {
+    void this.handlePress(value).catch((error) => {
+      // runRoutine owns expected cloud errors. Keep an unexpected background
+      // failure from becoming an unhandled rejection after HAP was answered.
+      this.platform.log.warn(
+        `Accepted Home routine "${this.displayName}" for ${this.coordinator.getRoutineRobotLabel()} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+  }
+
   private async handlePress(value: boolean): Promise<void> {
     if (!value || this.disposed) {
       // The switch turning itself off again. Not a command.
@@ -2491,7 +2505,18 @@ class RoborockHapRoutineSwitch {
     }
 
     this.scheduleReset();
-    await this.coordinator.runRoutine(this.sceneId, this.displayName);
+    if (this.runPending) {
+      this.platform.log.info(
+        `Ignoring repeated Home routine "${this.displayName}" for ${this.coordinator.getRoutineRobotLabel()}: its previous run is still queued or awaiting a cloud response.`
+      );
+      return;
+    }
+    this.runPending = true;
+    try {
+      await this.coordinator.runRoutine(this.sceneId, this.displayName);
+    } finally {
+      this.runPending = false;
+    }
   }
 
   private scheduleReset(): void {
