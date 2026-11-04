@@ -44,7 +44,13 @@ const SOURCE_PATH = path.join(
 );
 
 /** Matter actions that put the robot to work; these owe the user the mode. */
-const START_ACTIONS = ["start", "service area clean", "resume"];
+const START_ACTIONS = ["start", "service area clean"];
+
+// Resume is not a start. It continues a run that already has its settings,
+// and re-sending the displayed mode into it rewrote CooperCGN's paused
+// Roborock routine (#28): the robot finished the current room, went home and
+// skipped the routine's mop step. It now sends only a mode the user picked
+// that has not reached the robot yet.
 
 /** Matter actions that stop it; these must not touch the mode. */
 const NON_START_ACTIONS = ["stop", "pause"];
@@ -171,6 +177,12 @@ describe("the rule: every start applies the displayed clean mode", () => {
   test.each(START_ACTIONS)("'%s' applies the clean mode first", (action) => {
     const body = bodies.get(action);
     expect(body).toContain("applyCleanModeBeforeStarting()");
+  });
+
+  test("'resume' applies a mode only while one is waiting to be applied", () => {
+    expect(bodies.get("resume")).toMatch(
+      /if\s*\(\s*this\.selectedCleanModeNeedsApply\s*\)\s*\{\s*await this\.applyCleanModeBeforeStarting\(\);\s*\}/
+    );
   });
 
   test.each(NON_START_ACTIONS)("'%s' does not touch the mode", (action) => {
@@ -304,22 +316,71 @@ describe("what already worked keeps working", () => {
     expect(applied).toHaveLength(0);
   });
 
-  test("resuming a mop run re-applies mop, not the default Vacuum", async () => {
+  test("resuming a mop run sends no mode, so the water stays on", async () => {
     const applied = [];
+    const started = [];
     const platform = createPlatform({
       // Paused mid-run with the water box on: the run was started from the
       // Roborock app, so nothing ever selected a mode over Matter. Resuming
-      // must not quietly turn the water off.
+      // must not quietly turn the water off, and since 3.40.3 it does not
+      // send the water setting at all (#28).
       status: { state: 10, battery: 80, fan_power: 105, water_box_mode: 201 },
       applied,
+      started,
     });
     const { handlers } = createAccessory(platform);
 
     await handlers.rvcOperationalState.resume();
     await settle();
 
+    expect(applied).toHaveLength(0);
+    expect(started).toEqual(["app_start"]);
+  });
+
+  test("#28: resuming a paused Roborock routine sends only the resume", async () => {
+    const applied = [];
+    const started = [];
+    const platform = createPlatform({
+      // A routine (full clean, then a mop step) paused from HomeKit. The
+      // displayed mode is whatever Apple Home derives; the routine's own step
+      // settings are what the robot must keep.
+      status: {
+        state: 10,
+        battery: 70,
+        in_cleaning: 1,
+        fan_power: 104,
+        water_box_mode: 200,
+      },
+      applied,
+      started,
+    });
+    const { handlers } = createAccessory(platform);
+
+    await handlers.rvcOperationalState.resume();
+    await settle();
+
+    expect(applied).toHaveLength(0);
+    expect(started).toEqual(["app_start"]);
+  });
+
+  test("a mode picked but not yet applied is still applied on resume", async () => {
+    const applied = [];
+    const started = [];
+    const platform = createPlatform({
+      status: { state: 10, battery: 80, fan_power: 105, water_box_mode: 201 },
+      applied,
+      started,
+    });
+    const { vacuum, handlers } = createAccessory(platform);
+    // The live apply did not happen (e.g. Matter did not read the robot as
+    // paused when the mode was picked), so the pick is still owed.
+    vacuum.selectedCleanModeNeedsApply = true;
+
+    await handlers.rvcOperationalState.resume();
+    await settle();
+
     expect(applied).toHaveLength(1);
-    expect(applied[0].settings.waterBoxMode).not.toBe(ROBOROCK_WATER_BOX_OFF);
+    expect(started).toEqual(["app_start"]);
   });
 
   test("a failing prep never stops the start command", async () => {

@@ -2532,7 +2532,19 @@ export default class RoborockMatterVacuumAccessory {
     this.dispatchRoborockMatterCommand(
       "resume",
       async () => {
-        await this.applyCleanModeBeforeStarting();
+        // A resume continues a run that already has its settings, so it only
+        // sends a mode the user picked that has not reached the robot yet. A
+        // mode picked while paused is normally applied on the spot
+        // (changeCleanMode). Re-sending the displayed mode here is a settings
+        // change mid-run, and the likely cause of #28: CooperCGN's paused
+        // Roborock routine (full clean, then a mop step) finished only the
+        // current room, went home and skipped the mop step, and the robot
+        // chimed on a HomeKit resume. His own `app_start` with nothing before
+        // it continued the routine. Home Assistant's resume sends no mode
+        // either.
+        if (this.selectedCleanModeNeedsApply) {
+          await this.applyCleanModeBeforeStarting();
+        }
 
         if (verb === "resume_segment_clean" || verb === "resume_zoned_clean") {
           // No fallback to `app_start` if this fails. A failed resume leaves a
