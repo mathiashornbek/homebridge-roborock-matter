@@ -14,7 +14,7 @@ const { Roborock } = require("../roborockLib/roborockAPI");
 /** An mqtt.js client stand-in that connects on the next turn. */
 function fakeMqttClient() {
   const client = new EventEmitter();
-  client.subscribe = jest.fn();
+  client.subscribe = jest.fn((topic, callback) => callback(null, [{ qos: 0 }]));
   client.publish = jest.fn();
   client.end = jest.fn();
   setImmediate(() => client.emit("connect", { returnCode: 0 }));
