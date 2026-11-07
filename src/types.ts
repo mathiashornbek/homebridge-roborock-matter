@@ -78,6 +78,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableMatterPowerSource?: boolean;
   enableMatterCleanMode?: boolean;
   enableFanPowerCleanModes?: boolean;
+  enableSmartPlanCleanMode?: boolean;
   enableMatterExtendedOperationalStates?: boolean;
   enableMatterChargingDockedStates?: boolean;
   enableMatterFaultReporting?: boolean;

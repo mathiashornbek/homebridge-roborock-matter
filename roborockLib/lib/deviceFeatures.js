@@ -1548,6 +1548,43 @@ const MAX_PLUS_FAN_POWER_MODELS = new Set([
   "roborock.vacuum.a70", // S8 Pro Ultra
 ]);
 
+// Bits of the robot's `newFeatureSet` hex string, numbered as python-roborock
+// numbers them (device_features.py, NewFeatureStrBit): bit N is bit N % 4 of
+// the hex digit N / 4 places from the right.
+const NEW_FEATURE_STR_BIT_SMART_CLEAN_MODE_SET = 55;
+const NEW_FEATURE_STR_BIT_WATER_SLIDE_MODE = 106;
+
+/**
+ * @param {string | null | undefined} featuresStr
+ * @param {number} bit
+ */
+function isNewFeatureStrBitSet(featuresStr, bit) {
+  const digitFromEnd = 1 + Math.floor(bit / 4);
+  if (typeof featuresStr !== "string" || digitFromEnd > featuresStr.length) {
+    return false;
+  }
+  const nibble = parseInt(featuresStr[featuresStr.length - digitFromEnd], 16);
+  return !Number.isNaN(nibble) && ((nibble >> bit % 4) & 1) === 1;
+}
+
+/**
+ * Whether the robot offers SmartPlan, by python-roborock's rule: the smart
+ * clean mode bit is set, and the robot is not a water-slide model, whose water
+ * levels have no SmartPlan value. A Qrevo MaxV (a87) reports
+ * `508A977F7EFEFFFF`: bit 55 set, bit 106 clear.
+ *
+ * @param {string | null | undefined} featuresStr the robot's `newFeatureSet`
+ */
+function supportsSmartPlan(featuresStr) {
+  return (
+    isNewFeatureStrBitSet(
+      featuresStr,
+      NEW_FEATURE_STR_BIT_SMART_CLEAN_MODE_SET
+    ) &&
+    !isNewFeatureStrBitSet(featuresStr, NEW_FEATURE_STR_BIT_WATER_SLIDE_MODE)
+  );
+}
+
 /** @param {string} model */
 function supportsMaxPlusFanPower(model) {
   return MAX_PLUS_FAN_POWER_MODELS.has(model);
@@ -1669,6 +1706,7 @@ module.exports = {
   errorCodes,
   isKnownStatusAttribute,
   supportsMaxPlusFanPower,
+  supportsSmartPlan,
   getModelMarketingName,
   getModelNameWithoutBrand,
   MODEL_MARKETING_NAMES,
