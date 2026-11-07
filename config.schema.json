@@ -112,6 +112,12 @@
         "type": "boolean",
         "default": true
       },
+      "enableSmartPlanCleanMode": {
+        "title": "Enable SmartPlan Cleaning Mode",
+        "description": "Adds SmartPlan, the Roborock app's mode where the robot picks suction, water and mop route for each room, to the Matter cleaning mode list. Off by default. Only robots that report SmartPlan support get it (the same feature flag the Roborock app reads), so other robots on the same account are unaffected. Apple Home names modes from their Matter tags, not their labels, so it appears in the Vacuum & Mop menu as \"Automatic\". Matter fixes the mode list when the robot is paired, so remove and re-pair the robot after changing this. BEFORE TURNING THIS OFF, select Vacuum, Mop or Vacuum + Mop in Apple Home, for the same reason as the suction levels. Requires Matter Cleaning Mode Selection.",
+        "type": "boolean",
+        "default": false
+      },
       "matterHiddenCleanModes": {
         "title": "Hide Cleaning Modes in Apple Home",
         "description": "Leaves the ticked modes out of the cleaning modes Apple Home and Siri are offered. Siri picks a cleaning mode by itself when you ask it to clean (the log shows its mode request arriving just before the start), so a mode you never use can still be chosen for you (issue #50). Vacuum always stays: it is the mode everything falls back to. Apple Home reads the mode list only when the robot is added, so after saving and restarting, remove the robot from Apple Home and add it again. If Apple Home has a hidden mode selected, the plugin keeps offering that mode until another one is picked in Apple Home and Homebridge is restarted, and the log says so: Matter refuses to start a robot whose stored mode is no longer offered. Requires Matter Cleaning Mode Selection.",

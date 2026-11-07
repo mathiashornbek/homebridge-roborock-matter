@@ -65,6 +65,8 @@ type MatterCleanModeCapabilities = {
   // exists — model guessing is exactly what this fork is moving away from.
   canMaxPlusFanPower?: boolean;
   canControlWater?: boolean;
+  // The robot's own SmartPlan feature bit (python-roborock's rule).
+  canSmartPlan?: boolean;
 };
 
 type RoborockCleanModeSettings = {
@@ -268,6 +270,11 @@ const CLEAN_MODE_VACUUM_MAX = 6;
 // Max+ (fifth suction level, v1 fan power 108) — only announced for robots
 // whose protocol verifiably defines it (capabilities.canMaxPlusFanPower).
 const CLEAN_MODE_VACUUM_MAX_PLUS = 7;
+// SmartPlan (enableSmartPlanCleanMode, opt-in): the Roborock app's mode where
+// the robot picks suction, water and mop route per room. It is its own clean
+// type, not a suction level, and is selected by sending fan power 110 alone.
+// Announced only for robots that report SmartPlan support (canSmartPlan).
+const CLEAN_MODE_SMART_PLAN = 8;
 
 // Matter ModeBase common mode tags — combined with the RVC Vacuum tag.
 // IMPORTANT: Apple Home ignores mode labels and renders its own localized
@@ -3478,6 +3485,20 @@ export default class RoborockMatterVacuumAccessory {
       );
     }
 
+    if (this.isSmartPlanCleanModeAvailable(capabilities)) {
+      // Apple renders the tags, not the label. Vacuum + Mop + Auto is what
+      // SmartPlan does: both, with the robot choosing how.
+      supportedModes.push({
+        label: "SmartPlan",
+        mode: CLEAN_MODE_SMART_PLAN,
+        modeTags: [
+          { value: RVC_CLEAN_MODE_TAG_VACUUM },
+          { value: RVC_CLEAN_MODE_TAG_MOP },
+          { value: RVC_CLEAN_MODE_TAG_AUTO },
+        ],
+      });
+    }
+
     // Opt-in suction-level variants, only when the robot actually exposes
     // fan-power control. NOTE: Matter fixes the announced mode set at
     // commissioning — toggling this option requires re-pairing the robot.
@@ -3513,6 +3534,15 @@ export default class RoborockMatterVacuumAccessory {
 
   private isFanPowerCleanModesEnabled(): boolean {
     return this.platform.platformConfig.enableFanPowerCleanModes !== false;
+  }
+
+  private isSmartPlanCleanModeAvailable(
+    capabilities: MatterCleanModeCapabilities
+  ): boolean {
+    return (
+      this.platform.platformConfig.enableSmartPlanCleanMode === true &&
+      capabilities.canSmartPlan === true
+    );
   }
 
   private getFanPowerCleanMode(
@@ -3638,17 +3668,16 @@ export default class RoborockMatterVacuumAccessory {
     // Live derivation while suction-level modes are announced: report the
     // variant matching the robot's ACTUAL fan power, so suction changed in
     // the Roborock app is reflected in Apple Home's mode picker. A pending
-    // Matter selection wins until it has been applied, and mop-family
-    // selections are never overridden (their identity is the clean type,
-    // not the fan level).
+    // Matter selection wins until it has been applied, and only vacuum-family
+    // selections are refined: Mop, Vacuum + Mop and SmartPlan are identified
+    // by their clean type, not the fan level.
     if (
       this.isFanPowerCleanModesEnabled() &&
       !this.selectedCleanModeNeedsApply &&
       // Same reason as above: the fan power the robot reports on its way home
       // is the one it reset to, not the one it cleaned with.
       !windingDown &&
-      selected !== CLEAN_MODE_MOP &&
-      selected !== CLEAN_MODE_VACUUM_AND_MOP
+      this.getBaseCleanType(selected) === CLEAN_MODE_VACUUM
     ) {
       const liveFanPower = this.getNumberStatus("fan_power");
       if (liveFanPower !== null) {
@@ -3700,7 +3729,17 @@ export default class RoborockMatterVacuumAccessory {
       return CLEAN_MODE_MOP;
     }
 
-    if (!this.getMatterCleanModeCapabilities().canControlWater) {
+    // SmartPlan's water level says nothing about what the user chose: the
+    // robot picks it per room. Where SmartPlan is announced, it is the type.
+    const capabilities = this.getMatterCleanModeCapabilities();
+    if (
+      this.isSmartPlanCleanModeAvailable(capabilities) &&
+      this.isRobotIn(ROBOROCK_SMART_PLAN)
+    ) {
+      return CLEAN_MODE_SMART_PLAN;
+    }
+
+    if (!capabilities.canControlWater) {
       // Without water-flow control there is no reliable mop signal; robots
       // like mop-less models must not be guessed into a mop mode.
       return null;
@@ -3985,8 +4024,8 @@ export default class RoborockMatterVacuumAccessory {
   ): RoborockCleanModeSettings | null {
     const capabilities = this.getMatterCleanModeCapabilities();
     // Fan-power variants are vacuum-family modes with a pinned suction
-    // level: protocol layers only understand the three base clean types, so
-    // translate before handing over.
+    // level: protocol layers understand only the base clean types (SmartPlan
+    // is one, sent as its fan power), so translate before handing over.
     const fanPowerMode = this.getFanPowerCleanMode(cleanMode);
     const baseCleanMode = this.getBaseCleanType(cleanMode);
 
@@ -3997,6 +4036,13 @@ export default class RoborockMatterVacuumAccessory {
 
     // The robot's current levels are the user's, unless the robot chose them.
     this.rememberCurrentRoborockCleanModeSettings();
+
+    if (baseCleanMode === CLEAN_MODE_SMART_PLAN) {
+      // Fan power 110 alone: entering SmartPlan sets its own water and mop
+      // route, so a water level sent with it would only be overridden.
+      settings.fanPower = ROBOROCK_SMART_PLAN.fanPower;
+      return settings;
+    }
 
     if (capabilities.canControlFanPower) {
       settings.fanPower = fanPowerMode
@@ -4086,6 +4132,8 @@ export default class RoborockMatterVacuumAccessory {
         return "Mop";
       case CLEAN_MODE_VACUUM_AND_MOP:
         return "Vacuum + Mop";
+      case CLEAN_MODE_SMART_PLAN:
+        return "SmartPlan";
       default:
         return "Vacuum";
     }
