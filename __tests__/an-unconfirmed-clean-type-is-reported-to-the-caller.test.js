@@ -245,7 +245,9 @@ describe("the rule is stated over the source, not per command", () => {
 
     // Known levels: everything that is deliberately NOT type-carrying. Listed
     // here rather than derived so adding one is a visible choice.
-    const levelLabels = new Set(["suction level"]);
+    // The mop route is how the robot mops, not whether it does: the water
+    // mode decides that.
+    const levelLabels = new Set(["suction level", "mop route"]);
 
     for (const label of pushed) {
       expect(typeLabels.has(label) || levelLabels.has(label)).toBe(true);
