@@ -45,6 +45,7 @@ const ROBOROCK_STATE_ROOM_CLEAN = 18;
 
 const CLEAN_MODE_SMART_PLAN = 8;
 const RVC_CLEAN_MODE_TAG_AUTO = 0;
+const RVC_CLEAN_MODE_TAG_DAY = 9;
 const RVC_CLEAN_MODE_TAG_VACUUM = 16385;
 const RVC_CLEAN_MODE_TAG_MOP = 16386;
 
@@ -118,6 +119,11 @@ function createHarness(
     applied,
     handlers: accessory.handlers,
     supportedModes: () => instance.getSupportedCleanModes().map((m) => m.mode),
+    tagsOf: (mode) =>
+      instance
+        .getSupportedCleanModes()
+        .find((m) => m.mode === mode)
+        .modeTags.map((tag) => tag.value),
     cleanMode: () => instance.getCurrentCleanMode(),
     set: (patch) => Object.assign(status, patch),
   };
@@ -263,6 +269,7 @@ describe("a robot on manual levels is unchanged", () => {
 
 describe("SmartPlan as a clean mode of its own (enableSmartPlanCleanMode)", () => {
   const ENABLED = { enableSmartPlanCleanMode: true };
+  const SHIPPED_TAGS = [RVC_CLEAN_MODE_TAG_VACUUM, RVC_CLEAN_MODE_TAG_MOP];
 
   test("it is off by default, and a SmartPlan run reads as Vacuum + Mop", () => {
     const harness = createHarness({
@@ -272,19 +279,26 @@ describe("SmartPlan as a clean mode of its own (enableSmartPlanCleanMode)", () =
 
     expect(harness.supportedModes()).not.toContain(CLEAN_MODE_SMART_PLAN);
     expect(harness.cleanMode()).toBe(CLEAN_MODE_VACUUM_AND_MOP);
+    // Plain Vacuum + Mop keeps exactly the tags it shipped with.
+    expect(harness.tagsOf(CLEAN_MODE_VACUUM_AND_MOP)).toEqual(SHIPPED_TAGS);
   });
 
   test("enabled, it is announced as Vacuum + Mop + Auto", () => {
     const harness = createHarness({}, ENABLED);
-    const smartPlan = harness.instance
-      .getSupportedCleanModes()
-      .find((m) => m.mode === CLEAN_MODE_SMART_PLAN);
-
-    expect(smartPlan.label).toBe("SmartPlan");
-    expect(smartPlan.modeTags.map((tag) => tag.value)).toEqual([
+    expect(harness.tagsOf(CLEAN_MODE_SMART_PLAN)).toEqual([
       RVC_CLEAN_MODE_TAG_VACUUM,
       RVC_CLEAN_MODE_TAG_MOP,
       RVC_CLEAN_MODE_TAG_AUTO,
+    ]);
+  });
+
+  test("enabled, plain Vacuum + Mop is tagged Day so the two look different", () => {
+    const harness = createHarness({}, ENABLED);
+
+    expect(harness.tagsOf(CLEAN_MODE_VACUUM_AND_MOP)).toEqual([
+      RVC_CLEAN_MODE_TAG_VACUUM,
+      RVC_CLEAN_MODE_TAG_MOP,
+      RVC_CLEAN_MODE_TAG_DAY,
     ]);
   });
 
@@ -294,6 +308,7 @@ describe("SmartPlan as a clean mode of its own (enableSmartPlanCleanMode)", () =
     const harness = createHarness({}, ENABLED, { canSmartPlan: false });
 
     expect(harness.supportedModes()).not.toContain(CLEAN_MODE_SMART_PLAN);
+    expect(harness.tagsOf(CLEAN_MODE_VACUUM_AND_MOP)).toEqual(SHIPPED_TAGS);
   });
 
   test("starting in SmartPlan sends fan power 110 alone", async () => {
