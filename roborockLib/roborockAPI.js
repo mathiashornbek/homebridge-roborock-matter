@@ -1942,7 +1942,7 @@ class Roborock {
     if (this.config.enableLocalServerFastRefresh === true) {
       if (this.getRequestPolicy().localServer) {
         this.log.info(
-          "Local server fast refresh active: classic status 15s; live-map minimum gap 5s; device settings at least 5m apart (about 6m on the 3m background cycle). Schedule cache remains 5m; background refresh remains 3m."
+          "Local server fast refresh active: classic status 15s; live-map minimum gap 3s; device settings at least 5m apart (about 6m on the 3m background cycle). Schedule cache remains 5m; background refresh remains 3m."
         );
       } else {
         this.log.warn(
