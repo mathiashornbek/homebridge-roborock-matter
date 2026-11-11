@@ -20,6 +20,7 @@ const vacuum_class = require("./lib/vacuum").vacuum;
 const deviceFeatures = require("./lib/deviceFeatures").deviceFeatures;
 const supportsMaxPlusFanPower =
   require("./lib/deviceFeatures").supportsMaxPlusFanPower;
+const supportsSmartPlan = require("./lib/deviceFeatures").supportsSmartPlan;
 const RRMapParser = require("./lib/RRMapParser");
 const messageQueueHandler =
   require("./lib/messageQueueHandler").messageQueueHandler;
@@ -410,13 +411,20 @@ const MATTER_CLEAN_MODE_PREP_MARGIN_MS = 250;
 // inside it. On a v1 robot the difference between "Vacuum" and "Vacuum and mop"
 // IS the water-box mode; on the Q7/B01 dialect it is the native clean type.
 // The suction level is deliberately absent: a cosmetic command that did not
-// answer says nothing about which type the robot is running.
+// answer says nothing about which type the robot is running. Fan power 110 is
+// the exception, because it is no level: it is SmartPlan itself, so a start in
+// SmartPlan sends its type in the fan command and reports it as "SmartPlan".
 //
 // Named here, once, because both ends need the same answer — the prep decides
 // what to report as unconfirmed and the caller decides whether it may still
 // outrank the robot's own report. Two hand-written copies drifting apart is the
 // most repeated defect in this codebase.
-const MATTER_CLEAN_TYPE_PREP_LABELS = new Set(["water mode", "clean type"]);
+const MATTER_CLEAN_TYPE_PREP_LABELS = new Set([
+  "water mode",
+  "clean type",
+  "SmartPlan",
+]);
+const MATTER_SMART_PLAN_FAN_POWER = 110;
 // How long to wait before retrying to cache rooms for a saved map that did not
 // return room segments. Retrying lets newly named/segmented maps appear without
 // switching maps on every poll cycle.
@@ -2751,6 +2759,10 @@ class Roborock {
       canMaxPlusFanPower: supportsMaxPlusFanPower(
         this.getProductAttribute(duid, "model")
       ),
+      // Q7/B01 returns above, so it never gets SmartPlan.
+      canSmartPlan: supportsSmartPlan(
+        this.vacuums[duid]?.features?.featuresStr
+      ),
       canControlWater:
         hasWaterModeSchema ||
         this.hasVacuumFeature(duid, [
@@ -3077,7 +3089,11 @@ class Roborock {
       Number.isInteger(settings?.fanPower) &&
       this.getMatterCleanModeCapabilities(duid).canControlFanPower
     ) {
-      const fanOptions = takeCommandOptions("suction level");
+      const fanLabel =
+        settings.fanPower === MATTER_SMART_PLAN_FAN_POWER
+          ? "SmartPlan"
+          : "suction level";
+      const fanOptions = takeCommandOptions(fanLabel);
       if (fanOptions) {
         try {
           await this.runMatterSettingCommand(
@@ -3092,7 +3108,7 @@ class Roborock {
             "set_custom_mode",
             error
           );
-          unconfirmedSettings.push("suction level");
+          unconfirmedSettings.push(fanLabel);
           this.log.debug(
             `Matter clean mode fan command failed for ${duid}; continuing with start command. ${error.message || error}`
           );

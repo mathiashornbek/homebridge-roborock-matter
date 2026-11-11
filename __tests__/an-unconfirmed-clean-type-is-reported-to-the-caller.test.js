@@ -219,6 +219,19 @@ describe("the Q7/B01 dialect obeys the same rule with its own commands", () => {
     expect(result.unconfirmedSettings).toEqual(["suction level"]);
     expect(result.cleanTypeConfirmed).toBe(true);
   });
+
+  test("a lost SmartPlan does, because fan power 110 is its type, not a level", async () => {
+    const { api } = createApi({ failFan: true });
+
+    const result = await api.applyMatterCleanModeSettings(
+      DUID,
+      { cleanMode: 8, fanPower: 110 },
+      {}
+    );
+
+    expect(result.unconfirmedSettings).toEqual(["SmartPlan"]);
+    expect(result.cleanTypeConfirmed).toBe(false);
+  });
 });
 
 describe("the rule is stated over the source, not per command", () => {
@@ -233,6 +246,12 @@ describe("the rule is stated over the source, not per command", () => {
         (match) => match[1]
       )
     );
+    // A label chosen per request is named in a `const …Label =` first.
+    for (const [declaration] of source.matchAll(/const \w+Label =[^;]+;/g)) {
+      for (const [, label] of declaration.matchAll(/"([^"]+)"/g)) {
+        pushed.add(label);
+      }
+    }
     expect(pushed.size).toBeGreaterThan(0);
 
     const declared = source.match(
