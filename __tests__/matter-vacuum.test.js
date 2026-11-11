@@ -541,6 +541,7 @@ describe("Matter identify", () => {
       throwOnError: true,
       preferLocal: true,
       allowOfflineCloudSend: true,
+      requestTimeoutMs: 2500,
     });
     expect(
       matterUpdates.filter((update) => update.cluster === "rvcOperationalState")
@@ -549,6 +550,31 @@ describe("Matter identify", () => {
     expect(matterUpdates.some((update) => update.cluster === "identify")).toBe(
       false
     );
+  });
+
+  test("Identify finishes within its short command budget during an outage", async () => {
+    jest.useFakeTimers();
+    try {
+      const findMe = jest.fn(
+        (_duid, options) =>
+          new Promise((_resolve, reject) => {
+            setTimeout(
+              () => reject(new Error("MQTT readiness expired")),
+              options.requestTimeoutMs
+            );
+          })
+      );
+      const platform = createPlatform({ findMe });
+      const { accessory } = createAccessory(platform, true);
+      const result = accessory.handlers.identify.identify();
+      await jest.advanceTimersByTimeAsync(2500);
+      await expect(result).resolves.toBeUndefined();
+      expect(platform.log.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Unable to locate")
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("keeps Identify successful when find_me fails", async () => {

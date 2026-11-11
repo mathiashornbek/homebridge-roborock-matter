@@ -120,10 +120,12 @@ describe("messageQueueHandler transport selection", () => {
       setTimeout: jest.fn((callback, timeout) => setTimeout(callback, timeout)),
     });
     adapter.rr_mqtt_connector.sendMessage.mockImplementation(() => {
-      const pending = adapter.pendingRequests.get(42);
-      adapter.clearTimeout(pending.timeout);
-      adapter.pendingRequests.delete(42);
-      pending.resolve(["ok"]);
+      queueMicrotask(() => {
+        const pending = adapter.pendingRequests.get(42);
+        adapter.clearTimeout(pending.timeout);
+        adapter.pendingRequests.delete(42);
+        pending.resolve(["ok"]);
+      });
     });
 
     const handler = new messageQueueHandler(adapter);
