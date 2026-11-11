@@ -2,6 +2,15 @@
 
 Entries before 3.39.0 are short summaries. The full notes for every release are on the [GitHub releases page](https://github.com/mathiashornbek/homebridge-roborock-matter/releases) and in the git history of this file.
 
+## 3.41.0
+
+**A clean mode chosen in Apple Home now wins over the Roborock app's SmartPlan and Custom modes, and a charging robot no longer fills the log with a line per battery percent.**
+
+- **SmartPlan and Custom** ([#44](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/44), @alexandercaley). A robot left in the app's SmartPlan (fan 110 / water 209 / mop route 306) or Custom (106 / 204 / 302) ignored the mode started from Apple Home: before starting, the plugin re-sent the robot's current suction level, and re-sending 110 put it straight back into SmartPlan, which then washed the mop on a Vacuum start. Any one of a mode's three values now means the robot chose its own levels, the same rule as python-roborock's `is_smart_mode_set` and `is_mode_customized`. Those values are never re-sent or remembered as yours; the start uses your last manual levels, or Balanced and Mild, and sets mop route 300 when the robot reports 306 or 302. **What you will notice:** a start from Apple Home, Siri or an automation on a robot in SmartPlan now runs with manual levels. Measured on a Qrevo MaxV: the robot ran at 102/200/300 and returned to SmartPlan by itself after docking, so the app setting is changed for that run only. Robots on manual levels get exactly what they got before.
+- **Quieter info log** ([#51](https://github.com/mathiashornbek/homebridge-roborock-matter/issues/51)). The `Matter publish for …` line was written at info on every battery percent. A change that is only the battery now goes to debug; any other change (state, mode, phase, fault) is still logged at info and carries the current battery.
+
+2,698 tests. 18 of the 38 tests in #44's three files fail on 3.40.3; 3 of the new log tests fail without the change.
+
 ## 3.40.3
 
 **Resuming from Apple Home no longer rewrites the paused run, and a robot whose dock refills it no longer refuses to start because its own small tank reads empty.**

@@ -352,6 +352,11 @@ const ROBOROCK_ROBOT_CHOSEN_MODES = [ROBOROCK_SMART_PLAN, ROBOROCK_CUSTOM];
 /** The mop route python-roborock sends for every manual clean mode. */
 const ROBOROCK_MOP_ROUTE_STANDARD = 300;
 
+/** A "Matter publish for …" line with its battery value blanked (#51). */
+function withoutBattery(publishLine: string): string {
+  return publishLine.replace(/battery=[^,]*,/, "battery=,");
+}
+
 /**
  * Floor on how many DISTINCT live-room observations a room needs before the
  * plugin will call it visited. This is only a floor: the dwell below is what
@@ -2163,6 +2168,18 @@ export default class RoborockMatterVacuumAccessory {
       // poll proves the Roborock side still answers.
       this.platform.log.debug(
         `${line} Unchanged since the last logged line, so it was written but not repeated at info (${reason}).`
+      );
+      return;
+    }
+    // A change that is only the battery is not a transition (#51): a charging
+    // robot otherwise writes an info line per percent. It goes to debug, and
+    // the next real change carries the current battery to info anyway.
+    if (
+      this.lastLoggedMatterPublishLine !== null &&
+      withoutBattery(line) === withoutBattery(this.lastLoggedMatterPublishLine)
+    ) {
+      this.platform.log.debug(
+        `${line} Only the battery changed since the last logged line, so it was not repeated at info (${reason}).`
       );
       return;
     }

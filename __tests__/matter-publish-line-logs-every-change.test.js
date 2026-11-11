@@ -110,9 +110,9 @@ describe("the Matter publish line is emitted whenever what it says changes", () 
   });
 
   // The rule, field by field. Each field is changed ALONE, so none of these
-  // can pass by riding along on another field's change.
+  // can pass by riding along on another field's change. Battery is the one
+  // exception and has its own describe block below (#51).
   const fields = [
-    { name: "battery", change: { battery: 186 } },
     { name: "operationalState", change: { operationalState: RUNNING } },
     { name: "runMode", change: { runMode: 1 } },
     { name: "cleanMode", change: { cleanMode: 2 } },
@@ -319,5 +319,58 @@ describe("a suppressed publish is still recorded at debug", () => {
 
     expect(publishLines(info)).toHaveLength(2);
     expect(debugLines(debug)).toHaveLength(0);
+  });
+});
+
+// #51 (n0rt0nthec4t, 5 Nov 2026): a charging or cleaning robot wrote a new
+// info line for every battery percent, and on a Qrevo S that was most of the
+// plugin's info log. The line exists for state transitions (#8), and a
+// battery tick is not one. So a change that is ONLY the battery goes to debug
+// with its full values; any other change still goes to info and carries the
+// current battery with it, so the info log still shows the level at every
+// transition.
+describe("a battery-only change is recorded at debug, not info (#51)", () => {
+  const debugLines = (debug) =>
+    debug.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("Matter publish for"));
+
+  test("a battery tick alone writes no info line", async () => {
+    const { instance, info, debug } = createHarness();
+    await publish(instance, snapshot());
+    await publish(instance, snapshot({ battery: 186 }));
+    await publish(instance, snapshot({ battery: 184 }));
+
+    expect(publishLines(info)).toHaveLength(1);
+    expect(debugLines(debug)).toHaveLength(2);
+    expect(debugLines(debug)[1]).toContain("battery=92%");
+  });
+
+  test("the next real change is logged at info with the current battery", async () => {
+    const { instance, info } = createHarness();
+    await publish(instance, snapshot());
+    await publish(instance, snapshot({ battery: 186 }));
+    await publish(
+      instance,
+      snapshot({ battery: 186, operationalState: RUNNING })
+    );
+
+    const lines = publishLines(info);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe(
+      "Matter publish for Weebo: battery=93%, operationalState=1, runMode=0, cleanMode=0."
+    );
+  });
+
+  test("a battery tick after a change does not restate the change", async () => {
+    const { instance, info } = createHarness();
+    await publish(instance, snapshot());
+    await publish(instance, snapshot({ operationalState: RUNNING }));
+    await publish(
+      instance,
+      snapshot({ battery: 190, operationalState: RUNNING })
+    );
+
+    expect(publishLines(info)).toHaveLength(2);
   });
 });
