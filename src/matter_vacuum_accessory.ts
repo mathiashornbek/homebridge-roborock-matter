@@ -66,6 +66,7 @@ type RoborockCleanModeSettings = {
   cleanMode?: number;
   fanPower?: number;
   waterBoxMode?: number | null;
+  mopRoute?: number;
 };
 
 type RoborockCommandOptions = {
@@ -317,6 +318,39 @@ const ROBOROCK_FAN_POWER_OFF = 105;
 const ROBOROCK_FAN_POWER_BALANCED = 102;
 const ROBOROCK_WATER_BOX_OFF = 200;
 const ROBOROCK_WATER_BOX_MILD = 201;
+
+/**
+ * The two Roborock app modes in which the robot, not the user, sets the
+ * levels: SmartPlan (it picks suction, water and mop route per room) and
+ * Custom (the per-room levels set in the app). Each is a MODE, and any one of
+ * its three values means the robot is in it; the other two can then be
+ * ordinary-looking levels it chose itself. Measured on a Qrevo MaxV (a87,
+ * 7 Nov 2026) in SmartPlan: fan 110, water 202, mop route 306. Same rule as
+ * python-roborock's `is_smart_mode_set` and `is_mode_customized`.
+ *
+ * None of these values is remembered as the user's level or re-sent, because
+ * re-sending one re-enters the mode: on the same robot (22 Oct 2026), Vacuum
+ * sent water 200 and then fan 110, the robot went back into SmartPlan, and
+ * the dock washed the mop two seconds later.
+ */
+type RoborockRobotChosenMode = {
+  fanPower: number;
+  waterBoxMode: number;
+  mopRoute: number;
+};
+const ROBOROCK_SMART_PLAN: RoborockRobotChosenMode = {
+  fanPower: 110,
+  waterBoxMode: 209,
+  mopRoute: 306,
+};
+const ROBOROCK_CUSTOM: RoborockRobotChosenMode = {
+  fanPower: 106,
+  waterBoxMode: 204,
+  mopRoute: 302,
+};
+const ROBOROCK_ROBOT_CHOSEN_MODES = [ROBOROCK_SMART_PLAN, ROBOROCK_CUSTOM];
+/** The mop route python-roborock sends for every manual clean mode. */
+const ROBOROCK_MOP_ROUTE_STANDARD = 300;
 
 /**
  * Floor on how many DISTINCT live-room observations a room needs before the
@@ -3817,25 +3851,36 @@ export default class RoborockMatterVacuumAccessory {
     // v1-style fan/water workarounds below.
     const settings: RoborockCleanModeSettings = { cleanMode: baseCleanMode };
 
+    // The robot's current levels are the user's, unless the robot chose them.
+    this.rememberCurrentRoborockCleanModeSettings();
+
     if (capabilities.canControlFanPower) {
       settings.fanPower = fanPowerMode
         ? fanPowerMode.fanPower
         : baseCleanMode === CLEAN_MODE_MOP
           ? ROBOROCK_FAN_POWER_OFF
-          : this.getPreferredVacuumFanPower();
+          : this.lastVacuumFanPower ?? ROBOROCK_FAN_POWER_BALANCED;
     }
 
     if (capabilities.canControlWater) {
       settings.waterBoxMode =
         baseCleanMode === CLEAN_MODE_VACUUM
           ? ROBOROCK_WATER_BOX_OFF
-          : this.getPreferredWaterBoxMode();
+          : this.lastWaterBoxMode ?? ROBOROCK_WATER_BOX_MILD;
+    }
+
+    if (this.isOnRobotChosenMopRoute()) {
+      settings.mopRoute = ROBOROCK_MOP_ROUTE_STANDARD;
     }
 
     return Object.keys(settings).length > 0 ? settings : null;
   }
 
   private rememberCurrentRoborockCleanModeSettings(): void {
+    if (this.isRobotChoosingItsOwnLevels()) {
+      return;
+    }
+
     const fanPower = this.getNumberStatus("fan_power");
     if (fanPower !== null && fanPower !== ROBOROCK_FAN_POWER_OFF) {
       this.lastVacuumFanPower = fanPower;
@@ -3847,17 +3892,31 @@ export default class RoborockMatterVacuumAccessory {
     }
   }
 
-  private getPreferredVacuumFanPower(): number {
-    const currentFanPower = this.getNumberStatus("fan_power");
-    if (
-      currentFanPower !== null &&
-      currentFanPower !== ROBOROCK_FAN_POWER_OFF
-    ) {
-      this.lastVacuumFanPower = currentFanPower;
-      return currentFanPower;
-    }
+  /** In SmartPlan or Custom; see ROBOROCK_ROBOT_CHOSEN_MODES. */
+  private isRobotChoosingItsOwnLevels(): boolean {
+    return ROBOROCK_ROBOT_CHOSEN_MODES.some((mode) => this.isRobotIn(mode));
+  }
 
-    return this.lastVacuumFanPower ?? ROBOROCK_FAN_POWER_BALANCED;
+  /** Any one of the mode's three values means the robot is in it. */
+  private isRobotIn(mode: RoborockRobotChosenMode): boolean {
+    return (
+      this.getNumberStatus("fan_power") === mode.fanPower ||
+      this.getWaterBoxModeStatus() === mode.waterBoxMode ||
+      this.getNumberStatus("mop_mode") === mode.mopRoute
+    );
+  }
+
+  /**
+   * Leaving SmartPlan or Custom also means leaving its mop route: the plugin
+   * otherwise never touches `mop_mode`, so a Vacuum + Mop from SmartPlan kept
+   * route 306. Sent only when the robot reports one of those routes, which is
+   * also how a robot without route control is never sent the command.
+   */
+  private isOnRobotChosenMopRoute(): boolean {
+    const mopRoute = this.getNumberStatus("mop_mode");
+    return ROBOROCK_ROBOT_CHOSEN_MODES.some(
+      (mode) => mode.mopRoute === mopRoute
+    );
   }
 
   /**
@@ -3871,19 +3930,6 @@ export default class RoborockMatterVacuumAccessory {
       this.getNumberStatus("water_box_mode") ??
       this.getNumberStatus("water_box_custom_mode")
     );
-  }
-
-  private getPreferredWaterBoxMode(): number {
-    const currentWaterBoxMode = this.getWaterBoxModeStatus();
-    if (
-      currentWaterBoxMode !== null &&
-      currentWaterBoxMode !== ROBOROCK_WATER_BOX_OFF
-    ) {
-      this.lastWaterBoxMode = currentWaterBoxMode;
-      return currentWaterBoxMode;
-    }
-
-    return this.lastWaterBoxMode ?? ROBOROCK_WATER_BOX_MILD;
   }
 
   private getCleanModeLabel(cleanMode: number): string {

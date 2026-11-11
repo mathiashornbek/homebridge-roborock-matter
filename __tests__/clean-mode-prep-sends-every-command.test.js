@@ -40,7 +40,11 @@ function createLog() {
  * A Roborock instance with the transport stubbed out, recording the order in
  * which prep commands are attempted.
  */
-function createApi({ failWater = false, failFan = false } = {}) {
+function createApi({
+  failWater = false,
+  failFan = false,
+  failRoute = false,
+} = {}) {
   const api = new Roborock({
     log: createLog(),
     storagePath: fs.mkdtempSync(path.join(os.tmpdir(), "roborock-prep-")),
@@ -72,7 +76,10 @@ function createApi({ failWater = false, failFan = false } = {}) {
 
   api.runMatterSettingCommand = jest.fn(async (duid, command, value) => {
     attempted.push({ command, value });
-    if (failFan) {
+    if (failRoute && command === "set_mop_mode") {
+      throw new Error("set_mop_mode timed out after 2 seconds.");
+    }
+    if (failFan && command === "set_custom_mode") {
       throw new Error(
         "Cloud request with id 685 with method set_custom_mode timed out after 2 seconds."
       );
@@ -218,5 +225,45 @@ describe("clean-mode prep sends every command the selection asks for", () => {
     for (const handler of catchBlocks) {
       expect(handler).not.toMatch(/\breturn\b/);
     }
+  });
+});
+
+// SmartPlan and Custom each set a mop route of their own (306, 302), and the
+// plugin otherwise never touches `mop_mode`, so Vacuum + Mop started from
+// SmartPlan kept the SmartPlan route. Leaving one of those modes asks for the
+// Standard route (300). The water command still goes first, because it carries
+// the clean type (#8); the route is part of leaving the mode, so it goes before
+// the suction level, which is a level inside it.
+describe("leaving SmartPlan sends the Standard mop route", () => {
+  const LEAVING_SMART_PLAN = { ...VACUUM_SETTINGS, mopRoute: 300 };
+
+  test("water, then the route, then the suction level", async () => {
+    const { api, attempted } = createApi();
+
+    await api.applyMatterCleanModeSettings(DUID, LEAVING_SMART_PLAN, {});
+
+    expect(attempted).toEqual([
+      { command: "set_water_box_custom_mode", value: 200 },
+      { command: "set_mop_mode", value: 300 },
+      { command: "set_custom_mode", value: 102 },
+    ]);
+  });
+
+  test("an unconfirmed route is reported as a level, not as the clean type", async () => {
+    const { api, attempted } = createApi({ failRoute: true });
+
+    const result = await api.applyMatterCleanModeSettings(
+      DUID,
+      LEAVING_SMART_PLAN,
+      {}
+    );
+
+    expect(result).toEqual({
+      unconfirmedSettings: ["mop route"],
+      cleanTypeConfirmed: true,
+    });
+    expect(attempted.map((entry) => entry.command)).toContain(
+      "set_custom_mode"
+    );
   });
 });

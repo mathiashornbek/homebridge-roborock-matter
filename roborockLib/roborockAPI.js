@@ -2880,7 +2880,7 @@ class Roborock {
    * learn whether the user's clean TYPE actually landed.
    *
    * @param {string} duid
-   * @param {{ cleanMode?: number, fanPower?: number, waterBoxMode?: number }} settings
+   * @param {{ cleanMode?: number, fanPower?: number, waterBoxMode?: number, mopRoute?: number }} settings
    * @param {Record<string, unknown>} [options]
    * @returns {Promise<{ unconfirmedSettings: string[], cleanTypeConfirmed: boolean }>}
    */
@@ -3042,6 +3042,33 @@ class Roborock {
               `Matter clean mode water commands failed for ${duid}; continuing with start command. ${error.message || error}`
             );
           }
+        }
+      }
+    }
+
+    // Sent only to leave SmartPlan or Custom, whose route the robot keeps
+    // otherwise. After the water, which carries the clean type and keeps the
+    // window (#8); before the suction level, which is a level inside it.
+    if (Number.isInteger(settings?.mopRoute)) {
+      const routeOptions = takeCommandOptions("mop route");
+      if (routeOptions) {
+        try {
+          await this.runMatterSettingCommand(
+            duid,
+            "set_mop_mode",
+            settings.mopRoute,
+            routeOptions
+          );
+        } catch (error) {
+          this.rememberUnsupportedMatterSettingCommand(
+            duid,
+            "set_mop_mode",
+            error
+          );
+          unconfirmedSettings.push("mop route");
+          this.log.debug(
+            `Matter clean mode mop route command failed for ${duid}; continuing with start command. ${error.message || error}`
+          );
         }
       }
     }
