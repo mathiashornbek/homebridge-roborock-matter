@@ -67,7 +67,7 @@
         "title": "Faster updates for local server (experimental)",
         "type": "boolean",
         "default": false,
-        "description": "For a self-hosted Roborock server: classic status every 15 seconds, live-map requests at least 5 seconds apart, and device settings about every 6 minutes. Schedule cache stays at 5 minutes and background refresh at 3 minutes. Requires a Custom Server URL and a session using custom server endpoints. Restart the child bridge after changing this setting."
+        "description": "For a self-hosted Roborock server: classic status every 15 seconds, classic live-map requests at least 3 seconds apart, and device settings about every 6 minutes. Schedule cache stays at 5 minutes and background refresh at 3 minutes. Requires a Custom Server URL and a session using custom server endpoints. Restart the child bridge after changing this setting."
       },
       "debugMode": {
         "title": "Debug Mode",

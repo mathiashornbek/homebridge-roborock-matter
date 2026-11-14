@@ -30,8 +30,10 @@ states where the robot is moving through rooms, not when paused or docked.
 
 B01/Q7 robots keep their existing status cadence (about 15 seconds active and
 30 seconds idle), 30-second fresh-pushed-map suppression, and six-hour room-list
-cache. Their healthy fallback live-map request gap can use the 3-second minimum,
-but their existing failure backoff remains. Q10 live-map support is unchanged.
+cache. Their live-map requests keep the 10-second gap and the failure backoff:
+a Q7's fallback request uploads its saved map, which carries no live position,
+so asking more often would add load without placing the robot. Q10 live-map
+support is unchanged.
 
 Faster status reads do not guarantee Apple Home will display battery percentages
 more frequently; controller-side reading/reporting behavior still applies.

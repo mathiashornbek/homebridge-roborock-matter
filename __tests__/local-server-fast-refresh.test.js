@@ -255,6 +255,25 @@ describe("faster live maps retain their guards", () => {
     expect(api.messageQueueHandler.sendRequest).not.toHaveBeenCalled();
   });
 
+  test("a Q7's live-map request keeps its 10 s gap: its fallback map carries no live position", async () => {
+    // The Q7 fallback (service.upload_by_mapid) makes the robot upload its
+    // whole saved map, which has no live pose, so asking more often adds load
+    // and places nothing. Only the classic get_map_v1 gets the shorter gap.
+    const api = makeApi();
+    expect(api.getRequestPolicy().liveMapGapMs).toBe(3000);
+    api.getProductAttribute = jest.fn(() => "roborock.vacuum.sc05");
+    api.config.enableLiveRoomTracking = true;
+    const state = api.b01LiveRoomStateFor("q7");
+    state.lastAttemptAt = now - 4000;
+    state.lastLiveFrameAt = 0;
+    state.consecutiveFailures = 0;
+    state.current = "Kitchen";
+    const before = state.lastAttemptAt;
+
+    await expect(api.refreshB01LiveRoom("q7")).resolves.toBe("Kitchen");
+    expect(state.lastAttemptAt).toBe(before);
+  });
+
   test("an unanswered map keeps the 10s retry floor and six-strike breaker", async () => {
     const api = mapApi();
     api.messageQueueHandler.sendRequest.mockImplementation(async () => {

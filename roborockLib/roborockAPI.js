@@ -114,15 +114,10 @@ const LIVE_ROOM_FAILURE_BACKOFF_MAX_MS = 300000; // 5 min
  * @param {number} [consecutiveFailures]
  * @returns {number}
  */
-function liveRoomFetchGapMs(
-  consecutiveFailures,
-  healthyGapMs = B01_LIVE_ROOM_MIN_FETCH_GAP_MS
-) {
+function liveRoomFetchGapMs(consecutiveFailures) {
   const over = Number(consecutiveFailures) - LIVE_ROOM_FAILURE_BACKOFF_AFTER;
   if (!Number.isFinite(over) || over <= 0) {
-    return Number(consecutiveFailures) > 0
-      ? B01_LIVE_ROOM_MIN_FETCH_GAP_MS
-      : healthyGapMs;
+    return B01_LIVE_ROOM_MIN_FETCH_GAP_MS;
   }
   return Math.min(
     B01_LIVE_ROOM_MIN_FETCH_GAP_MS * 2 ** over,
@@ -6698,10 +6693,9 @@ class Roborock {
     }
     if (
       Date.now() - liveState.lastAttemptAt <
-      liveRoomFetchGapMs(
-        liveState.consecutiveFailures,
-        this.getRequestPolicy().liveMapGapMs
-      )
+      // Not the local-server preset's shorter gap (#48): a Q7's fallback
+      // request uploads its saved map, which carries no live position.
+      liveRoomFetchGapMs(liveState.consecutiveFailures)
     ) {
       return liveState.current;
     }
