@@ -131,6 +131,9 @@ test("every request is published at QoS 0, as python-roborock publishes it", asy
     rriot: { k: "k", u: "u", s: "s", r: { m: "mqtt://broker.invalid" } },
   });
 
+  await connector.initMQTT_Subscribe();
+  client.on.mock.calls.find(([event]) => event === "connect")[1]({});
+  client.subscribe.mock.calls.at(-1)[1](null, [{ qos: 1 }]);
   connector.sendMessage("duid", Buffer.from("frame"));
 
   expect(client.publish).toHaveBeenCalledTimes(1);
