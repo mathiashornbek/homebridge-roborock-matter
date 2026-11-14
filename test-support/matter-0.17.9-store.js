@@ -241,6 +241,56 @@ function assertMode(state, newMode) {
   }
 }
 
+// What matter.js 0.17.9 persists of the RVC mode clusters and restores on the
+// next start: `currentMode`, and not `supportedModes` (read off disk in
+// docs/matter-clean-mode-shrink-issue-draft.md for rvcCleanMode; rvcRunMode's
+// CurrentMode is nonvolatile under the same ModeBase rule, unmeasured here).
+const PERSISTED_ATTRIBUTES = {
+  rvcCleanMode: ["currentMode"],
+  rvcRunMode: ["currentMode"],
+};
+
+/**
+ * Registration on a start that follows an earlier one, as Homebridge 2.4.0
+ * and matter.js 0.17.9 do it: the endpoint's defaults are accessory.clusters,
+ * every persisted attribute is restored over them, and then each behavior
+ * initializes. RvcCleanModeServer.initialize and RvcRunModeServer.initialize
+ * assert that the RESTORED currentMode is in the SUPPLIED supportedModes
+ * (ModeUtils.assertMode) and throw otherwise; Homebridge rolls the endpoint
+ * back and the accessory is not registered at all — "Failed to register
+ * Matter accessory …: Can not use unsupported mode: 6. Allowed modes are 0,
+ * 1, 2" in the shrink-issue draft. Stored state for a cluster the endpoint no
+ * longer has is not loaded (no behavior to load it into).
+ *
+ * @param {Record<string, Record<string, unknown>>} defaults accessory.clusters
+ * @param {Record<string, Record<string, unknown>>} [persisted] what the
+ *   previous run's store persisted (`store.persisted()`)
+ * @param {{ deferWrites?: boolean }} [options] as createMatterStore
+ */
+function registerMatterEndpoint(defaults, persisted = {}, options = {}) {
+  const initial = clone(defaults || {});
+  for (const [cluster, attributes] of Object.entries(persisted || {})) {
+    if (initial[cluster] === undefined) continue;
+    for (const attribute of PERSISTED_ATTRIBUTES[cluster] || []) {
+      if (attributes?.[attribute] !== undefined) {
+        initial[cluster][attribute] = clone(attributes[attribute]);
+      }
+    }
+  }
+  for (const cluster of Object.keys(PERSISTED_ATTRIBUTES)) {
+    if (initial[cluster] === undefined) continue;
+    try {
+      assertMode(initial[cluster], initial[cluster].currentMode);
+    } catch (error) {
+      if (!(error instanceof ValidationError)) throw error;
+      throw new Error(
+        `Failed to register Matter accessory: [behavior-initialization] Error initializing ${cluster}: [unsupported-mode] ${error.message}`
+      );
+    }
+  }
+  return createMatterStore(initial, options);
+}
+
 /**
  * @param {Record<string, Record<string, unknown>>} [initial] the endpoint as
  *   registered (Homebridge passes accessory.clusters as the defaults).
@@ -374,7 +424,21 @@ function createMatterStore(initial = {}, { deferWrites = false } = {}) {
     read(cluster, attribute) {
       return clusters[cluster]?.[attribute];
     },
+    /** What matter.js keeps on disk for the next start: see PERSISTED_ATTRIBUTES. */
+    persisted() {
+      const kept = {};
+      for (const [cluster, attributes] of Object.entries(
+        PERSISTED_ATTRIBUTES
+      )) {
+        if (clusters[cluster] === undefined) continue;
+        kept[cluster] = {};
+        for (const attribute of attributes) {
+          kept[cluster][attribute] = clone(clusters[cluster][attribute]);
+        }
+      }
+      return kept;
+    },
   };
 }
 
-module.exports = { createMatterStore };
+module.exports = { createMatterStore, registerMatterEndpoint };

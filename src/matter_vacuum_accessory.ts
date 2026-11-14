@@ -5,7 +5,12 @@ import {
 
 import RoborockPlatform from "./platform";
 import { getLiveMessageForThisAccessory } from "./live_message";
-import { HomeKitActionKey, HomeKitStateSensorKey } from "./types";
+import {
+  HomeKitActionKey,
+  HomeKitStateSensorKey,
+  isMatterHideableCleanModeKey,
+  MatterHideableCleanModeKey,
+} from "./types";
 import { clearTimer, scheduleTimer, unrefTimer } from "./timers";
 
 const { getModelNameWithoutBrand } =
@@ -237,6 +242,18 @@ const MEANINGFUL_LIVE_STATUS_FIELDS = [
 const CLEAN_MODE_VACUUM = 0;
 const CLEAN_MODE_MOP = 1;
 const CLEAN_MODE_VACUUM_AND_MOP = 2;
+
+// The modes `matterHiddenCleanModes` may leave out (#50), by setting value.
+const HIDEABLE_CLEAN_MODES: Readonly<
+  Record<MatterHideableCleanModeKey, number>
+> = {
+  mop: CLEAN_MODE_MOP,
+  vacuumAndMop: CLEAN_MODE_VACUUM_AND_MOP,
+};
+
+// Where the accessory context keeps the clean mode Matter last held for this
+// robot, read back from the store or written to it. See decideHiddenCleanModes.
+const STORED_CLEAN_MODE_CONTEXT_KEY = "matterStoredCleanMode";
 
 // Fan-power clean modes (enableFanPowerCleanModes, default ON since 3.12.0;
 // was off since
@@ -1136,6 +1153,13 @@ export default class RoborockMatterVacuumAccessory {
    * for the life of the process.
    */
   private userSelectedCleanMode = false;
+  /**
+   * The clean modes left out of the announced list for the life of this
+   * process (`matterHiddenCleanModes`, #50). Decided once, before the
+   * registration defaults are built, because that list is what Matter checks
+   * its stored mode against — see decideHiddenCleanModes().
+   */
+  private hiddenCleanModes: ReadonlySet<number> = new Set();
   // The run mode last decided by a state that was not a dock chore. Dock
   // chores inherit it instead of deciding one of their own — see
   // resolveRunMode(). Idle is the honest starting point: a plugin that boots
@@ -1200,7 +1224,97 @@ export default class RoborockMatterVacuumAccessory {
     this.seedFromLastKnownLiveStatus(device.duid);
     // Before the registration defaults are built, so they carry it.
     this.restoreServiceAreaProgress();
+    // Before them too: they are the mode list Matter checks its stored mode
+    // against when the accessory registers.
+    this.hiddenCleanModes = this.decideHiddenCleanModes(device.duid);
     this.updateMetadata(device);
+  }
+
+  /**
+   * Which of the clean modes the user hid can actually be left out on this
+   * start.
+   *
+   * THE TRAP (docs/matter-clean-mode-shrink-issue-draft.md). matter.js 0.17.9
+   * persists an RVC clean mode cluster's `currentMode` and restores it on every
+   * start, but not `supportedModes`, which is whatever this class supplies.
+   * When the restored mode is missing from the supplied list,
+   * RvcCleanModeServer.initialize throws ("Can not use unsupported mode: 2.
+   * Allowed modes are 0, 1, …"), the accessory fails to register — on this
+   * start and every later one — and the robot disappears from Apple Home. The
+   * `currentMode` this class supplies does not help: the restored value wins.
+   *
+   * #50's tile showed Vacuum + Mop, the very mode he asked to hide. So the mode
+   * Matter holds is kept in the accessory context (rememberStoredCleanMode,
+   * fed by every publish), and a hidden mode Matter still holds is announced
+   * for one more start, with a warning. Once a publish has seen a visible mode
+   * in the store, the next start leaves it out. A context without that record —
+   * the first start on a version that keeps it, or one after a crash that
+   * saved nothing — cannot rule any hidden mode out, so all of them stay for
+   * that start: one more restart is cheap, a robot that will not register is
+   * not.
+   */
+  private decideHiddenCleanModes(duid: string): ReadonlySet<number> {
+    const setting = this.platform.platformConfig.matterHiddenCleanModes;
+    const wanted = new Set<number>(
+      (Array.isArray(setting) ? setting : [])
+        .filter(isMatterHideableCleanModeKey)
+        .map((key) => HIDEABLE_CLEAN_MODES[key])
+    );
+    if (wanted.size === 0) {
+      return wanted;
+    }
+
+    // Only a robot that announces a clean mode cluster with the mop modes in
+    // it has anything to hide, or a stored mode that could be one of them.
+    const announced =
+      this.platform.platformConfig.enableMatterCleanMode !== false &&
+      this.api.getMatterCleanModeCapabilities?.(duid)?.canMop === true;
+    const stored = this.accessory.context?.[STORED_CLEAN_MODE_CONTEXT_KEY];
+    // getVacuumName() reads the duid from a context that may not be set yet.
+    const name =
+      this.api.getVacuumDeviceInfo(duid, "name") ||
+      this.accessory.displayName ||
+      "Roborock vacuum";
+
+    if (typeof stored !== "number") {
+      const one = wanted.size === 1;
+      if (announced) {
+        this.platform.log.warn(
+          `${name}: ${this.describeCleanModes([...wanted])} ${one ? "stays" : "stay"} in the cleaning modes offered to Apple Home for this start, although matterHiddenCleanModes hides ${one ? "it" : "them"}: the plugin has not yet seen which mode Apple Home has stored for ${name}, and Matter refuses to start a robot whose stored mode is no longer offered. From the next restart ${one ? "it is" : "they are"} left out, unless Apple Home still has ${one ? "it" : "one of them"} selected then. Remove ${name} from Apple Home and add it again after that restart, because Apple Home reads the list only when a robot is added.`
+        );
+      }
+      return new Set();
+    }
+
+    if (wanted.has(stored)) {
+      wanted.delete(stored);
+      if (announced) {
+        this.platform.log.warn(
+          `${name}: Apple Home has ${this.describeCleanModes([stored])} stored as the cleaning mode, so it stays in the modes offered to Apple Home for this start, although matterHiddenCleanModes hides it. Matter refuses to start a robot whose stored mode is no longer offered, and ${name} would disappear from Apple Home. Pick another mode for ${name} in Apple Home and restart Homebridge, and it is left out. Apple Home keeps showing it until ${name} is removed from Apple Home and added again.`
+        );
+      }
+    }
+    return wanted;
+  }
+
+  private describeCleanModes(modes: number[]): string {
+    return modes.map((mode) => this.getCleanModeLabel(mode)).join(" and ");
+  }
+
+  /**
+   * Note the clean mode Matter now holds for this robot, for the next start's
+   * decideHiddenCleanModes(). Fed from the store as it is read back, and from
+   * a write that carries `currentMode` — a store that cannot be read back
+   * holds what was last written to it. The context is saved at shutdown.
+   */
+  private rememberStoredCleanMode(mode: unknown): void {
+    if (typeof mode !== "number" || !Number.isInteger(mode)) {
+      return;
+    }
+    if (!this.accessory.context) {
+      this.accessory.context = {};
+    }
+    this.accessory.context[STORED_CLEAN_MODE_CONTEXT_KEY] = mode;
   }
 
   /**
@@ -2959,6 +3073,9 @@ export default class RoborockMatterVacuumAccessory {
             await this.writeOperationalStateCluster(matter, attributes, stored);
             continue;
           }
+          if (cluster === "rvcCleanMode") {
+            this.rememberStoredCleanMode(stored?.currentMode);
+          }
           const changed = attributesTheStoreLacks(attributes, stored);
           if (Object.keys(changed).length > 0) {
             await matter.updateAccessoryState(
@@ -2966,6 +3083,9 @@ export default class RoborockMatterVacuumAccessory {
               cluster,
               changed
             );
+            if (cluster === "rvcCleanMode") {
+              this.rememberStoredCleanMode(changed.currentMode);
+            }
           }
         } catch (error) {
           failures.push(error);
@@ -3381,7 +3501,14 @@ export default class RoborockMatterVacuumAccessory {
       }
     }
 
-    return supportedModes;
+    // Everything that decides a mode — the live derivation, the ChangeToMode
+    // handler, the stored selection — asks this list, so a hidden mode is
+    // never published and never accepted. A run the robot reports as
+    // vacuum + mop then shows as Vacuum or its suction level.
+    return supportedModes.filter(
+      (supportedMode) =>
+        !this.hiddenCleanModes.has(supportedMode.mode as number)
+    );
   }
 
   private isFanPowerCleanModesEnabled(): boolean {

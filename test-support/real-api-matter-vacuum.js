@@ -29,7 +29,7 @@ const path = require("path");
 const { Roborock } = require("../roborockLib/roborockAPI");
 const RoborockMatterVacuumAccessory =
   require("../src/matter_vacuum_accessory").default;
-const { createMatterStore } = require("./matter-0.17.9-store");
+const { registerMatterEndpoint } = require("./matter-0.17.9-store");
 
 const DUID = "device-real-api";
 
@@ -62,8 +62,12 @@ const CODE_TO_SCHEMA_ID = Object.fromEntries(
  *   platformConfig?: Record<string, unknown>,
  *   rooms?: Array<{segmentId: number, name: string}>,
  *   savedContext?: Record<string, unknown>,
+ *   persistedMatterState?: Record<string, Record<string, unknown>>,
  * }} [options] `savedContext`: the accessory context Homebridge kept from
- *   the previous run (a restart)
+ *   the previous run (a restart); `persistedMatterState`: what matter.js
+ *   persisted in that run (`store.persisted()`), restored over the defaults
+ *   at registration — which throws, as the real registration fails, when
+ *   the restored mode is not in the supplied list. `restart()` returns both.
  */
 async function createRealApiVacuum({
   model = "roborock.vacuum.a70",
@@ -78,6 +82,7 @@ async function createRealApiVacuum({
   platformConfig = {},
   rooms = [],
   savedContext = {},
+  persistedMatterState = {},
 } = {}) {
   const log = {
     debug: jest.fn(),
@@ -155,10 +160,11 @@ async function createRealApiVacuum({
     { duid: DUID },
     true
   );
-  // Homebridge registers the endpoint with accessory.clusters as defaults.
-  store = createMatterStore(accessory.clusters);
-  api.setDeviceNotify((id, data) => vacuum.notifyDeviceUpdater(id, data));
   created.push(vacuum);
+  // Homebridge registers the endpoint with accessory.clusters as defaults,
+  // and matter.js restores what it persisted over them.
+  store = registerMatterEndpoint(accessory.clusters, persistedMatterState);
+  api.setDeviceNotify((id, data) => vacuum.notifyDeviceUpdater(id, data));
 
   return {
     api,
@@ -168,6 +174,18 @@ async function createRealApiVacuum({
     log,
     commands,
     duid: DUID,
+    /**
+     * Stop this run the way Homebridge shuts down and say what the next start
+     * gets back: the context the platform saves at shutdown (as JSON, the way
+     * roborock.MatterAccessoryContext keeps it) and what matter.js persisted.
+     */
+    restart() {
+      vacuum.dispose();
+      return {
+        savedContext: JSON.parse(JSON.stringify(accessory.context)),
+        persistedMatterState: store.persisted(),
+      };
+    },
     /** A `get_status` reply as lib/localConnector.js hands it on. */
     async localReply(status) {
       await api.deviceNotify("LocalMessage", {
