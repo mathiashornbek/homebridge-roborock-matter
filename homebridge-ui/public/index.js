@@ -5,6 +5,10 @@ const elements = {
   baseUrl: document.getElementById("base-url"),
   serverUrl: document.getElementById("server-url"),
   serverUrlRow: document.getElementById("server-url-row"),
+  localServerFastRefresh: document.getElementById("local-server-fast-refresh"),
+  localServerFastRefreshRow: document.getElementById(
+    "local-server-fast-refresh-row"
+  ),
   skipDevices: document.getElementById("skip-devices"),
   devicesList: document.getElementById("devices-list"),
   devicesEmpty: document.getElementById("devices-empty"),
@@ -212,6 +216,10 @@ async function loadConfig() {
       elements.baseUrl.value = CUSTOM_SERVER;
       elements.serverUrl.value = config.serverURL;
     }
+    if (elements.localServerFastRefresh) {
+      elements.localServerFastRefresh.checked =
+        config.enableLocalServerFastRefresh === true;
+    }
     if (config.skipDevices) {
       elements.skipDevices.value = config.skipDevices;
     }
@@ -258,6 +266,7 @@ async function loadConfig() {
     elements.advancedSettings.open = Boolean(
       config.debugMode ||
         config.preferCloudForMatterCommands ||
+        config.enableLocalServerFastRefresh ||
         config.cloudOnlyMode
     );
     elements.transientWarningThrottleHours.value =
@@ -344,6 +353,10 @@ function loginServerProblem() {
 function syncServerUrlRow() {
   const custom = isCustomServer();
   elements.serverUrlRow.classList.toggle("hidden", !custom);
+  elements.localServerFastRefreshRow?.classList.toggle("hidden", !custom);
+  if (elements.localServerFastRefresh) {
+    elements.localServerFastRefresh.disabled = !custom;
+  }
   if (!state.hasEncryptedToken) {
     elements.passwordRow.classList.toggle("hidden", custom);
     elements.login.classList.toggle("hidden", custom);
@@ -819,6 +832,7 @@ const AUTO_SAVED_FIELDS = [
   "email",
   "baseURL",
   "serverURL",
+  "enableLocalServerFastRefresh",
   "skipDevices",
   "debugMode",
   "matterChargedBatteryThreshold",
@@ -842,6 +856,8 @@ function getFormValues() {
     password: getPassword(),
     baseURL: getBaseUrl(),
     serverURL: getServerUrl(),
+    enableLocalServerFastRefresh:
+      isCustomServer() && Boolean(elements.localServerFastRefresh?.checked),
     skipDevices: getSkipDevices(),
     debugMode: getDebugMode(),
     enableHomeKitActionSwitches: Boolean(
@@ -2145,6 +2161,7 @@ function init() {
     autoSave();
   });
   elements.serverUrl.addEventListener("change", () => autoSave());
+  elements.localServerFastRefresh?.addEventListener("change", () => autoSave());
   elements.skipDevices.addEventListener("change", () => {
     autoSave();
     renderManagedDevices();

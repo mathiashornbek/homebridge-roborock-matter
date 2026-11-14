@@ -194,6 +194,8 @@ export default class RoborockPlatform implements DynamicPlatformPlugin {
       debug: debugMode,
       baseURL: baseURL,
       serverURL: this.platformConfig.serverURL,
+      enableLocalServerFastRefresh:
+        this.platformConfig.enableLocalServerFastRefresh === true,
       skipDevices: this.platformConfig.skipDevices,
       enableMatterServiceArea:
         this.platformConfig.enableMatterServiceArea !== false,
