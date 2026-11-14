@@ -2364,9 +2364,9 @@ export default class RoborockMatterVacuumAccessory {
     try {
       await findMe.call(this.api, this.getDuid(), {
         ...this.getMatterCommandOptions(),
-        // Locate/Identify await this operation. Keep readiness plus reply
-        // within HomeKit's response window, like clean-mode selections.
-        requestTimeoutMs: 2500,
+        // Allow the four-second LAN reconnect plus a cloud reply while
+        // remaining below HomeKit's nine-second response window.
+        requestTimeoutMs: 6500,
       });
     } catch (error) {
       this.platform.log.warn(
