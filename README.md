@@ -12,7 +12,7 @@
   <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/v/homebridge-roborock-matter?label=npm&color=cb3837" alt="npm version"></a>
   <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/dt/homebridge-roborock-matter?label=downloads&color=8a5cf5" alt="npm downloads"></a>
   <a href="https://github.com/mathiashornbek/homebridge-roborock-matter/actions"><img src="https://img.shields.io/github/actions/workflow/status/mathiashornbek/homebridge-roborock-matter/nodejs.yml?label=CI" alt="CI status"></a>
-  <img src="https://img.shields.io/badge/node-22%20%7C%2024-brightgreen" alt="Node 22/24">
+  <img src="https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-brightgreen" alt="Node 22/24/26">
   <img src="https://img.shields.io/badge/homebridge-1.11%20%7C%202.x-purple" alt="Homebridge 1.11/2.x">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
@@ -149,7 +149,7 @@ If the plugin makes your home a little smarter, a small donation via [PayPal](ht
 
 ## Contributing
 
-Model reports, diagnostics reports and pull requests are welcome. The code has 2698 tests, strict TypeScript and CI on Node 22 and 24 with Homebridge 1.11 and 2.x; run `npm test` before you push. Every change is described in the [changelog](./CHANGELOG.md).
+Model reports, diagnostics reports and pull requests are welcome. The code has 2698 tests, strict TypeScript and CI on Node 22, 24 and 26 with Homebridge 1.11 and 2.x; run `npm test` before you push. Every change is described in the [changelog](./CHANGELOG.md).
 
 ## Attribution
 

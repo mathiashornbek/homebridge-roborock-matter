@@ -54,8 +54,10 @@ jobs:
 
     strategy:
       matrix:
-        # Run the tests for the previous and current LTS version + the current version
-        node-version: [lts/-1, lts/*, current]
+        # Every Node major in the plugin's engines that Homebridge 2.x runs on.
+        # Pinned rather than lts/* and current, so a new Node release cannot
+        # silently drop one the plugin still claims to support.
+        node-version: [22, 24, 26]
 
     steps:
       - uses: actions/checkout@v5
