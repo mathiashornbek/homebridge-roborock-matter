@@ -7,6 +7,7 @@ const zlib = require("zlib");
 const roborockCrypto = require("./roborockCrypto");
 const { describeDevice } = require("./describeDevice");
 const { noteLateReply } = require("./lateReplies");
+const { describeOutage } = require("./unreachableEpisodes");
 const {
   describeReplyRefusal,
   createRefusalError,
@@ -218,6 +219,8 @@ class roborock_mqtt_connector {
     this.adapter = adapter;
     // Last live presence value per robot; log suppression only.
     this.robotPresenceByDuid = new Map();
+    /** @type {Map<string, number>} when each robot last reported itself offline */
+    this.presenceOfflineSince = new Map();
 
     this.sessionDiagnostics = new MqttSessionDiagnostics((snapshot) => {
       if (!snapshot.connected || snapshot.subscriptionAcknowledged) {
@@ -847,43 +850,7 @@ class roborock_mqtt_connector {
             parsedData.online === 0 ||
             parsedData.online === 1
           ) {
-            const online = Boolean(parsedData.online);
-            const retained = packet?.retain === true;
-            const duplicate = packet?.dup === true;
-            const label = describeDevice(this.adapter, duid);
-
-            this.adapter.log.debug(
-              `MQTT presence for ${label}: online=${online}; retain=${retained}; dup=${duplicate}.`
-            );
-            if (retained) {
-              // A subscription snapshot is not evidence of a new transition.
-              return;
-            }
-
-            // DUP does not prove we received the earlier delivery. Process it
-            // normally and suppress logs by the observed value, not the flag.
-            const previous = this.robotPresenceByDuid.get(duid);
-            this.robotPresenceByDuid.set(duid, online);
-            if (previous === online) {
-              return;
-            }
-            const lanAvailable =
-              this.adapter.isB01Device?.(duid) === false &&
-              this.adapter.isCloudOnlyModeEnabled?.() !== true;
-            const offlineDetail =
-              " Cloud commands may fail." +
-              (lanAvailable ? " LAN commands may still work." : "");
-            if (previous === undefined) {
-              const message = `${label}: first live MQTT presence report is ${online ? "online" : "offline"}.${online ? "" : offlineDetail}`;
-              if (online) this.adapter.log.info(message);
-              else this.adapter.log.warn(message);
-            } else if (!online) {
-              this.adapter.log.warn(
-                `${label} reports itself offline via MQTT.${offlineDetail}`
-              );
-            } else if (previous === false) {
-              this.adapter.log.info(`${label} is back online.`);
-            }
+            this.notePresence(duid, Boolean(parsedData.online), packet);
           } else if (
             // Check for firmware update information
             parsedData.mqttOtaData
@@ -927,6 +894,87 @@ class roborock_mqtt_connector {
 
   getEndpoint() {
     return endpoint;
+  }
+
+  /**
+   * A presence report for one robot (protocol 500 `online`).
+   *
+   * A retained snapshot is not a transition, and a repeat of the last value
+   * says nothing new. A robot that goes offline while it is already known to
+   * have dropped off the network (its LAN socket stopped answering first, see
+   * lib/unreachableEpisodes.js) is told at info as part of that story, not as
+   * a second warning, and the way back says how long it was gone.
+   *
+   * @param {string} duid
+   * @param {boolean} online
+   * @param {{retain?: boolean, dup?: boolean}} [packet]
+   * @returns {void}
+   */
+  notePresence(duid, online, packet = {}) {
+    const retained = packet?.retain === true;
+    const duplicate = packet?.dup === true;
+    const label = describeDevice(this.adapter, duid);
+
+    this.adapter.log.debug(
+      `MQTT presence for ${label}: online=${online}; retain=${retained}; dup=${duplicate}.`
+    );
+    if (retained) {
+      // A subscription snapshot is not evidence of a new transition.
+      return;
+    }
+
+    // DUP does not prove we received the earlier delivery. Process it
+    // normally and suppress logs by the observed value, not the flag.
+    const previous = this.robotPresenceByDuid.get(duid);
+    this.robotPresenceByDuid.set(duid, online);
+    if (previous === online) {
+      return;
+    }
+    const now =
+      typeof this.adapter.now === "function" ? this.adapter.now() : Date.now();
+    const episodes = this.adapter.unreachableEpisodes;
+
+    if (!online) {
+      this.presenceOfflineSince.set(duid, now);
+      const alreadyUnreachable = episodes?.isOpen(duid) === true;
+      episodes?.open(duid, "presence");
+      if (alreadyUnreachable) {
+        this.adapter.log.info(
+          `${label} also reports itself offline to the Roborock cloud, so it has dropped off the network (Wi-Fi, power or a restart). The plugin says so when it is back.`
+        );
+        return;
+      }
+      const lanAvailable =
+        this.adapter.isB01Device?.(duid) === false &&
+        this.adapter.isCloudOnlyModeEnabled?.() !== true;
+      const offlineDetail =
+        " Cloud commands may fail." +
+        (lanAvailable ? " LAN commands may still work." : "");
+      this.adapter.log.warn(
+        previous === undefined
+          ? `${label}: first live MQTT presence report is offline.${offlineDetail}`
+          : `${label} reports itself offline via MQTT.${offlineDetail}`
+      );
+      return;
+    }
+
+    const episodeLasted = episodes?.close(duid) ?? null;
+    const offlineSince = this.presenceOfflineSince.get(duid);
+    this.presenceOfflineSince.delete(duid);
+    if (previous === undefined) {
+      this.adapter.log.info(
+        `${label}: first live MQTT presence report is online.`
+      );
+      return;
+    }
+    // previous === false
+    const lasted =
+      episodeLasted ?? (offlineSince === undefined ? null : now - offlineSince);
+    this.adapter.log.info(
+      lasted === null
+        ? `${label} is back online.`
+        : `${label} is back online after ${describeOutage(lasted)}.`
+    );
   }
 
   /**

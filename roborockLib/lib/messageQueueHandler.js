@@ -972,6 +972,17 @@ class messageQueueHandler {
           ),
           "cloud timeout"
         );
+        // Neither transport answered while both were up: the robot itself
+        // has most likely gone (Wi-Fi, power, a restart). catchError tells
+        // that once instead of once per symptom; see lib/unreachableEpisodes.js.
+        if (
+          transportWasUp &&
+          isUnanswered(localError) &&
+          /** @type {any} */ (localError).transportWasUp === true &&
+          /** @type {any} */ (localError).transientKind === "local timeout"
+        ) {
+          Object.assign(error, { robotSilentOnBothTransports: true });
+        }
         // python-roborock's HealthManager counts every V1 MQTT timeout,
         // whatever else the robot's frames did meanwhile (its map decoder
         // ignores the 102 acknowledgement too). B01 never feeds it, in

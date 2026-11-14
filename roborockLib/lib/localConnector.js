@@ -1127,6 +1127,8 @@ class localConnector {
     if (!client) {
       return;
     }
+    // Whatever it answered, the robot is on the network.
+    this.adapter.unreachableEpisodes?.close(duid);
     client.unanswered = 0;
     if (!client.heard) {
       client.heard = true;
@@ -1197,10 +1199,21 @@ class localConnector {
         : ` The LAN port is reachable, so this is not a blocked port — the robot is not ` +
           `replying on it. On a segmented network, check that the reply path back to ` +
           `Homebridge is open, not just the outbound one.`);
-    (firstOfEpisode ? this.adapter.log.warn : this.adapter.log.debug).call(
-      this.adapter.log,
-      line
-    );
+    // The first symptom of a robot dropping off the network warns; when an
+    // earlier symptom already said so (a request neither transport answered,
+    // or the cloud reporting it offline), this is part of the same story.
+    // See lib/unreachableEpisodes.js.
+    const episodes = this.adapter.unreachableEpisodes;
+    const alreadyReported = episodes?.isOpen(duid) === true;
+    if (firstOfEpisode) {
+      episodes?.open(duid, "lan");
+    }
+    const level = !firstOfEpisode
+      ? this.adapter.log.debug
+      : alreadyReported
+        ? this.adapter.log.info
+        : this.adapter.log.warn;
+    level.call(this.adapter.log, line);
     try {
       client.destroy?.();
     } catch (error) {
