@@ -718,6 +718,11 @@ select:focus-visible {
   margin: 0 0 12px 26px;
 }
 
+/* A group of boxes under a heading rather than under a master checkbox. */
+.hidden-clean-modes-heading {
+  margin-top: 18px;
+}
+
 .checkbox-group.disabled {
   /* Not lower: the small print under each switch explains what it does, and
      that is exactly what the user is reading while deciding to enable the

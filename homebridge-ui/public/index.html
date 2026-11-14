@@ -191,8 +191,8 @@
           Everything the robot can show in Apple Home is on, and there is
           nothing here to switch on or get wrong: rooms, live room tracking,
           cleaning and suction modes, battery, dock and charging status, and the
-          empty-tank warning all come with the robot. The number below is a
-          preference rather than a feature.
+          empty-tank warning all come with the robot. The number and the hidden
+          cleaning modes below are preferences rather than features.
         </p>
       </div>
     </div>
@@ -213,6 +213,30 @@
         robot report fully charged early.</small
       >
     </label>
+    <div class="field hidden-clean-modes-heading">
+      <span>Hide cleaning modes in Apple Home</span>
+      <small
+        >Siri picks a cleaning mode by itself when you ask it to clean, so a
+        mode you never use can still be chosen for you. A ticked mode is left
+        out of the modes Apple Home and Siri are offered; Vacuum always stays.
+        Apple Home reads the list only when the robot is added, so after saving
+        and restarting, remove the robot from Apple Home and add it again. If
+        Apple Home has a hidden mode selected, the plugin keeps offering it
+        until you pick another mode and restart, and the log says so.</small
+      >
+    </div>
+    <div id="matter-hidden-clean-modes" class="checkbox-group">
+      <label class="checkbox">
+        <input id="matter-hide-clean-mode-mop" type="checkbox" />
+        <span>Mop <small>Mopping with the vacuum off.</small></span>
+      </label>
+      <label class="checkbox">
+        <input id="matter-hide-clean-mode-vacuum-and-mop" type="checkbox" />
+        <span
+          >Vacuum + Mop <small>Vacuuming and mopping in one run.</small></span
+        >
+      </label>
+    </div>
     <label class="checkbox">
       <input id="enable-homekit-action-switches" type="checkbox" />
       <span>

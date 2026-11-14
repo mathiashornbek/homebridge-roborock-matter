@@ -58,6 +58,9 @@ const APPLE_HOME_PANEL_KEYS = [
   "homeKitActionSwitches",
   "enableHomeKitStateSensors",
   "homeKitStateSensors",
+  // Not an accessory, but a re-pair: a hidden mode reaches Apple Home only
+  // when the robot is added to it again.
+  "matterHiddenCleanModes",
 ];
 
 describe("the implicit saves cannot write the Apple Home panel", () => {
