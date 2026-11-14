@@ -667,7 +667,8 @@ describe("the Routines accessory", () => {
     const on = routineSwitch(routineAccessory, "1").getCharacteristic(
       Characteristic.On
     );
-    await on.setHandler(true);
+    on.setHandler(true);
+    await flushTimers(0);
 
     expect(cloud.executeCloudScene).toHaveBeenCalledWith("1");
     expect(platform.log.info).toHaveBeenCalledWith(
@@ -711,10 +712,11 @@ describe("the Routines accessory", () => {
     const on = routineSwitch(routineAccessory, "1").getCharacteristic(
       Characteristic.On
     );
-    await expect(on.setHandler(true)).resolves.toBeUndefined();
+    expect(on.setHandler(true)).toBeUndefined();
+    await flushTimers(0);
     expect(platform.log.warn).toHaveBeenCalledWith(
       expect.stringMatching(
-        /Unable to run Roborock routine "Saugen Plus": device offline/
+        /Accepted Home routine "Saugen Plus" for Rocky failed: device offline/
       )
     );
   });
@@ -737,7 +739,8 @@ describe("the Routines accessory", () => {
     coordinator.attachRoutineAccessory(cached, (count) => counts.push(count));
 
     const on = routineSwitch(cached, "1").getCharacteristic(Characteristic.On);
-    await on.setHandler(true);
+    on.setHandler(true);
+    await flushTimers(0);
     expect(cloud.executeCloudScene).toHaveBeenCalledWith("1");
     expect(counts).toEqual([1]);
 
