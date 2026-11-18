@@ -541,7 +541,7 @@ describe("Matter identify", () => {
       throwOnError: true,
       preferLocal: true,
       allowOfflineCloudSend: true,
-      requestTimeoutMs: 2500,
+      requestTimeoutMs: 6500,
     });
     expect(
       matterUpdates.filter((update) => update.cluster === "rvcOperationalState")
@@ -567,7 +567,7 @@ describe("Matter identify", () => {
       const platform = createPlatform({ findMe });
       const { accessory } = createAccessory(platform, true);
       const result = accessory.handlers.identify.identify();
-      await jest.advanceTimersByTimeAsync(2500);
+      await jest.advanceTimersByTimeAsync(6500);
       await expect(result).resolves.toBeUndefined();
       expect(platform.log.warn).toHaveBeenCalledWith(
         expect.stringContaining("Unable to locate")

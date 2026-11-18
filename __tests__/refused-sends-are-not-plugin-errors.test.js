@@ -57,12 +57,15 @@ function renderTemplate(template) {
  */
 function collectRefusals() {
   const source = fs.readFileSync(MESSAGE_QUEUE_HANDLER_SOURCE, "utf8");
-  const tagged = /reject\(\s*refusal\(\s*"([^"]+)",\s*`([^`]*)`/g;
+  const tagged = /refusal\(\s*"([^"]+)",\s*(?:`([^`]*)`|"([^"]*)")/g;
   const refusals = [];
   let match;
 
   while ((match = tagged.exec(source)) !== null) {
-    refusals.push({ kind: match[1], message: renderTemplate(match[2]) });
+    refusals.push({
+      kind: match[1],
+      message: renderTemplate(match[2] ?? match[3]),
+    });
   }
 
   return refusals;
@@ -333,4 +336,34 @@ describe("the calm path did not swallow real failures", () => {
     expect(log.warn).not.toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledTimes(1);
   });
+});
+
+test("readiness and budget refusals are all included in calm logging coverage", async () => {
+  const { MqttReadiness } = require("../roborockLib/lib/mqttReadiness");
+  const api = createRoborock();
+  const gate = new MqttReadiness(
+    () => false,
+    () => 1
+  );
+  const errors = [];
+  try {
+    gate.assertReady();
+  } catch (error) {
+    errors.push(error);
+  }
+  errors.push(await gate.wait(1).catch((error) => error));
+  const pending = gate.wait(10000).catch((error) => error);
+  gate.stop();
+  errors.push(await pending);
+  errors.push(await gate.wait(1).catch((error) => error));
+  expect(errors).toHaveLength(4);
+  for (const error of errors) {
+    expect(error.unansweredRequest).toBe(false);
+    expect(error.transientKind).toBe("cloud unavailable");
+    await api.catchError(error, "get_status", "device-1");
+  }
+  expect(api.log.error).not.toHaveBeenCalled();
+  expect(
+    collectRefusals().some(({ message }) => message.includes("command budget"))
+  ).toBe(true);
 });
