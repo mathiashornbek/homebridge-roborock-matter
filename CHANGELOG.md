@@ -2,6 +2,15 @@
 
 Entries before 3.39.0 are short summaries. The full notes for every release are on the [GitHub releases page](https://github.com/mathiashornbek/homebridge-roborock-matter/releases) and in the git history of this file.
 
+## 3.42.0
+
+**Cloud requests wait until the MQTT session can carry their reply, and a robot that drops off the network is one warning instead of four.** Both changes ran as 3.42.0-beta.1 and beta.2 on my own server with three robots from 14 to 18 November before this release.
+
+- **MQTT readiness** ([#37](https://github.com/mathiashornbek/homebridge-roborock-matter/pull/37), @pponce). A cloud request sent right after the MQTT connection opened, before its reply subscription was acknowledged, could never get an answer. Cloud requests now wait up to 10 seconds for that acknowledgement before they are sent; a request that is never sent is reported as not sent and does not count against the robot. A working LAN connection is used without waiting. An explicit command budget (for example a clean-mode selection from Apple Home) covers the whole request, so a command is never sent after the person who gave it has stopped waiting. If a connected session stays unsubscribed for three requests in a row, the plugin starts a fresh one, with the same 30-minute limit as the existing cloud-silence rule. Details are in `docs/mqtt-send-readiness.md`.
+- **One warning per outage.** When a robot dropped off the network for 45 seconds, the log carried four warnings, one per symptom: the LAN socket went silent, a read failed on both transports, the cloud reported the robot offline, and a read was refused because it was offline. Now the first symptom warns, the ones that follow are logged at info, failures of individual requests go to debug (the hourly transport line still counts them), and the robot's return is logged with the length of the outage: `Stueetage is back online after 45 s.` A fault on the LAN alone ends at the robot's next cloud reply, so a cloud failure after that is still reported.
+
+What the live test showed: no request was left waiting for an unacknowledged subscription, the hourly line reported `0 not sent` throughout, and both outages on the server (37 and 38 seconds) gave exactly one warning each.
+
 ## 3.41.1
 
 **The plugin supports Node 26, Siri can be kept from choosing Vacuum + Mop, and a self-hosted Roborock server can be polled faster.**
