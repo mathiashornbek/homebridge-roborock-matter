@@ -1,20 +1,7 @@
 "use strict";
 
-/**
- * A schedule switch whose write the Roborock cloud refuses must stay where it
- * was — measured against HAP itself, not a fake.
- *
- * HAP stores the requested value once an onSet handler RESOLVES, over any
- * value the handler wrote while it ran. Until 3.39.0 a failed write restored
- * the previous state and then resolved, so HAP put the refused state straight
- * back: the switch showed "off" for a schedule that was still on, every other
- * controller was told it had changed, and the next refresh flipped it back
- * without a word. Only a thrown HapStatusError keeps the previous value.
- *
- * Real hap-nodejs Service and Characteristic (the version Homebridge's dev
- * dependency installs; the onSet contract is the same in 2.2.2), the real
- * schedule coordinator, and a cloud that refuses the write.
- */
+// Exercise the optimistic acknowledgement and later correction against real
+// hap-nodejs characteristics, including its post-onSet value assignment.
 
 const path = require("path");
 // Homebridge's own hap-nodejs, wherever npm placed it.
@@ -81,7 +68,8 @@ function sceneParam(enabled) {
   });
 }
 
-function setup({ refuse }) {
+function setup({ refuse, ambiguous = false, refusalDelay = 0 }) {
+  let failReads = false;
   const scenes = [
     {
       id: 1,
@@ -96,12 +84,23 @@ function setup({ refuse }) {
     getServerTimers: jest.fn(async () => {
       throw new Error("Not FCC robot (code -10007)");
     }),
-    getCloudScenes: jest.fn(async () => scenes.map((s) => ({ ...s }))),
+    getCloudScenes: jest.fn(async () => {
+      if (failReads) throw new Error("fixture read unavailable");
+      return scenes.map((s) => ({ ...s }));
+    }),
     updateCloudSceneParam: jest.fn(async (sceneId, param) => {
       if (refuse) {
+        if (refusalDelay)
+          await new Promise((resolve) => setTimeout(resolve, refusalDelay));
         throw new Error("The Roborock cloud refused the change (HTTP 500).");
       }
       scenes[0].param = JSON.stringify(param);
+      if (ambiguous) {
+        failReads = true;
+        throw Object.assign(new Error("write reply lost"), {
+          code: "ECONNRESET",
+        });
+      }
     }),
     setCloudSceneEnabled: jest.fn(async (sceneId, enabled) => {
       scenes[0].enabled = enabled;
@@ -122,7 +121,14 @@ function setup({ refuse }) {
   };
   const manager = new Accessory("Rocky Schedules");
   const coordinator = new RoborockHapScheduleAccessory(platform, manager, DUID);
-  return { coordinator, manager, platform };
+  return {
+    coordinator,
+    manager,
+    platform,
+    setReadFailure: (value) => {
+      failReads = value;
+    },
+  };
 }
 
 function onOf(manager) {
@@ -134,28 +140,45 @@ function onOf(manager) {
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
 
-test("a refused write leaves HAP's value on the state Roborock still has", async () => {
-  const { coordinator, manager, platform } = setup({ refuse: true });
-  await coordinator.initialize("Rocky");
-  const on = onOf(manager);
-  expect(on.value).toBe(true);
-  const changes = [];
-  on.on("change", (change) => changes.push(change.newValue));
+test.each([0, 500, 3000])(
+  "a refusal after %sms preserves the HAP refusal window and later rollback",
+  async (refusalDelay) => {
+    const { coordinator, manager, platform } = setup({
+      refuse: true,
+      refusalDelay,
+    });
+    await coordinator.initialize("Rocky");
+    const on = onOf(manager);
+    expect(on.value).toBe(true);
+    const changes = [];
+    on.on("change", (change) => changes.push(change.newValue));
+    const request = on.handleSetRequest(false).then(
+      () => "resolved",
+      (status) => status
+    );
+    await jest.advanceTimersByTimeAsync(2500);
+    const early = refusalDelay < 2500;
+    expect(await request).toBe(
+      early ? hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE : "resolved"
+    );
+    expect(on.value).toBe(early);
+    if (early) expect(changes).not.toContain(false);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(on.value).toBe(true);
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /Schedule display rollback.*Rocky.*Mornings.*not a user change/
+      )
+    );
+    coordinator.stopRuntime();
+  }
+);
 
-  const request = on.handleSetRequest(false).then(
-    () => "resolved",
-    (status) => status
-  );
-  await jest.advanceTimersByTimeAsync(5000);
-
-  expect(await request).toBe(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-  expect(on.value).toBe(true);
-  // No controller was ever told the schedule went off.
-  expect(changes).not.toContain(false);
-  expect(platform.log.warn).toHaveBeenCalledWith(
-    expect.stringMatching(/Unable to disable Roborock schedule/)
-  );
-});
+async function acceptedPress(on, enabled) {
+  const request = on.handleSetRequest(enabled);
+  await jest.advanceTimersByTimeAsync(2500);
+  await request;
+}
 
 test("a write that succeeds still reads as the new state", async () => {
   const { coordinator, manager } = setup({ refuse: false });
@@ -172,7 +195,7 @@ test("a write that succeeds still reads as the new state", async () => {
   expect(on.value).toBe(false);
 });
 
-test("a retry of the refused state inside the cooldown is refused the same way", async () => {
+test("a cooldown-suppressed retry is corrected after real HAP stores the requested value", async () => {
   const { coordinator, manager } = setup({ refuse: true });
   await coordinator.initialize("Rocky");
   const on = onOf(manager);
@@ -189,4 +212,155 @@ test("a retry of the refused state inside the cooldown is refused the same way",
 
   expect(await retry).toBe(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
   expect(on.value).toBe(true);
+});
+
+test("a cached optimistic characteristic is restored from separately saved confirmation after restart", async () => {
+  const { coordinator, manager, platform } = setup({ refuse: false });
+  await coordinator.initialize("Rocky");
+  let finish;
+  coordinator.enqueueScheduleWrite = jest.fn(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+  );
+  const on = onOf(manager);
+  await acceptedPress(on, false);
+  expect(on.value).toBe(false);
+  // Homebridge serializes this BEFORE signalling shutdown.
+  const cachedContext = JSON.parse(JSON.stringify(manager.context));
+  const cachedValue = on.value;
+  expect(cachedContext.scheduleDisplayStates["scene:1"].confirmed).toBe(true);
+  coordinator.stopRuntime();
+  finish(true);
+  await jest.advanceTimersByTimeAsync(0);
+  manager.context = cachedContext;
+  on.updateValue(cachedValue);
+  const restarted = new RoborockHapScheduleAccessory(platform, manager, DUID);
+  restarted.vacuumName = "Rocky";
+  expect(restarted.restoreScheduleHandlersFromAccessory()).toBe(true);
+  expect(on.value).toBe(true);
+  expect(platform.log.warn).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /Schedule display rollback.*Rocky.*Mornings.*before restart/
+    )
+  );
+  restarted.stopRuntime();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test.each([true, false])(
+  "an unverified applied write stays unknown and one follow-up read resolves it (read recovers=%s)",
+  async (recovers) => {
+    const { coordinator, manager, platform, setReadFailure } = setup({
+      ambiguous: true,
+    });
+    await coordinator.initialize("Rocky");
+    const on = onOf(manager);
+    await acceptedPress(on, false);
+    await jest.advanceTimersByTimeAsync(2501);
+    expect(on.value).toBe(false);
+    expect(manager.context.scheduleDisplayStates["scene:1"].confirmed).toBe(
+      true
+    );
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /Schedule outcome unknown.*Rocky.*Mornings.*no failed-command cooldown/
+      )
+    );
+    const reads = platform.roborockAPI.getCloudScenes.mock.calls.length;
+    setReadFailure(!recovers);
+    await jest.advanceTimersByTimeAsync(3001);
+    expect(platform.roborockAPI.getCloudScenes).toHaveBeenCalledTimes(
+      reads + 1
+    );
+    expect(platform.roborockAPI.updateCloudSceneParam).toHaveBeenCalledTimes(1);
+    if (recovers) {
+      expect(manager.context.scheduleDisplayStates["scene:1"]).toEqual({
+        confirmed: false,
+      });
+      expect(platform.log.info).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Schedule outcome resolved by fresh read.*Rocky.*Mornings.*confirmed off/
+        )
+      );
+    } else {
+      expect(platform.log.warn).toHaveBeenCalledWith(
+        expect.stringContaining("outcome still unknown")
+      );
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(platform.roborockAPI.getCloudScenes).toHaveBeenCalledTimes(
+        reads + 1
+      );
+      setReadFailure(false);
+      await coordinator.refreshDetailed(Date.now(), false, true);
+      expect(platform.log.info).toHaveBeenCalledWith(
+        expect.stringContaining("outcome resolved by fresh read")
+      );
+    }
+    coordinator.stopRuntime();
+  }
+);
+
+test("outcome unknown does not block a correct re-tap for thirty seconds", async () => {
+  const { coordinator, manager, platform, setReadFailure } = setup({
+    ambiguous: true,
+  });
+  await coordinator.initialize("Rocky");
+  const on = onOf(manager);
+  await acceptedPress(on, false);
+  await jest.advanceTimersByTimeAsync(2501);
+  setReadFailure(false);
+  // A new explicit assignment can proceed before the failure cooldown would end.
+  await acceptedPress(on, false);
+  await jest.advanceTimersByTimeAsync(2001);
+  expect(platform.roborockAPI.updateCloudSceneParam).toHaveBeenCalledTimes(2);
+  expect(platform.log.warn.mock.calls.flat().join("\n")).not.toContain(
+    "request suppressed after failure"
+  );
+  coordinator.stopRuntime();
+  await jest.advanceTimersByTimeAsync(20_000);
+});
+
+test("shutdown cancels pending feedback timers and late completions cannot change HAP", async () => {
+  const { coordinator, manager } = setup({ refuse: false });
+  await coordinator.initialize("Rocky");
+  let reject;
+  coordinator.enqueueScheduleWrite = jest.fn(
+    () =>
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      })
+  );
+  const on = onOf(manager);
+  await acceptedPress(on, false);
+  coordinator.stopRuntime();
+  const before = on.value;
+  reject(new Error("late shutdown failure"));
+  await jest.advanceTimersByTimeAsync(10_000);
+  expect(on.value).toBe(before);
+  expect(jest.getTimerCount()).toBe(0);
+  expect(manager.context.scheduleDisplayStates["scene:1"].confirmed).toBe(true);
+});
+
+test("shutdown during the answer window rejects HAP and cancels its deadline", async () => {
+  const { coordinator, manager } = setup({ refuse: false });
+  await coordinator.initialize("Rocky");
+  let reject;
+  coordinator.enqueueScheduleWrite = jest.fn(
+    () =>
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      })
+  );
+  const on = onOf(manager);
+  const request = on.handleSetRequest(false).catch((status) => status);
+  await jest.advanceTimersByTimeAsync(0);
+  expect(on.value).toBe(true);
+  coordinator.stopRuntime();
+  reject(new Error("late shutdown failure"));
+  await jest.advanceTimersByTimeAsync(0);
+  expect(await request).toBe(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  expect(on.value).toBe(true);
+  expect(jest.getTimerCount()).toBe(0);
 });
