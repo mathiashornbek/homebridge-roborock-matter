@@ -149,12 +149,12 @@ describe("real read paths use the preset", () => {
       const read = (id = "one") =>
         robot.getParameter(id, "get_status", "state");
       await read();
-      now += gap - 1;
+      now += gap - 2;
       await read();
       expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(1);
       await read("two");
       expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(2);
-      now += 1;
+      now += 2;
       await read();
       expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(3);
       await robot.getParameter("one", "get_status", "force");
@@ -359,4 +359,45 @@ describe("settings and platform wiring", () => {
     api.startMainUpdateInterval("one", true);
     expect(api.setInterval.mock.calls[0][1]).toBe(180_000);
   });
+});
+
+test("a local status tick one millisecond early does not lose a polling cycle", async () => {
+  const api = makeApi();
+  const robot = statusRobot(api);
+  await robot.getParameter("one", "get_status", "state");
+  now += 14999;
+  await robot.getParameter("one", "get_status", "state");
+  expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(2);
+});
+
+test("slow status reads coalesce per robot, including forced reads, and release afterwards", async () => {
+  const api = makeApi();
+  const robot = statusRobot(api);
+  let answer;
+  api.messageQueueHandler.sendRequest.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      })
+  );
+  const first = robot.getParameter("one", "get_status", "state");
+  now += 30000;
+  const duplicate = robot.getParameter("one", "get_status", "force");
+  await robot.getParameter("two", "get_status", "state");
+  expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(2);
+  answer([{ state: 8, battery: 98 }]);
+  await Promise.all([first, duplicate]);
+  await robot.getParameter("one", "get_status", "force");
+  expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(3);
+});
+
+test("a failed status request releases the per-robot guard", async () => {
+  const api = makeApi();
+  const robot = statusRobot(api);
+  api.messageQueueHandler.sendRequest.mockRejectedValueOnce(
+    new Error("offline")
+  );
+  await robot.getParameter("one", "get_status", "state");
+  await robot.getParameter("one", "get_status", "force");
+  expect(api.messageQueueHandler.sendRequest).toHaveBeenCalledTimes(2);
 });
