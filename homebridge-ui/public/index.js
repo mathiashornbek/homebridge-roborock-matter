@@ -481,6 +481,7 @@ async function describeEnabledMatterFeatures() {
     ["cleanMode", config.enableMatterCleanMode !== false],
     ["powerSource", config.enableMatterPowerSource !== false],
     ["fanPowerCleanModes", config.enableFanPowerCleanModes !== false],
+    ["smartPlanCleanMode", config.enableSmartPlanCleanMode === true],
     // Named only while it hides something from a mode list that exists.
     [
       `hiddenCleanModes(${readHiddenCleanModeSelection(config).join("+")})`,
