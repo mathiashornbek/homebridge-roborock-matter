@@ -439,17 +439,18 @@ async function describeSavedCloudOnlyMode() {
     : label;
 }
 
-/**
- * Which server the saved config logs in to: the region's host, or "custom"
- * for a self-hosted server — never its address, which is the user's own host
- * name and has no business in a pasted report.
- */
+/** Whether the saved config asks for the local-server refresh preset (#48). */
 async function describeSavedLocalServerFastRefresh() {
   const config = await readSavedPluginConfig();
   if (!config) return "unavailable";
   return config.enableLocalServerFastRefresh === true ? "enabled" : "disabled";
 }
 
+/**
+ * Which server the saved config logs in to: the region's host, or "custom"
+ * for a self-hosted server — never its address, which is the user's own host
+ * name and has no business in a pasted report.
+ */
 async function describeSavedServer() {
   const config = await readSavedPluginConfig();
   if (!config) {
