@@ -444,6 +444,12 @@ async function describeSavedCloudOnlyMode() {
  * for a self-hosted server — never its address, which is the user's own host
  * name and has no business in a pasted report.
  */
+async function describeSavedLocalServerFastRefresh() {
+  const config = await readSavedPluginConfig();
+  if (!config) return "unavailable";
+  return config.enableLocalServerFastRefresh === true ? "enabled" : "disabled";
+}
+
 async function describeSavedServer() {
   const config = await readSavedPluginConfig();
   if (!config) {
@@ -1672,6 +1678,7 @@ async function buildDiagnosticsReport(result) {
     `homeData: ${result.hasHomeData ? "present" : "missing"}`,
     `cloudOnlyMode: ${await describeSavedCloudOnlyMode()}`,
     `server: ${await describeSavedServer()}`,
+    `enableLocalServerFastRefresh: ${await describeSavedLocalServerFastRefresh()}`,
     // Which Apple Home features are switched on decides what the plugin is
     // even allowed to publish, so a report that omits them cannot answer
     // "why doesn't Apple Home show X?" — the first question every one of

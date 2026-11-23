@@ -488,6 +488,7 @@ test("the persisted observation reaches the actual UI route and copied report wi
       maskLocalIpsInText: (x) => x,
       describeSavedCloudOnlyMode: async () => "disabled",
       describeSavedServer: async () => "euiot.roborock.com",
+      describeSavedLocalServerFastRefresh: async () => "disabled",
       describeEnabledMatterFeatures: async () => "none",
       appendLocalTestReport: () => {},
     };

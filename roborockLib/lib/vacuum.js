@@ -165,6 +165,7 @@ class vacuum {
 
     /** @type {Map<string, number>} last periodic status poll, per duid */
     this.lastStatusPollAt = new Map();
+    this.statusReads = new Map();
 
     /**
      * The robot's last `get_status` reply as it arrived, per duid. Startup
@@ -255,12 +256,21 @@ class vacuum {
     const gap =
       this.adapter.getRequestPolicy?.().classicStatusGapMs ??
       STATUS_POLL_MIN_INTERVAL_MS;
-    return last === undefined || Date.now() - last >= gap;
+    const tolerance = gap < STATUS_POLL_MIN_INTERVAL_MS ? 1 : 0;
+    return last === undefined || Date.now() - last >= gap - tolerance;
   }
 
   /** @param {string} duid */
   markStatusPolled(duid) {
-    this.lastStatusPollAt.set(duid, Date.now());
+    const now = Date.now();
+    const last = this.lastStatusPollAt.get(duid);
+    const gap =
+      this.adapter.getRequestPolicy?.().classicStatusGapMs ??
+      STATUS_POLL_MIN_INTERVAL_MS;
+    this.lastStatusPollAt.set(
+      duid,
+      last !== undefined && now - last === gap - 1 ? last + gap : now
+    );
   }
 
   async updateDiagnosticSnapshot(duid, key, payload) {
@@ -544,6 +554,21 @@ class vacuum {
   }
 
   async getParameter(duid, parameter, attribute, options = {}) {
+    if (parameter !== "get_status") {
+      return this.getParameterOnce(duid, parameter, attribute, options);
+    }
+    const pending = this.statusReads.get(duid);
+    if (pending) return pending;
+    const request = this.getParameterOnce(duid, parameter, attribute, options);
+    this.statusReads.set(duid, request);
+    try {
+      return await request;
+    } finally {
+      this.statusReads.delete(duid);
+    }
+  }
+
+  async getParameterOnce(duid, parameter, attribute, options = {}) {
     if (this.adapter.isPollCommandUnsupported?.(duid, parameter)) {
       return;
     }

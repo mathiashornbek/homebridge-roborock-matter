@@ -275,7 +275,7 @@ describe("the rule: a request issued for a caller carries that caller's options"
     },
     {
       signature:
-        "async getParameter(duid, parameter, attribute, options = {}) {",
+        "async getParameterOnce(duid, parameter, attribute, options = {}) {",
       worksAt: 'if (parameter == "get_network_info") {',
     },
   ]) {

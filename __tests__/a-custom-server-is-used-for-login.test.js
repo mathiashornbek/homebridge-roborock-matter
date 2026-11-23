@@ -292,6 +292,7 @@ describe("the settings page", () => {
       "buildDiagnosticsReport({ hasHomeData: true, devices: [] })"
     );
     expect(report).toMatch(/^server: custom$/m);
+    expect(report).toMatch(/^enableLocalServerFastRefresh: disabled$/m);
     expect(report).not.toMatch(/api-roborock\.example\.com/);
   });
 
