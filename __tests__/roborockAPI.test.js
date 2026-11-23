@@ -524,6 +524,8 @@ describe("Roborock API model and diagnostics helpers", () => {
       canMop: true,
       canControlFanPower: true,
       canMaxPlusFanPower: false,
+      // No feature string in this fixture.
+      canSmartPlan: false,
       canControlWater: true,
     });
     expect(api.getVacuumDeviceStatus("device-1", "fan_power")).toBe("104");

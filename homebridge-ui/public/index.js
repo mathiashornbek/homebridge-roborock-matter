@@ -496,6 +496,7 @@ async function describeEnabledMatterFeatures() {
     ["cleanMode", config.enableMatterCleanMode !== false],
     ["powerSource", config.enableMatterPowerSource !== false],
     ["fanPowerCleanModes", config.enableFanPowerCleanModes !== false],
+    ["smartPlanCleanMode", config.enableSmartPlanCleanMode === true],
     // Named only while it hides something from a mode list that exists. The
     // robots with their own list are a count: this report is pasted into
     // public issues, and a serial or DUID does not belong there.

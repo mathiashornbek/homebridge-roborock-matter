@@ -111,6 +111,7 @@ Everything can be set on the plugin's settings page. The most useful options:
 | `enableLiveRoomTracking`                | `true`       | Show the room the robot is in right now                                                               |
 | `enableMatterCleanMode`                 | `true`       | Vacuum / Mop / Vacuum + Mop                                                                           |
 | `enableFanPowerCleanModes`              | `true`       | Suction levels in the mode list                                                                       |
+| `enableSmartPlanCleanMode`              | `false`      | SmartPlan in the mode list, on robots that have it                                                    |
 | `matterHiddenCleanModes`                | `[]`         | Modes Siri and Apple Home are not offered: `mop`, `vacuumAndMop` (re-add the robot after)             |
 | `devices`                               |              | Per robot, by `id` (serial or DUID): its own `matterHiddenCleanModes` replaces the one above          |
 | `enableMatterExtendedOperationalStates` | `true`       | Show returning, emptying the bin and washing the mop                                                  |
