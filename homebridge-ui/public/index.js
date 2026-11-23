@@ -1,3 +1,5 @@
+const DEFAULT_MQTT_PREVENTIVE_REFRESH_MINUTES = 180;
+
 const elements = {
   email: document.getElementById("email"),
   password: document.getElementById("password"),
@@ -62,6 +64,18 @@ const elements = {
   advancedSettings: document.getElementById("advanced-settings"),
   preferCloudForMatterCommands: document.getElementById(
     "prefer-cloud-for-matter-commands"
+  ),
+  enableMqttSessionRecovery: document.getElementById(
+    "enableMqttSessionRecovery"
+  ),
+  enableMqttPreventiveRefresh: document.getElementById(
+    "enableMqttPreventiveRefresh"
+  ),
+  mqttPreventiveRefreshMinutes: document.getElementById(
+    "mqtt-preventive-refresh-minutes"
+  ),
+  mqttPreventiveRefreshOptions: document.getElementById(
+    "mqtt-preventive-refresh-options"
   ),
   cloudOnlyMode: document.getElementById("cloud-only-mode"),
   transientWarningThrottleHours: document.getElementById(
@@ -270,11 +284,26 @@ async function loadConfig() {
     elements.preferCloudForMatterCommands.checked = Boolean(
       config.preferCloudForMatterCommands
     );
+    if (elements.enableMqttSessionRecovery)
+      elements.enableMqttSessionRecovery.checked =
+        config.enableMqttSessionRecovery === true;
+    if (elements.enableMqttPreventiveRefresh)
+      elements.enableMqttPreventiveRefresh.checked =
+        config.enableMqttPreventiveRefresh === true;
+    if (elements.mqttPreventiveRefreshMinutes)
+      elements.mqttPreventiveRefreshMinutes.value = String(
+        normalizeMqttPreventiveRefreshMinutes(
+          config.mqttPreventiveRefreshMinutes
+        )
+      );
+    syncMqttPreventiveRefreshOptions();
     elements.cloudOnlyMode.checked = Boolean(config.cloudOnlyMode);
     elements.advancedSettings.open = Boolean(
       config.debugMode ||
         config.preferCloudForMatterCommands ||
         config.enableLocalServerFastRefresh ||
+        config.enableMqttSessionRecovery ||
+        config.enableMqttPreventiveRefresh ||
         config.cloudOnlyMode
     );
     elements.transientWarningThrottleHours.value =
@@ -1061,6 +1090,9 @@ const AUTO_SAVED_FIELDS = [
   "debugMode",
   "matterChargedBatteryThreshold",
   "preferCloudForMatterCommands",
+  "enableMqttSessionRecovery",
+  "enableMqttPreventiveRefresh",
+  "mqttPreventiveRefreshMinutes",
   "cloudOnlyMode",
   "transientWarningThrottleHours",
 ];
@@ -1106,9 +1138,45 @@ function getFormValues() {
     ),
     matterChargedBatteryThreshold: getMatterChargedBatteryThreshold(),
     preferCloudForMatterCommands: getPreferCloudForMatterCommands(),
+    enableMqttSessionRecovery: Boolean(
+      elements.enableMqttSessionRecovery?.checked
+    ),
+    enableMqttPreventiveRefresh: Boolean(
+      elements.enableMqttPreventiveRefresh?.checked
+    ),
+    mqttPreventiveRefreshMinutes: getMqttPreventiveRefreshMinutes(),
     cloudOnlyMode: getCloudOnlyMode(),
     transientWarningThrottleHours: getTransientWarningThrottleHours(),
   };
+}
+
+function syncMqttPreventiveRefreshOptions() {
+  const enabled = Boolean(
+    elements.enableMqttSessionRecovery?.checked &&
+      elements.enableMqttPreventiveRefresh?.checked
+  );
+  if (elements.mqttPreventiveRefreshMinutes) {
+    elements.mqttPreventiveRefreshMinutes.disabled = !enabled;
+  }
+  elements.mqttPreventiveRefreshOptions?.classList.toggle("disabled", !enabled);
+}
+
+function normalizeMqttPreventiveRefreshMinutes(value) {
+  return Number.isSafeInteger(value) &&
+    value >= 1 &&
+    Number.isSafeInteger(value * 60_000)
+    ? value
+    : DEFAULT_MQTT_PREVENTIVE_REFRESH_MINUTES;
+}
+
+function getMqttPreventiveRefreshMinutes() {
+  const minutes = normalizeMqttPreventiveRefreshMinutes(
+    Number(elements.mqttPreventiveRefreshMinutes?.value)
+  );
+  if (elements.mqttPreventiveRefreshMinutes) {
+    elements.mqttPreventiveRefreshMinutes.value = String(minutes);
+  }
+  return minutes;
 }
 
 function getMatterChargedBatteryThreshold() {
@@ -2420,6 +2488,17 @@ function init() {
     );
   }
   elements.preferCloudForMatterCommands.addEventListener("change", () =>
+    autoSave()
+  );
+  elements.enableMqttSessionRecovery?.addEventListener("change", () => {
+    syncMqttPreventiveRefreshOptions();
+    autoSave();
+  });
+  elements.enableMqttPreventiveRefresh?.addEventListener("change", () => {
+    syncMqttPreventiveRefreshOptions();
+    autoSave();
+  });
+  elements.mqttPreventiveRefreshMinutes?.addEventListener("change", () =>
     autoSave()
   );
   elements.cloudOnlyMode.addEventListener("change", () => autoSave());
