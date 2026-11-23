@@ -63,7 +63,9 @@ const CODE_TO_SCHEMA_ID = Object.fromEntries(
  *   rooms?: Array<{segmentId: number, name: string}>,
  *   savedContext?: Record<string, unknown>,
  *   persistedMatterState?: Record<string, Record<string, unknown>>,
- * }} [options] `savedContext`: the accessory context Homebridge kept from
+ *   sn?: string,
+ * }} [options] `sn`: the serial number HomeData carries for the robot (none
+ *   unless given); `savedContext`: the accessory context Homebridge kept from
  *   the previous run (a restart); `persistedMatterState`: what matter.js
  *   persisted in that run (`store.persisted()`), restored over the defaults
  *   at registration — which throws, as the real registration fails, when
@@ -83,6 +85,7 @@ async function createRealApiVacuum({
   rooms = [],
   savedContext = {},
   persistedMatterState = {},
+  sn,
 } = {}) {
   const log = {
     debug: jest.fn(),
@@ -108,6 +111,7 @@ async function createRealApiVacuum({
       devices: [
         {
           duid: DUID,
+          ...(sn === undefined ? {} : { sn }),
           name: "Rocky",
           productId: "product-v1",
           pv: "1.0",

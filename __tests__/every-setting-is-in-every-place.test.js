@@ -239,3 +239,205 @@ describe("the hidden clean modes on the settings page", () => {
     expect(page.savedConfig().matterHiddenCleanModes).toBeUndefined();
   });
 });
+
+describe("each robot's own hidden clean modes, on the settings page", () => {
+  // A Q Revo and a Q5 Max+ on one account: the mop modes hidden on the Q5
+  // Max+ only. A robot's own list is as much a re-pair as the list for every
+  // robot, so it saves with the panel's Save button and never with an
+  // implicit save. The robots come from the Devices list.
+  const Q5 = {
+    duid: "duid-q5",
+    serialNumber: "Q5SERIAL",
+    name: "Q5 Max+",
+    resolvedModel: "roborock.vacuum.a117",
+  };
+  const Q_REVO = {
+    duid: "duid-qrevo",
+    serialNumber: "QREVOSERIAL",
+    name: "Q Revo",
+    resolvedModel: "roborock.vacuum.a75",
+  };
+
+  async function open(config, { robots = [Q5, Q_REVO] } = {}) {
+    const page = loadSettingsPage(config, {
+      request: async (route) =>
+        route === "/diagnostics/state"
+          ? { ok: true, devices: robots }
+          : { ok: false, message: "offline" },
+    });
+    // init() loads the config and the Devices list itself, as Homebridge
+    // UI's "ready" does, and wires the boxes for every robot.
+    page.run("init()");
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return page;
+  }
+
+  /** A robot's row, as it is now: a re-render replaces the boxes. */
+  const row = (page, duid) =>
+    page.run(`robotHiddenCleanModeControls.get(${JSON.stringify(duid)})`);
+  const shows = (page, duid) => {
+    const { follow, mop, vacuumAndMop } = row(page, duid);
+    return {
+      follow: follow.checked,
+      mop: mop.checked,
+      vacuumAndMop: vacuumAndMop.checked,
+      greyed: mop.disabled && vacuumAndMop.disabled,
+    };
+  };
+  function tick(box, checked) {
+    box.checked = checked;
+    box.dispatch("change");
+  }
+
+  test("a saved entry is shown on its robot, reported as a count, and saved back unchanged", async () => {
+    const devices = [
+      { id: "Q5SERIAL", matterHiddenCleanModes: ["mop", "vacuumAndMop"] },
+      // A robot the Devices list does not show, with a setting this page
+      // does not know: both are kept.
+      { id: "gone-robot", matterHiddenCleanModes: ["mop"], laterSetting: 1 },
+    ];
+    const page = await open({ email: "owner@example.com", devices });
+
+    expect(shows(page, "duid-q5")).toEqual({
+      follow: false,
+      mop: true,
+      vacuumAndMop: true,
+      greyed: false,
+    });
+    expect(shows(page, "duid-qrevo")).toMatchObject({
+      follow: true,
+      greyed: true,
+    });
+    const report = await page.run("describeEnabledMatterFeatures()");
+    expect(report).toMatch(
+      /hiddenCleanModes\(none, 2 robots overridden\)(?!.*WARNING)/
+    );
+    // The report is pasted into public issues.
+    expect(report).not.toMatch(/Q5SERIAL|gone-robot|duid-q5/);
+
+    await page.run("saveCredentials(true)");
+    expect(page.savedConfig().devices).toEqual(devices);
+  });
+
+  test("a robot that follows shows the setting for every robot, greyed out", async () => {
+    const page = await open({
+      email: "owner@example.com",
+      matterHiddenCleanModes: ["vacuumAndMop"],
+    });
+
+    expect(shows(page, "duid-qrevo")).toEqual({
+      follow: true,
+      mop: false,
+      vacuumAndMop: true,
+      greyed: true,
+    });
+
+    tick(page.element("matter-hide-clean-mode-mop"), true);
+    expect(shows(page, "duid-qrevo")).toMatchObject({
+      mop: true,
+      vacuumAndMop: true,
+    });
+    expect(await page.run("describeEnabledMatterFeatures()")).toMatch(
+      /hiddenCleanModes\(vacuumAndMop\).*WARNING/
+    );
+  });
+
+  test("its own list is an unsaved change until Save, and Save writes it", async () => {
+    const page = await open({ email: "owner@example.com" });
+
+    // Unticking starts from the setting for every robot, which hides nothing.
+    tick(row(page, "duid-q5").follow, false);
+    expect(shows(page, "duid-q5")).toEqual({
+      follow: false,
+      mop: false,
+      vacuumAndMop: false,
+      greyed: false,
+    });
+    tick(row(page, "duid-q5").mop, true);
+    tick(row(page, "duid-q5").vacuumAndMop, true);
+    expect(await page.run("describeEnabledMatterFeatures()")).toMatch(
+      /WARNING: the settings form has unsaved changes/
+    );
+
+    await page.run("saveCredentials(true)");
+    expect(page.savedConfig().devices).toEqual([
+      { id: "duid-q5", matterHiddenCleanModes: ["mop", "vacuumAndMop"] },
+    ]);
+    expect(await page.run("describeEnabledMatterFeatures()")).toMatch(
+      /hiddenCleanModes\(none, 1 robot overridden\)(?!.*WARNING)/
+    );
+  });
+
+  test("Same as all robots again removes the robot's list, and the key once nothing is left", async () => {
+    const page = await open({
+      email: "owner@example.com",
+      devices: [{ id: "Q5SERIAL", matterHiddenCleanModes: ["mop"] }],
+    });
+
+    tick(row(page, "duid-q5").follow, true);
+    await page.run("saveCredentials(true)");
+
+    expect(page.savedConfig()).not.toHaveProperty("devices");
+    expect(await page.run("describeEnabledMatterFeatures()")).not.toMatch(
+      /hiddenCleanModes/
+    );
+  });
+
+  test("Same as all robots keeps the rest of the robot's entry", async () => {
+    const page = await open({
+      email: "owner@example.com",
+      devices: [
+        { id: "duid-q5", matterHiddenCleanModes: ["mop"], laterSetting: 1 },
+      ],
+    });
+
+    tick(row(page, "duid-q5").follow, true);
+    await page.run("saveCredentials(true)");
+
+    expect(page.savedConfig().devices).toEqual([
+      { id: "duid-q5", laterSetting: 1 },
+    ]);
+  });
+
+  test("before the robots load, there are no rows, and Save keeps every entry", async () => {
+    const devices = [{ id: "Q5SERIAL", matterHiddenCleanModes: ["mop"] }];
+    const page = await open(
+      { email: "owner@example.com", devices },
+      { robots: [] }
+    );
+
+    expect(page.run("robotHiddenCleanModeControls.size")).toBe(0);
+    expect(
+      page
+        .element("matter-robot-hidden-clean-modes-empty")
+        .classList.contains("hidden")
+    ).toBe(false);
+
+    await page.run("saveCredentials(true)");
+    expect(page.savedConfig().devices).toEqual(devices);
+  });
+
+  test("an implicit save does not write it", async () => {
+    const page = await open({ email: "owner@example.com" });
+
+    tick(row(page, "duid-q5").follow, false);
+    tick(row(page, "duid-q5").mop, true);
+    page.element("debug-mode").checked = true;
+    await page.run("autoSave()");
+    // autoSave does not wait for its save; let it land.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(page.savedConfig().debugMode).toBe(true);
+    expect(page.savedConfig()).not.toHaveProperty("devices");
+  });
+});
+
+test("a robot's own hidden clean modes offer the choices the setting for every robot does", () => {
+  // A nested list escapes the list-setting rule above, which reads top-level
+  // keys only, so its choices are pinned to the list it replaces.
+  expect(schema.devices.items.properties.matterHiddenCleanModes.items).toEqual(
+    schema.matterHiddenCleanModes.items
+  );
+});
