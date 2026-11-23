@@ -518,16 +518,28 @@ class RoborockUiServer {
           );
         })
       );
-      const pairingEntries = entries
-        .filter((entry): entry is MatterPairingEntry => Boolean(entry))
-        .sort((a, b) => {
-          const weight = { bridge: 0, vacuum: 1, unknown: 2 };
-          return (
-            (weight[a.kind as keyof typeof weight] ?? 2) -
-              (weight[b.kind as keyof typeof weight] ?? 2) ||
-            String(a.name).localeCompare(String(b.name))
-          );
-        });
+      // Only this plugin's nodes: its own bridge and the account's robots.
+      // Every other node on the Homebridge (another plugin's bridge, the
+      // main bridge, one left over from an earlier pairing) used to be listed
+      // as "Matter Roborock Bridge" too (#41). Without a readable config the
+      // bridge cannot be told apart, and every node is listed as before.
+      const ownBridgeId = this.getOwnMatterBridgeId(storagePath);
+      const found = entries.filter((entry): entry is MatterPairingEntry =>
+        Boolean(entry)
+      );
+      const isOwn = (entry: MatterPairingEntry) =>
+        ownBridgeId === undefined ||
+        entry.kind === "vacuum" ||
+        entry.id.toUpperCase() === ownBridgeId;
+      const otherMatterNodes = found.filter((entry) => !isOwn(entry)).length;
+      const pairingEntries = found.filter(isOwn).sort((a, b) => {
+        const weight = { bridge: 0, vacuum: 1, unknown: 2 };
+        return (
+          (weight[a.kind as keyof typeof weight] ?? 2) -
+            (weight[b.kind as keyof typeof weight] ?? 2) ||
+          String(a.name).localeCompare(String(b.name))
+        );
+      });
 
       return {
         ok: true,
@@ -539,6 +551,7 @@ class RoborockUiServer {
           fs.existsSync(matterPath)
         ),
         entries: pairingEntries,
+        otherMatterNodes,
       };
     } catch (error: any) {
       return {
@@ -546,6 +559,34 @@ class RoborockUiServer {
         message: error?.message || "Failed to load Matter pairing codes.",
       };
     }
+  }
+
+  /**
+   * The storage folder name of this plugin's own Matter bridge: Homebridge
+   * names it after the bridge's username without the colons. That is the
+   * plugin's child bridge, or the main bridge when it runs there. Undefined
+   * when the config cannot be read or does not list the plugin.
+   */
+  private getOwnMatterBridgeId(storagePath: string): string | undefined {
+    const config = this.readJsonFile(path.join(storagePath, "config.json"));
+    const platforms = Array.isArray(config?.platforms) ? config.platforms : [];
+    const own = platforms.find(
+      (platform: Record<string, any>) =>
+        typeof platform?.platform === "string" &&
+        (platform.platform === "RoborockVacuumPlatform" ||
+          platform.platform.endsWith(".RoborockVacuumPlatform"))
+    );
+    if (!own) {
+      return undefined;
+    }
+    const username =
+      typeof own._bridge?.username === "string"
+        ? own._bridge.username
+        : config?.bridge?.username;
+    if (typeof username !== "string" || !username.trim()) {
+      return undefined;
+    }
+    return username.replace(/:/g, "").trim().toUpperCase();
   }
 
   private getMatterSearchPaths(storagePath: string): string[] {

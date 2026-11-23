@@ -1536,7 +1536,13 @@ function renderMatterPairing(result, errorMessage) {
   const hiddenNote = disabledEntries.length
     ? ` ${disabledEntries.length} entr${disabledEntries.length === 1 ? "y" : "ies"} for disabled robots ${showDisabledPairingEntries ? "shown below" : "hidden"}.`
     : "";
-  elements.matterPairingSummary.textContent = `${activeEntries.length} Matter pairing item(s), last checked ${formatTimestamp(result.generatedAt)}.${hiddenNote}`;
+  // Other bridges' nodes on this Homebridge are not this plugin's to show
+  // (#41); say they exist, so a count in the Homebridge UI still adds up.
+  const others = Number(result.otherMatterNodes) || 0;
+  const othersNote = others
+    ? ` ${others} other Matter node${others === 1 ? "" : "s"} on this Homebridge belong${others === 1 ? "s" : ""} to other bridges or earlier pairings and ${others === 1 ? "is" : "are"} not listed.`
+    : "";
+  elements.matterPairingSummary.textContent = `${activeEntries.length} Matter pairing item(s), last checked ${formatTimestamp(result.generatedAt)}.${hiddenNote}${othersNote}`;
 
   if (allEntries.length === 0) {
     elements.matterPairingEmpty.classList.remove("hidden");
