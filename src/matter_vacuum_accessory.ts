@@ -1155,7 +1155,8 @@ export default class RoborockMatterVacuumAccessory {
   private userSelectedCleanMode = false;
   /**
    * The clean modes left out of the announced list for the life of this
-   * process (`matterHiddenCleanModes`, #50). Decided once, before the
+   * process (`matterHiddenCleanModes`, #50, or this robot's own entry in
+   * `devices`). Decided once, before the
    * registration defaults are built, because that list is what Matter checks
    * its stored mode against — see decideHiddenCleanModes().
    */
@@ -1234,6 +1235,10 @@ export default class RoborockMatterVacuumAccessory {
    * Which of the clean modes the user hid can actually be left out on this
    * start.
    *
+   * The modes the user hid come from this robot's own `devices` entry when it
+   * has one, and from `matterHiddenCleanModes` otherwise — see
+   * hiddenCleanModeSettingFor().
+   *
    * THE TRAP (docs/matter-clean-mode-shrink-issue-draft.md). matter.js 0.17.9
    * persists an RVC clean mode cluster's `currentMode` and restores it on every
    * start, but not `supportedModes`, which is whatever this class supplies.
@@ -1254,7 +1259,7 @@ export default class RoborockMatterVacuumAccessory {
    * not.
    */
   private decideHiddenCleanModes(duid: string): ReadonlySet<number> {
-    const setting = this.platform.platformConfig.matterHiddenCleanModes;
+    const setting = this.hiddenCleanModeSettingFor(duid);
     const wanted = new Set<number>(
       (Array.isArray(setting) ? setting : [])
         .filter(isMatterHideableCleanModeKey)
@@ -1295,6 +1300,35 @@ export default class RoborockMatterVacuumAccessory {
       }
     }
     return wanted;
+  }
+
+  /**
+   * The hidden clean modes this robot asks for: its own entry in `devices`
+   * when that entry has a `matterHiddenCleanModes` list, the setting for every
+   * robot otherwise.
+   *
+   * One account had a Q Revo, which mops, and a Q5 Max+, sold vacuum-only.
+   * Roborock's cloud says the Q5 Max+ can mop, because an optional tank
+   * exists, so Apple Home and Siri offered it Mop and Vacuum + Mop. The cloud
+   * is not wrong, so this is the owner's choice to make per robot, not a
+   * detection to fix. An entry is found by serial number or DUID, as
+   * `skipDevices` is, and its list replaces the global one, so `[]` shows
+   * every mode on a robot while the others hide some.
+   */
+  private hiddenCleanModeSettingFor(duid: string): unknown {
+    const serial = `${this.api.getVacuumDeviceInfo(duid, "sn") ?? ""}`.trim();
+    const devices = this.platform.platformConfig.devices;
+    const own = (Array.isArray(devices) ? devices : []).find((entry) => {
+      const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+      return (
+        id !== "" &&
+        (id === duid || id === serial) &&
+        Array.isArray(entry.matterHiddenCleanModes)
+      );
+    });
+    return own
+      ? own.matterHiddenCleanModes
+      : this.platform.platformConfig.matterHiddenCleanModes;
   }
 
   private describeCleanModes(modes: number[]): string {

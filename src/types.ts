@@ -88,6 +88,16 @@ export function isMatterHideableCleanModeKey(
   );
 }
 
+/**
+ * One robot's own settings (`devices`), found by its serial number or DUID.
+ * A setting left out of an entry follows the one for every robot.
+ */
+export interface RoborockDeviceSettings {
+  id?: string;
+  /** Replaces `matterHiddenCleanModes` for this robot; `[]` hides nothing. */
+  matterHiddenCleanModes?: string[];
+}
+
 export interface RoborockPlatformConfig extends PlatformConfig {
   email: string;
   password?: string;
@@ -104,6 +114,7 @@ export interface RoborockPlatformConfig extends PlatformConfig {
   enableMatterCleanMode?: boolean;
   enableFanPowerCleanModes?: boolean;
   matterHiddenCleanModes?: string[];
+  devices?: RoborockDeviceSettings[];
   enableMatterExtendedOperationalStates?: boolean;
   enableMatterChargingDockedStates?: boolean;
   enableMatterFaultReporting?: boolean;

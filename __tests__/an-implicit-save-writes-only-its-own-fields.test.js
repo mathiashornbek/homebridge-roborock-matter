@@ -61,6 +61,8 @@ const APPLE_HOME_PANEL_KEYS = [
   // Not an accessory, but a re-pair: a hidden mode reaches Apple Home only
   // when the robot is added to it again.
   "matterHiddenCleanModes",
+  // Each robot's own hidden clean modes: the same re-pair.
+  "devices",
 ];
 
 describe("the implicit saves cannot write the Apple Home panel", () => {

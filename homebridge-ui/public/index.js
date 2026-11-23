@@ -53,6 +53,12 @@ const elements = {
   matterHideCleanModeVacuumAndMop: document.getElementById(
     "matter-hide-clean-mode-vacuum-and-mop"
   ),
+  matterRobotHiddenCleanModes: document.getElementById(
+    "matter-robot-hidden-clean-modes"
+  ),
+  matterRobotHiddenCleanModesEmpty: document.getElementById(
+    "matter-robot-hidden-clean-modes-empty"
+  ),
   advancedSettings: document.getElementById("advanced-settings"),
   preferCloudForMatterCommands: document.getElementById(
     "prefer-cloud-for-matter-commands"
@@ -241,6 +247,8 @@ async function loadConfig() {
     applyActionSwitchSelection(readActionSwitchSelection(config));
     applyStateSensorSelection(readStateSensorSelection(config));
     applyHiddenCleanModeSelection(readHiddenCleanModeSelection(config));
+    robotSettingsDraft = readRobotSettings(config);
+    renderRobotHiddenCleanModes();
     if (elements.homeKitActionSchedules) {
       elements.homeKitActionSchedules.checked = Boolean(
         config.enableHomeKitScheduleSwitches
@@ -488,11 +496,14 @@ async function describeEnabledMatterFeatures() {
     ["cleanMode", config.enableMatterCleanMode !== false],
     ["powerSource", config.enableMatterPowerSource !== false],
     ["fanPowerCleanModes", config.enableFanPowerCleanModes !== false],
-    // Named only while it hides something from a mode list that exists.
+    // Named only while it hides something from a mode list that exists. The
+    // robots with their own list are a count: this report is pasted into
+    // public issues, and a serial or DUID does not belong there.
     [
-      `hiddenCleanModes(${readHiddenCleanModeSelection(config).join("+")})`,
+      `hiddenCleanModes(${readHiddenCleanModeSelection(config).join("+") || (countRobotsWithOwnHiddenCleanModes(config) > 0 ? "none" : "")}${describeRobotsWithOwnHiddenCleanModes(config)})`,
       config.enableMatterCleanMode !== false &&
-        readHiddenCleanModeSelection(config).length > 0,
+        (readHiddenCleanModeSelection(config).length > 0 ||
+          countRobotsWithOwnHiddenCleanModes(config) > 0),
     ],
     [
       "extendedOperationalStates",
@@ -572,6 +583,13 @@ function hasUnsavedMatterFeatureEdits(config) {
   if (
     getHiddenCleanModeSelection().join(",") !==
     readHiddenCleanModeSelection(config).join(",")
+  ) {
+    return true;
+  }
+
+  if (
+    JSON.stringify(robotSettingsDraft) !==
+    JSON.stringify(readRobotSettings(config))
   ) {
     return true;
   }
@@ -704,6 +722,204 @@ function getHiddenCleanModeSelection() {
   return HIDDEN_CLEAN_MODE_KEYS.filter((key) =>
     Boolean(HIDDEN_CLEAN_MODE_ELEMENTS[key]()?.checked)
   );
+}
+
+/**
+ * Each robot's own settings (`devices`) as the form holds them until Save:
+ * a copy of the saved list, edited by the per-robot boxes. Entries for robots
+ * the Devices list does not show, and anything in an entry this page does not
+ * edit, are saved back as they were.
+ */
+let robotSettingsDraft = [];
+
+/** The boxes of each row, by the robot's DUID (or serial without one). */
+const robotHiddenCleanModeControls = new Map();
+
+const HIDDEN_CLEAN_MODE_LABELS = {
+  mop: "Mop",
+  vacuumAndMop: "Vacuum + Mop",
+};
+
+/** A copy of the SAVED `devices` list, or [] when there is none. */
+function readRobotSettings(config) {
+  const saved = config?.devices;
+  return Array.isArray(saved) ? JSON.parse(JSON.stringify(saved)) : [];
+}
+
+/** Whether a `devices` entry names this robot, by DUID or serial number. */
+function robotEntryNames(entry, device) {
+  if (!entry || typeof entry !== "object" || typeof entry.id !== "string") {
+    return false;
+  }
+  const id = entry.id.trim();
+  return id !== "" && (id === device.duid || id === device.serialNumber);
+}
+
+/**
+ * The hidden clean modes a robot's own entry asks for, or null when it
+ * follows the setting for every robot. The first entry with a list wins, as
+ * in the plugin (hiddenCleanModeSettingFor).
+ */
+function robotHiddenCleanModesIn(draft, device) {
+  const own = draft.find(
+    (entry) =>
+      robotEntryNames(entry, device) &&
+      Array.isArray(entry.matterHiddenCleanModes)
+  );
+  if (!own) {
+    return null;
+  }
+  return HIDDEN_CLEAN_MODE_KEYS.filter((key) =>
+    own.matterHiddenCleanModes.includes(key)
+  );
+}
+
+/** Give a robot its own list, or null to make it follow every robot's. */
+function setRobotHiddenCleanModes(device, selection) {
+  if (selection === null) {
+    // Every entry for it, or a second one would take over.
+    for (const entry of robotSettingsDraft) {
+      if (robotEntryNames(entry, device)) {
+        delete entry.matterHiddenCleanModes;
+      }
+    }
+    // An entry left with nothing but its id says nothing.
+    robotSettingsDraft = robotSettingsDraft.filter(
+      (entry) =>
+        !robotEntryNames(entry, device) ||
+        Object.keys(entry).some((key) => key !== "id")
+    );
+    return;
+  }
+
+  const entry =
+    robotSettingsDraft.find(
+      (candidate) =>
+        robotEntryNames(candidate, device) &&
+        Array.isArray(candidate.matterHiddenCleanModes)
+    ) ||
+    robotSettingsDraft.find((candidate) => robotEntryNames(candidate, device));
+  if (entry) {
+    entry.matterHiddenCleanModes = selection;
+  } else {
+    robotSettingsDraft.push({
+      id: device.duid || device.serialNumber,
+      matterHiddenCleanModes: selection,
+    });
+  }
+}
+
+/** Robots the SAVED config gives a hidden clean mode list of their own. */
+function countRobotsWithOwnHiddenCleanModes(config) {
+  const ids = new Set();
+  for (const entry of readRobotSettings(config)) {
+    if (
+      entry &&
+      typeof entry.id === "string" &&
+      entry.id.trim() !== "" &&
+      Array.isArray(entry.matterHiddenCleanModes)
+    ) {
+      ids.add(entry.id.trim());
+    }
+  }
+  return ids.size;
+}
+
+/** ", 1 robot overridden" for the report, or nothing. */
+function describeRobotsWithOwnHiddenCleanModes(config) {
+  const count = countRobotsWithOwnHiddenCleanModes(config);
+  if (count === 0) {
+    return "";
+  }
+  return `, ${count} ${count === 1 ? "robot" : "robots"} overridden`;
+}
+
+function robotCheckbox(text, checked) {
+  const label = document.createElement("label");
+  label.className = "checkbox";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  const span = document.createElement("span");
+  span.textContent = text;
+  label.appendChild(input);
+  label.appendChild(span);
+  return { label, input };
+}
+
+/**
+ * The per-robot boxes, one row per robot the Devices list shows. A robot that
+ * follows the setting for every robot shows that setting, greyed out;
+ * unticking "Same as all robots" starts its own list from it, so nothing
+ * changes until a box is changed.
+ */
+function renderRobotHiddenCleanModes() {
+  const container = elements.matterRobotHiddenCleanModes;
+  const empty = elements.matterRobotHiddenCleanModesEmpty;
+  if (!container || !empty) {
+    return;
+  }
+
+  container.textContent = "";
+  robotHiddenCleanModeControls.clear();
+  const devices = managedDevicesCache.filter(
+    (device) => device.duid || device.serialNumber
+  );
+  empty.classList.toggle("hidden", devices.length > 0);
+
+  for (const device of devices) {
+    const own = robotHiddenCleanModesIn(robotSettingsDraft, device);
+    const row = document.createElement("div");
+    row.className = "robot-clean-mode-row";
+    row.dataset.robot = device.duid || device.serialNumber;
+
+    const title = document.createElement("div");
+    title.className = "device-title";
+    title.textContent = `${device.name || device.duid || device.serialNumber} — ${device.resolvedModel || "unknown model"}`;
+    row.appendChild(title);
+
+    const follow = robotCheckbox("Same as all robots", own === null);
+    row.appendChild(follow.label);
+
+    const group = document.createElement("div");
+    group.className = "checkbox-group";
+    const shown = own ?? getHiddenCleanModeSelection();
+    const boxes = HIDDEN_CLEAN_MODE_KEYS.map((key) => {
+      const box = robotCheckbox(
+        `Hide ${HIDDEN_CLEAN_MODE_LABELS[key]}`,
+        shown.includes(key)
+      );
+      box.input.dataset.mode = key;
+      box.input.disabled = own === null;
+      group.appendChild(box.label);
+      return box.input;
+    });
+    group.classList.toggle("disabled", own === null);
+    row.appendChild(group);
+
+    const selected = () =>
+      HIDDEN_CLEAN_MODE_KEYS.filter((key, index) => boxes[index].checked);
+    follow.input.addEventListener("change", () => {
+      setRobotHiddenCleanModes(
+        device,
+        follow.input.checked ? null : selected()
+      );
+      renderRobotHiddenCleanModes();
+    });
+    for (const box of boxes) {
+      box.addEventListener("change", () =>
+        setRobotHiddenCleanModes(device, selected())
+      );
+    }
+
+    robotHiddenCleanModeControls.set(row.dataset.robot, {
+      follow: follow.input,
+      ...Object.fromEntries(
+        HIDDEN_CLEAN_MODE_KEYS.map((key, index) => [key, boxes[index]])
+      ),
+    });
+    container.appendChild(row);
+  }
 }
 
 function applyHiddenCleanModeSelection(selection) {
@@ -876,6 +1092,11 @@ function getFormValues() {
     ),
     homeKitStateSensors: getSavedStateSensorSelection(),
     matterHiddenCleanModes: getHiddenCleanModeSelection(),
+    // Undefined removes the key, so the last robot set back to "Same as all
+    // robots" leaves no empty list behind.
+    devices: robotSettingsDraft.length
+      ? JSON.parse(JSON.stringify(robotSettingsDraft))
+      : undefined,
     enableHomeKitScheduleSwitches: Boolean(
       elements.homeKitActionSchedules?.checked
     ),
@@ -946,6 +1167,7 @@ function renderManagedDevices() {
   container.textContent = "";
   if (!managedDevicesCache.length) {
     empty.classList.remove("hidden");
+    renderRobotHiddenCleanModes();
     return;
   }
   empty.classList.add("hidden");
@@ -996,6 +1218,9 @@ function renderManagedDevices() {
 
     container.appendChild(row);
   }
+
+  // The per-robot clean mode rows list the same robots.
+  renderRobotHiddenCleanModes();
 }
 
 function onManagedDeviceToggle(device, managed) {
@@ -2087,6 +2312,12 @@ function init() {
   syncActionSwitchAvailability();
   syncFeatureDependencies();
   loadManagedDevices().catch(() => {});
+  // A robot that follows the setting for every robot shows that setting.
+  for (const key of HIDDEN_CLEAN_MODE_KEYS) {
+    HIDDEN_CLEAN_MODE_ELEMENTS[key]()?.addEventListener("change", () =>
+      renderRobotHiddenCleanModes()
+    );
+  }
   if (elements.refreshDevices) {
     elements.refreshDevices.addEventListener("click", () =>
       loadManagedDevices()

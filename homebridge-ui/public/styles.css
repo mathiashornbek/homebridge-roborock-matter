@@ -723,6 +723,15 @@ select:focus-visible {
   margin-top: 18px;
 }
 
+/* One robot's own hidden clean modes, under the setting for every robot. */
+.robot-clean-modes .robot-clean-mode-row {
+  margin: 12px 0 0 26px;
+}
+
+.robot-clean-modes .robot-clean-mode-row .checkbox {
+  margin-top: 6px;
+}
+
 .checkbox-group.disabled {
   /* Not lower: the small print under each switch explains what it does, and
      that is exactly what the user is reading while deciding to enable the

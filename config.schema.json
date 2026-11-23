@@ -133,6 +133,40 @@
           ]
         }
       },
+      "devices": {
+        "title": "Per-Robot Settings",
+        "description": "Settings for one robot that differ from the settings for every robot. Each entry names the robot by serial number or DUID; the Devices list on the plugin's settings page shows both. A setting left out of an entry follows the one for every robot.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "title": "Serial Number or DUID",
+              "type": "string"
+            },
+            "matterHiddenCleanModes": {
+              "title": "Hide Cleaning Modes in Apple Home",
+              "description": "Replaces Hide Cleaning Modes in Apple Home for this robot. An empty list hides nothing on this robot. The same rules apply: remove the robot from Apple Home and add it again after saving and restarting, and a hidden mode Apple Home has selected stays until another one is picked.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": ["mop", "vacuumAndMop"],
+                "oneOf": [
+                  {
+                    "title": "Mop",
+                    "enum": ["mop"]
+                  },
+                  {
+                    "title": "Vacuum + Mop",
+                    "enum": ["vacuumAndMop"]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
       "enableMatterExtendedOperationalStates": {
         "title": "Enable Matter Dock & Returning Status",
         "description": "The extended Matter statuses: Returning to the dock, Emptying the dust bin, Washing the mop, and Updating maps. On by default. Matter fixes an accessory's capabilities at commissioning, so a robot paired before 3.12.0 needs one remove-and-re-pair in Apple Home before these appear. Which of these Apple Home actually renders is Apple's decision. Unless Charging/Docked status is also enabled below, docked and charging still report as Ready. Note: Roborock's mop DRYING has no operational state of its own in the Matter robot vacuum specification, so it is not reported here.",
