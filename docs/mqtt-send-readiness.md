@@ -41,7 +41,10 @@ a command waits up to 10 seconds before failing as unsent.
 ## What the user sees
 
 Existing acknowledgement and display policies are retained. Locate/Identify,
-which await their command, use a 2.5-second command budget. There is no new
+which await their command, use a 6.5-second command budget. This allows a four-second LAN reconnect
+and leaves time for a cloud reply, while remaining below HomeKit's nine-second
+response window. When both transports are unavailable, Locate can take up to
+6.5 seconds to finish. There is no new
 "waiting for MQTT" tile or progress indicator.
 
 - Native Matter commands already dispatch work in the background. A readiness

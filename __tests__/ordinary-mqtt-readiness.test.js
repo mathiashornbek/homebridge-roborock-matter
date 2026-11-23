@@ -444,11 +444,11 @@ test("initial cloud readiness spends the explicit budget and the response receiv
   const { result, id } = await startRequest("robot-a", "get_status", {
     requestTimeoutMs: 2000,
   });
-  await jest.advanceTimersByTimeAsync(1500);
+  await jest.advanceTimersByTimeAsync(1000);
   acknowledge();
   await jest.advanceTimersByTimeAsync(0);
   expect(mockClients[0].publish).toHaveBeenCalledTimes(1);
-  await jest.advanceTimersByTimeAsync(499);
+  await jest.advanceTimersByTimeAsync(999);
   expect(adapter.pendingRequests.has(id)).toBe(true);
   await jest.advanceTimersByTimeAsync(1);
   expect(adapter.pendingRequests.size).toBe(0);
@@ -561,4 +561,46 @@ test("waits from the old connection cannot restart a newly connected session", a
     expect(await request.result).toMatchObject({ requestNotSent: true });
   expect(connector.unsubscribedExpiries).toBe(0);
   expect(restart).not.toHaveBeenCalled();
+});
+
+test.each([1001, 1990])(
+  "SUBACK at %i ms does not publish with less than a second left",
+  async (delay) => {
+    mockClients[0].handlers.get("connect")({});
+    const { result } = await startRequest("robot-a", "get_status", {
+      requestTimeoutMs: 2000,
+    });
+    await jest.advanceTimersByTimeAsync(delay);
+    acknowledge();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(await result).toMatchObject({
+      requestNotSent: true,
+      unansweredRequest: false,
+    });
+    expect(mockClients[0].publish).not.toHaveBeenCalled();
+    expect(adapter.pendingRequests.size).toBe(0);
+    expect(adapter.noteRequestUnanswered).not.toHaveBeenCalled();
+  }
+);
+
+test("Locate can use healthy cloud after a four-second LAN negotiation failure", async () => {
+  adapter.config.cloudOnlyMode = false;
+  adapter.localConnector.isConnected.mockReturnValue(true);
+  adapter.localConnector.awaitLocalNegotiation = jest.fn(
+    () =>
+      new Promise((resolve) => {
+        setTimeout(() => {
+          adapter.localConnector.isConnected.mockReturnValue(false);
+          resolve();
+        }, 4000);
+      })
+  );
+  const { result, id } = await startRequest("robot-a", "find_me", {
+    preferLocal: true,
+    requestTimeoutMs: 6500,
+  });
+  await jest.advanceTimersByTimeAsync(4000);
+  expect(mockClients[0].publish).toHaveBeenCalledTimes(1);
+  receive(reply(requestId));
+  expect(await result).toEqual(["ok"]);
 });
