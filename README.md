@@ -13,7 +13,7 @@
   <a href="https://www.npmjs.com/package/homebridge-roborock-matter"><img src="https://img.shields.io/npm/dt/homebridge-roborock-matter?label=downloads&color=8a5cf5" alt="npm downloads"></a>
   <a href="https://github.com/mathiashornbek/homebridge-roborock-matter/actions"><img src="https://img.shields.io/github/actions/workflow/status/mathiashornbek/homebridge-roborock-matter/nodejs.yml?label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-brightgreen" alt="Node 22/24/26">
-  <img src="https://img.shields.io/badge/homebridge-1.11%20%7C%202.x-purple" alt="Homebridge 1.11/2.x">
+  <img src="https://img.shields.io/badge/homebridge-2.x-purple" alt="Homebridge 2.x">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -50,6 +50,8 @@ Sign in with the account you already use in the Roborock app. That is the whole 
 - 🔐 Sign in safely from the settings page. Two-factor sign-in works, and the session is stored encrypted.
 
 ## Quick start
+
+You need **Homebridge 2** (2.0 or newer), because the robots reach Apple Home over Matter.
 
 1. In the Homebridge UI, search for **`homebridge-roborock-matter`** and install it. (Or run `npm install -g homebridge-roborock-matter`.)
 2. Open the plugin settings, sign in with your **Roborock app account**, and choose your robots.
@@ -152,7 +154,7 @@ If the plugin makes your home a little smarter, a small donation via [PayPal](ht
 
 ## Contributing
 
-Model reports, diagnostics reports and pull requests are welcome. The code has 2846 tests, strict TypeScript and CI on Node 22, 24 and 26 with Homebridge 1.11 and 2.x; run `npm test` before you push. Every change is described in the [changelog](./CHANGELOG.md).
+Model reports, diagnostics reports and pull requests are welcome. The code has 2846 tests, strict TypeScript and CI on Node 22, 24 and 26 with Homebridge 2.0 and the newest 2.x; run `npm test` before you push. Every change is described in the [changelog](./CHANGELOG.md).
 
 ## Attribution
 

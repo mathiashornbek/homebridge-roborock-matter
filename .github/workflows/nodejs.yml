@@ -35,7 +35,9 @@ jobs:
     strategy:
       matrix:
         node-version: [current]
-        homebridge-version: ["^1.11.4", "^2.0.0-beta.0"]
+        # The lowest Homebridge the plugin's range accepts (2.0.0: the first
+        # with Matter and the robot vacuum device type) and the newest 2.x.
+        homebridge-version: ["2.0.0", "^2.0.0"]
 
     steps:
       - uses: actions/checkout@v5
