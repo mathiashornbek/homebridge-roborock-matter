@@ -708,6 +708,37 @@ class roborock_mqtt_connector {
           } else if (!pending) {
             noteLateReply(this.adapter, duid, dps.id, "cloud");
           }
+        } else if (data.protocol == 300) {
+          // The non-final part of a large B01 map split across frames,
+          // sharing the final 301's (random, timestamp) and numbered by
+          // seq. Until now a 300 fell through to the unknown-protocol log
+          // below and was dropped, so the 301 fragment that followed could
+          // never decode — "Unexpected encrypted B01 map payload length"
+          // on every saved-map load. The frame's header fields ride along
+          // so the handler can reassemble the parts before decoding.
+          if (
+            typeof this.adapter.onB01MapFrame === "function" &&
+            this.adapter.isB01Device?.(duid)
+          ) {
+            if (
+              this.adapter.onB01MapFrame(duid, data.payload, {
+                protocol: 300,
+                seq: data.seq,
+                random: data.random,
+                timestamp: data.timestamp,
+                version: data.version,
+              })
+            ) {
+              this.sessionDiagnostics.noteActivity("correlated");
+            }
+            return;
+          }
+          // A classic robot's split map is not read on this path; a 300
+          // for one used to fall through to the unknown-protocol log.
+          this.adapter.log.debug(
+            `Skipping protocol 300 MQTT message for ${duid}: not a B01 map part this plugin reads.`
+          );
+          return;
         } else if (data.protocol == 301) {
           // A B01 robot's map frames are its own format, pushed unasked as
           // well as sent on request. Every one goes to the B01 map handler,
@@ -718,7 +749,15 @@ class roborock_mqtt_connector {
             typeof this.adapter.onB01MapFrame === "function" &&
             this.adapter.isB01Device?.(duid)
           ) {
-            if (this.adapter.onB01MapFrame(duid, data.payload)) {
+            if (
+              this.adapter.onB01MapFrame(duid, data.payload, {
+                protocol: 301,
+                seq: data.seq,
+                random: data.random,
+                timestamp: data.timestamp,
+                version: data.version,
+              })
+            ) {
               this.sessionDiagnostics.noteActivity("correlated");
             }
             return;
