@@ -66,10 +66,15 @@ class FakeService {
     this.subtype = subtype;
     this.displayName = displayName;
     this.characteristics = new Map();
+    this.optionalCharacteristics = [];
     if (displayName !== undefined) {
       this.setCharacteristic(Characteristic.Name, displayName);
     }
   }
+  testCharacteristic(type) {
+    return this.characteristics.has(type);
+  }
+
   getCharacteristic(type) {
     if (!this.characteristics.has(type)) {
       this.characteristics.set(type, new FakeCharacteristic());

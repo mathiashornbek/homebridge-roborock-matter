@@ -68,6 +68,21 @@ const ROUTINE_SERVICE_PREFIX = "roborock-routine-";
 // the press and an automation to record it, short enough to be ready again.
 const ROUTINE_SWITCH_AUTO_RESET_MS = 1500;
 
+/** Register the optional name only when it is not already available. */
+function configuredNameCharacteristic(
+  service: ReturnType<PlatformAccessory["addService"]>,
+  platform: RoborockPlatform
+) {
+  const type = platform.Characteristic.ConfiguredName;
+  if (
+    !service.testCharacteristic(type) &&
+    !service.optionalCharacteristics.some((entry) => entry.UUID === type.UUID)
+  ) {
+    service.addOptionalCharacteristic(type);
+  }
+  return service.getCharacteristic(type);
+}
+
 /**
  * Where a schedule lives, because two kinds now share the switch surface.
  *
@@ -581,6 +596,39 @@ export default class RoborockHapScheduleAccessory {
       extension: HAP_SCHEDULE_EXTENSION,
       duid,
     } satisfies HapScheduleContext;
+    this.compactCachedConfiguredNames(accessory);
+  }
+
+  /** Compact cached name definitions without replacing services or active values. */
+  private compactCachedConfiguredNames(accessory: PlatformAccessory): void {
+    let changed = false;
+    for (const service of accessory.services) {
+      if (
+        service.UUID !== this.platform.Service.Switch.UUID ||
+        (!service.subtype?.startsWith(SERVICE_PREFIX) &&
+          !service.subtype?.startsWith(ROUTINE_SERVICE_PREFIX))
+      ) {
+        continue;
+      }
+
+      let found = false;
+      const unique = service.optionalCharacteristics.filter((entry) => {
+        if (entry.UUID !== this.platform.Characteristic.ConfiguredName.UUID) {
+          return true;
+        }
+        if (found) return false;
+        found = true;
+        return true;
+      });
+      if (unique.length !== service.optionalCharacteristics.length) {
+        service.optionalCharacteristics = unique;
+        changed = true;
+      }
+    }
+    if (changed) {
+      // Persist local recovery immediately, even if the first cloud read fails.
+      this.platform.api.updatePlatformAccessories([accessory]);
+    }
   }
 
   async initialize(vacuumName: string): Promise<RoborockScheduleRefreshResult> {
@@ -651,6 +699,7 @@ export default class RoborockHapScheduleAccessory {
       return;
     }
 
+    this.compactCachedConfiguredNames(accessory);
     this.applyRoutineAccessoryIdentity();
 
     // Re-bind handlers to whatever switches Homebridge restored from its
@@ -2180,13 +2229,7 @@ class RoborockHapScheduleSwitchAccessory {
 
     service.displayName = displayName;
     service.setCharacteristic(this.platform.Characteristic.Name, displayName);
-    service.addOptionalCharacteristic(
-      this.platform.Characteristic.ConfiguredName
-    );
-
-    const configuredName = service.getCharacteristic(
-      this.platform.Characteristic.ConfiguredName
-    );
+    const configuredName = configuredNameCharacteristic(service, this.platform);
     const currentConfiguredName = configuredName.value;
 
     if (
@@ -2249,11 +2292,9 @@ class RoborockHapScheduleSwitchAccessory {
         this.platform.Characteristic.Name,
         displayName
       );
-      switchService.addOptionalCharacteristic(
-        this.platform.Characteristic.ConfiguredName
-      );
-      const configuredName = switchService.getCharacteristic(
-        this.platform.Characteristic.ConfiguredName
+      const configuredName = configuredNameCharacteristic(
+        switchService,
+        this.platform
       );
       const currentConfiguredName = configuredName.value;
       if (
@@ -2645,12 +2686,7 @@ class RoborockHapRoutineSwitch {
     ).value;
     service.displayName = displayName;
     service.setCharacteristic(this.platform.Characteristic.Name, displayName);
-    service.addOptionalCharacteristic(
-      this.platform.Characteristic.ConfiguredName
-    );
-    const configuredName = service.getCharacteristic(
-      this.platform.Characteristic.ConfiguredName
-    );
+    const configuredName = configuredNameCharacteristic(service, this.platform);
     const current = configuredName.value;
     // A name the user chose in the Home app is theirs; only a name that still
     // mirrors the previous app name follows the app.

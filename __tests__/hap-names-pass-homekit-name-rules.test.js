@@ -81,6 +81,10 @@ function fakeService(name) {
   const characteristics = new Map();
   return {
     displayName: name,
+    optionalCharacteristics: [],
+    testCharacteristic(type) {
+      return characteristics.has(type);
+    },
     getCharacteristic(type) {
       if (!characteristics.has(type)) {
         characteristics.set(type, {
