@@ -449,6 +449,152 @@ function decodeMapPayload(rawPayload, mapKey) {
 }
 
 /**
+ * Reassemble a B01 map frame split across several MQTT messages.
+ *
+ * Large maps are split into multiple messages that share the same `random`
+ * and `timestamp` and are numbered by `seq`. All parts except the last one
+ * use protocol `MAP_RESPONSE_PART` (300), the last one uses `MAP_RESPONSE`
+ * (301). Parts may arrive out of order, so they are buffered until complete.
+ * A lone final part whose decoded length is not a multiple of the AES block
+ * size is a trailing fragment of a split frame, not a complete frame, so it
+ * is buffered too.
+ *
+ * This is a port of python-roborock's `create_map_response_assembler`
+ * (roborock/protocols/b01_q7_protocol.py), the reference implementation this
+ * file already follows for the map key and the payload decode — including its
+ * rule that a complete frame's parts are numbered `seq` 1..N, and its cap of
+ * 4 incomplete frames (oldest evicted first).
+ *
+ * Why this exists: a split map's trailing 301 fragment decodes to a length
+ * that is not a multiple of 16 (e.g. 18516), so `decodeMapPayload` threw
+ * "Unexpected encrypted B01 map payload length" on every saved-map load and
+ * no rooms ever arrived — while the 300 part carrying the head of the frame
+ * was dropped upstream as an unknown protocol. Feeding a fragment straight
+ * to `decodeMapPayload` is the bug; buffering it here is the fix.
+ *
+ * One assembler per robot: the (random, timestamp) key is only unique
+ * within one robot's stream, so the caller keeps one instance per duid.
+ * Q10 robots must never reach this — their 301 packets are binary, not
+ * base64, and are read by b01Q10Adapter instead.
+ *
+ * @returns {(frame: {protocol: number, seq?: number, random?: number,
+ *   timestamp?: number, payload: Buffer, version?: string | Buffer}) =>
+ *   Buffer | null} the complete raw payload once all parts arrived, else null
+ */
+function createB01MapResponseAssembler() {
+  const MAX_PENDING_MAP_RESPONSES = 4;
+  // (random, timestamp) -> seq -> {isLast, payload}
+  const pending = new Map();
+
+  /** @param {Buffer | string} rawPayload @returns {number | null} */
+  function decodedLength(rawPayload) {
+    try {
+      const blob = Buffer.isBuffer(rawPayload)
+        ? rawPayload.toString("ascii").trim()
+        : String(rawPayload).trim();
+      const padded = blob + "=".repeat((4 - (blob.length % 4)) % 4);
+      return Buffer.from(padded, "base64").length;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * @param {string} key
+   * @param {Map<number, {isLast: boolean, payload: Buffer}>} parts
+   */
+  function remember(key, parts) {
+    pending.set(key, parts);
+    while (pending.size > MAX_PENDING_MAP_RESPONSES) {
+      pending.delete(pending.keys().next().value);
+    }
+  }
+
+  /**
+   * @param {Map<number, {isLast: boolean, payload: Buffer}>} parts
+   * @returns {Buffer | null}
+   */
+  function completePayload(parts) {
+    const seqs = [...parts.keys()].sort((a, b) => a - b);
+    const last = parts.get(seqs[seqs.length - 1]);
+    if (!last || !last.isLast) {
+      return null;
+    }
+    // Parts are numbered 1..N: a trailing block that happens to be
+    // block-aligned on its own (e.g. parts 2+3 of a 3-part frame) must still
+    // wait for seq 1, or a partial map would decode as a whole one.
+    for (let i = 0; i < seqs.length; i += 1) {
+      if (seqs[i] !== i + 1) {
+        return null;
+      }
+    }
+    const joined = Buffer.concat(
+      seqs.map((seq) => parts.get(seq)?.payload ?? Buffer.alloc(0))
+    );
+    const length = decodedLength(joined);
+    if (length === null || length % 16 !== 0) {
+      return null;
+    }
+    return joined;
+  }
+
+  return function assemble(frame) {
+    const payload = frame?.payload;
+    if (!payload || payload.length === 0) {
+      return null;
+    }
+    if (frame.version !== undefined && frame.version !== null) {
+      const version = Buffer.isBuffer(frame.version)
+        ? frame.version.toString("latin1")
+        : String(frame.version);
+      if (version !== "B01") {
+        return null;
+      }
+    }
+    const protocol = Number(frame.protocol);
+    if (protocol !== 300 && protocol !== 301) {
+      return null;
+    }
+    const key = `${frame.random ?? ""}:${frame.timestamp ?? ""}`;
+    const isLast = protocol === 301;
+    const seq = Number(frame.seq);
+    if (!Number.isInteger(seq)) {
+      // No part number: only a lone, block-aligned 301 can be read as-is.
+      if (!isLast) {
+        return null;
+      }
+      const length = decodedLength(payload);
+      return length !== null && length % 16 === 0 ? Buffer.from(payload) : null;
+    }
+    if (protocol === 300 || (isLast && pending.has(key))) {
+      const parts = pending.get(key) || new Map();
+      pending.delete(key);
+      parts.set(seq, { isLast, payload: Buffer.from(payload) });
+      const joined = completePayload(parts);
+      if (joined !== null) {
+        return joined;
+      }
+      remember(key, parts);
+      return null;
+    }
+    if (isLast) {
+      const length = decodedLength(payload);
+      if (length !== null && length % 16 !== 0) {
+        // Trailing fragment of a split frame whose earlier parts have not
+        // arrived yet; wait for them instead of failing the decode.
+        remember(
+          key,
+          new Map([[seq, { isLast: true, payload: Buffer.from(payload) }]])
+        );
+        return null;
+      }
+      return Buffer.from(payload);
+    }
+    return null;
+  };
+}
+
+/**
  * Shared minimal protobuf wire reader for the SCMap RobotMap payload.
  * Reference schema: python-roborock map/proto/b01_scmap.proto.
  */
@@ -1118,6 +1264,7 @@ module.exports = {
   B01_MAP_UPLOAD_METHOD,
   createMapKey,
   decodeMapPayload,
+  createB01MapResponseAssembler,
   parseRoomsFromScMap,
   parseScMapLiveState,
   describeLiveRoomResolution,

@@ -6450,8 +6450,8 @@ class Roborock {
   }
 
   /**
-   * Every protocol-301 frame from a B01 robot, decoded once and routed by
-   * what it is.
+   * Every protocol-300/301 frame from a B01 robot, reassembled when a map
+   * is split across frames, then decoded once and routed by what it is.
    *
    * A Q7 sends two kinds of map frame and they answer different questions.
    * The live map (mapType 0) is pushed while it cleans and carries where the
@@ -6467,12 +6467,36 @@ class Roborock {
    * now and then a live push that happened to arrive first. Every other live
    * push went through the classic map parser and was counted as a frame for
    * another controller.
-   *
+   */
+  /**
+   * One split-map assembler per robot: the (random, timestamp) key a frame's
+   * parts share is only unique within one robot's stream.
    * @param {string} duid
-   * @param {Buffer} rawPayload
+   * @returns {(frame: any) => Buffer | null}
+   */
+  _b01MapAssemblerFor(duid) {
+    if (!this._b01MapAssemblers) {
+      this._b01MapAssemblers = new Map();
+    }
+    if (!this._b01MapAssemblers.has(duid)) {
+      this._b01MapAssemblers.set(
+        duid,
+        b01Q7Adapter.createB01MapResponseAssembler()
+      );
+    }
+    return this._b01MapAssemblers.get(duid);
+  }
+
+  /**
+   * @param {string} duid
+   * @param {Buffer} rawPayload one part (protocol 300) or the final frame
+   *   (protocol 301) of a B01 map frame
+   * @param {{protocol?: number, seq?: number, random?: number,
+   *   timestamp?: number, version?: string}} [frame] the MQTT frame's
+   *   header fields; omitted by older callers, which send complete 301s
    * @returns {boolean} whether the frame settled a pending request
    */
-  onB01MapFrame(duid, rawPayload) {
+  onB01MapFrame(duid, rawPayload, frame = {}) {
     const family = this.b01Family(duid);
     if (family === b01Q7Adapter.B01_FAMILY.Q10) {
       // A Q10 pushes its current map after dpRequestDps; its rooms are read
@@ -6493,6 +6517,30 @@ class Roborock {
     if (family !== b01Q7Adapter.B01_FAMILY.Q7) {
       return false;
     }
+
+    // Large maps arrive split across protocol-300 parts and a final 301
+    // frame, sharing one (random, timestamp) and numbered by seq. A trailing
+    // 301 fragment on its own decodes to a length that is not a multiple of
+    // 16, which used to throw "Unexpected encrypted B01 map payload length"
+    // here on every saved-map load. Buffer the parts and decode only the
+    // reassembled frame; a part that completes nothing is not an error, and
+    // it settles no pending request.
+    const assembled = this._b01MapAssemblerFor(duid)({
+      protocol: frame.protocol ?? 301,
+      seq: frame.seq,
+      random: frame.random,
+      timestamp: frame.timestamp,
+      payload: rawPayload,
+      version: frame.version,
+    });
+    if (assembled === null) {
+      this.log.debug(
+        `Buffering part ${frame.seq ?? "?"} of a split B01 map frame (protocol ${frame.protocol ?? 301}) for ${this.describeDevice(duid)}; waiting for the remaining part(s).`
+      );
+      return false;
+    }
+    rawPayload = assembled;
+
     const pending = this.pendingB01MapRequests?.get(duid);
 
     let parsed;
