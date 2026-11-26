@@ -42,7 +42,12 @@ class FakeService {
     this.subtype = subtype;
     this.displayName = displayName;
     this.characteristics = new Map();
+    this.optionalCharacteristics = [];
     this.setCharacteristic(Characteristic.Name, displayName);
+  }
+
+  testCharacteristic(type) {
+    return this.characteristics.has(type);
   }
 
   getCharacteristic(type) {
